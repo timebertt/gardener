@@ -1,0 +1,288 @@
+strict digraph {
+  graph [
+    label="Shoot cluster reconciliation"
+    labelloc=t
+    fontname=Helvetica
+    fontsize=18
+  ];
+  node [
+    fillcolor=lightskyblue1
+    shape=box
+    fontname=Helvetica
+    fontsize=14
+    style=filled
+  ];
+
+  // Node definitions.
+  219221454 [
+    label="Deploying shoot\nlogging stack in\nSeed"
+    group=mandatory
+  ];
+  404296726 [
+    group=mandatory
+    label="Waiting until\nKubernetes API\nserver reports\nreadiness"
+  ];
+  523177736 [
+    label="Applying etcd\nencryption\nconfiguration"
+    group=mandatory
+  ];
+  524948492 [
+    label="Waiting until shoot\ncontrol plane has\nbeen reconciled"
+    group=mandatory
+  ];
+  536744982 [
+    label="Waiting until shoot\nworker nodes have\nbeen reconciled"
+    group=mandatory
+  ];
+  759369505 [
+    label="Deploying cloud\nprovider account\nsecret"
+    group=mandatory
+  ];
+  798625603 [
+    label="Deploying Kubernetes\ncontroller manager"
+    group=mandatory
+  ];
+  936318100 [
+    label="Waiting until shoot\nnetwork plugin has\nbeen reconciled"
+    group=mandatory
+  ];
+  985927437 [
+    label="Deploying Shoot\nmonitoring stack in\nSeed"
+    group=mandatory
+  ];
+  1042288560 [
+    label="Deploying shoot\ncontrol plane\ncomponents"
+    group=mandatory
+  ];
+  1055003868 [
+    label="Waiting until shoot\ninfrastructure has\nbeen reconciled"
+    group=mandatory
+  ];
+  1322848213 [
+    label="Syncing shoot\ncluster information\nto seed"
+    group=mandatory
+  ];
+  1633421460 [
+    label="Deploying backup\nentry"
+    fillcolor=lightgrey
+    style="filled,dashed"
+    group=optional
+  ];
+  1669734388 [
+    label="Waiting until\nKubernetes API\nserver service in\nthe Seed cluster has\nreported readiness"
+    group=mandatory
+  ];
+  1876627621 [
+    label="Waiting until\nextension resources\nare ready"
+    group=mandatory
+  ];
+  2086345284 [
+    label="Computing operating\nsystem specific\nconfiguration for\nshoot workers"
+    group=mandatory
+  ];
+  2119371197 [
+    label="Hibernating control\nplane"
+    fillcolor=lightgrey
+    style="filled,dashed"
+    group=optional
+  ];
+  2315127374 [
+    group=mandatory
+    label="Deploying network\npolicies"
+  ];
+  2399799819 [
+    label="Ensuring ingress DNS\nrecord"
+    group=mandatory
+  ];
+  2400392641 [
+    label="Deploying Kubernetes\nAPI server service\nin the Seed cluster"
+    group=mandatory
+  ];
+  2449607316 [
+    group=mandatory
+    label="Deploying managed\nresources"
+  ];
+  2675116833 [
+    label="Deploying cluster\nautoscaler"
+    group=mandatory
+  ];
+  2784299804 [
+    label="Deploying Dependency\nWatchdog"
+    group=mandatory
+  ];
+  2889616292 [
+    label="Deploying extension\nresources"
+    group=mandatory
+  ];
+  2930510649 [
+    label="Deploying main and\nevents etcd"
+    group=mandatory
+  ];
+  3022261187 [
+    group=mandatory
+    label="Deploying Kubernetes\nscheduler"
+  ];
+  3031501818 [
+    label="Deploying Shoot\ninfrastructure"
+    group=mandatory
+  ];
+  3049130962 [
+    label="Deploying shoot\nnetwork plugin"
+    group=mandatory
+  ];
+  3057454032 [
+    label="Configuring shoot\nworker pools"
+    group=mandatory
+  ];
+  3139046293 [
+    label="Deploying Kubernetes\nAPI server"
+    group=mandatory
+  ];
+  3281394308 [
+    label="Waiting until the\nKubernetes API\nserver can connect\nto the Shoot workers"
+    group=mandatory
+  ];
+  3372223621 [
+    label="Delete stale\nextension resources"
+    group=mandatory
+  ];
+  3475770476 [
+    group=mandatory
+    label="Initializing\nconnection to Shoot"
+  ];
+  3566341182 [
+    label="Deploying Shoot\nnamespace in Seed"
+    group=mandatory
+  ];
+  3666285268 [
+    label="Waiting until main\nand event etcd\nreport readiness"
+    group=mandatory
+  ];
+  3690468023 [
+    fillcolor=lightgrey
+    style="filled,dashed"
+    group=optional
+    label="Waiting until the\nbackup entry has\nbeen reconciled"
+  ];
+  3694269259 [
+    label="Deploying shoot\ncontrol plane\nexposure components"
+    group=mandatory
+  ];
+  3840087943 [
+    label="Waiting until Shoot\ncontrol plane\nexposure has been\nreconciled"
+    group=mandatory
+  ];
+  4014610394 [
+    group=mandatory
+    label="Rewriting Shoot\nsecrets if\nEncryptionConfiguration\nhas changed"
+  ];
+  4018081050 [
+    label="Deploying Shoot\ncertificates / keys"
+    group=mandatory
+  ];
+  4116254129 [
+    label="Deploying\ngardener-resource-manager"
+    group=mandatory
+  ];
+  4245228901 [
+    label="Deploying internal\ndomain DNS record"
+    fillcolor=lightgrey
+    style="filled,dashed"
+    group=optional
+  ];
+  4254797163 [
+    label="Deploying external\ndomain DNS record"
+    fillcolor=lightgrey
+    style="filled,dashed"
+    group=optional
+  ];
+  4274067384 [
+    label="Syncing shoot access\ncredentials to\nproject namespace in\nGarden"
+    group=mandatory
+  ];
+  4281078688 [
+    label="Waiting until stale\nextension resources\nare deleted"
+    group=mandatory
+  ];
+
+  // Edge definitions.
+  219221454 -> 2119371197;
+  404296726 -> 219221454;
+  404296726 -> 798625603;
+  404296726 -> 985927437;
+  404296726 -> 3022261187;
+  404296726 -> 3475770476;
+  404296726 -> 3694269259;
+  523177736 -> 3139046293;
+  523177736 -> 4014610394;
+  524948492 -> 3139046293;
+  536744982 -> 219221454;
+  536744982 -> 985927437;
+  536744982 -> 2675116833;
+  536744982 -> 3281394308;
+  759369505 -> 798625603;
+  759369505 -> 1042288560;
+  759369505 -> 2930510649;
+  759369505 -> 3031501818;
+  759369505 -> 3057454032;
+  798625603 -> 4274067384;
+  936318100 -> 3281394308;
+  985927437 -> 2119371197;
+  985927437 -> 2675116833;
+  1042288560 -> 524948492;
+  1055003868 -> 1042288560;
+  1055003868 -> 2086345284;
+  1055003868 -> 3057454032;
+  1322848213 -> 3566341182;
+  1633421460 -> 3690468023;
+  1669734388 -> 3139046293;
+  1669734388 -> 4245228901;
+  2086345284 -> 2449607316;
+  2086345284 -> 3049130962;
+  2086345284 -> 3057454032;
+  2400392641 -> 1669734388;
+  2449607316 -> 2399799819;
+  2449607316 -> 2675116833;
+  2449607316 -> 3281394308;
+  2675116833 -> 2119371197;
+  2889616292 -> 1876627621;
+  2930510649 -> 3139046293;
+  2930510649 -> 3666285268;
+  3031501818 -> 1055003868;
+  3049130962 -> 936318100;
+  3057454032 -> 536744982;
+  3139046293 -> 404296726;
+  3281394308 -> 219221454;
+  3281394308 -> 985927437;
+  3372223621 -> 4281078688;
+  3475770476 -> 219221454;
+  3475770476 -> 985927437;
+  3475770476 -> 2086345284;
+  3475770476 -> 2119371197;
+  3475770476 -> 2889616292;
+  3475770476 -> 3057454032;
+  3475770476 -> 3372223621;
+  3475770476 -> 4014610394;
+  3475770476 -> 4116254129;
+  3475770476 -> 4274067384;
+  3566341182 -> 523177736;
+  3566341182 -> 759369505;
+  3566341182 -> 2315127374;
+  3566341182 -> 2400392641;
+  3566341182 -> 2784299804;
+  3566341182 -> 4018081050;
+  3566341182 -> 4254797163;
+  3666285268 -> 3139046293;
+  3690468023 -> 2930510649;
+  3694269259 -> 3840087943;
+  3840087943 -> 3475770476;
+  4018081050 -> 798625603;
+  4018081050 -> 1042288560;
+  4018081050 -> 2930510649;
+  4018081050 -> 3022261187;
+  4018081050 -> 3031501818;
+  4018081050 -> 3139046293;
+  4018081050 -> 4274067384;
+  4116254129 -> 2449607316;
+  4116254129 -> 3049130962;
+}

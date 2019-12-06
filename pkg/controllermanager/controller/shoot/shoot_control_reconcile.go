@@ -82,14 +82,42 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		return gardencorev1alpha1helper.NewWrappedLastErrors(gardencorev1alpha1helper.FormatLastErrDescription(err), err)
 	}
 
+	g := flow.NewGraph("Shoot cluster reconciliation")
+	AddReconcileShootFlowTasks(g, o, botanist, enableEtcdEncryption)
+	f := g.Compile()
+
+	err = f.Run(flow.Opts{Logger: o.Logger, ProgressReporter: o.ReportShootProgress, ErrorContext: errorContext, ErrorCleaner: o.CleanShootTaskError})
+	if err != nil {
+		o.Logger.Errorf("Failed to reconcile Shoot %q: %+v", o.Shoot.Info.Name, err)
+		return gardencorev1alpha1helper.NewWrappedLastErrors(gardencorev1alpha1helper.FormatLastErrDescription(err), flow.Errors(err))
+	}
+
+	// Register the Shoot as Seed cluster if it was annotated properly and in the garden namespace
+	if o.Shoot.Info.Namespace == v1alpha1constants.GardenNamespace {
+		if o.ShootedSeed != nil {
+			if err := botanist.RegisterAsSeed(o.ShootedSeed.Protected, o.ShootedSeed.Visible, o.ShootedSeed.MinimumVolumeSize, o.ShootedSeed.BlockCIDRs, o.ShootedSeed.ShootDefaults, o.ShootedSeed.Backup); err != nil {
+				o.Logger.Errorf("Could not register Shoot %q as Seed: %+v", o.Shoot.Info.Name, err)
+			}
+		} else {
+			if err := botanist.UnregisterAsSeed(); err != nil {
+				o.Logger.Errorf("Could not unregister Shoot %q as Seed: %+v", o.Shoot.Info.Name, err)
+			}
+		}
+	}
+
+	o.Logger.Infof("Successfully reconciled Shoot %q", o.Shoot.Info.Name)
+	return nil
+}
+
+func AddReconcileShootFlowTasks(g flow.GraphInterface, o operation.OperationInformation, botanist *botanistpkg.Botanist, enableEtcdEncryption bool) {
 	var (
 		defaultTimeout     = 30 * time.Second
 		defaultInterval    = 5 * time.Second
-		managedExternalDNS = o.Shoot.ExternalDomain != nil && o.Shoot.ExternalDomain.Provider != "unmanaged"
-		managedInternalDNS = o.Garden.InternalDomain != nil && o.Garden.InternalDomain.Provider != "unmanaged"
-		allowBackup        = o.Seed.Info.Spec.Backup != nil
+		hibernationEnabled = o.IsShootHibernationEnabled()
+		managedExternalDNS = o.IsShootExternalDomainManaged()
+		managedInternalDNS = o.IsGardenInternalDomainManaged()
+		allowBackup        = o.IsSeedBackupEnabled()
 
-		g                         = flow.NewGraph("Shoot cluster reconciliation")
 		syncClusterResourceToSeed = g.Add(flow.Task{
 			Name: "Syncing shoot cluster information to seed",
 			Fn:   flow.TaskFn(botanist.SyncClusterResourceToSeed).RetryUntilTimeout(defaultInterval, defaultTimeout),
@@ -160,7 +188,7 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		waitUntilEtcdReady = g.Add(flow.Task{
 			Name:         "Waiting until main and event etcd report readiness",
-			Fn:           flow.TaskFn(botanist.WaitUntilEtcdReady).SkipIf(o.Shoot.HibernationEnabled),
+			Fn:           flow.TaskFn(botanist.WaitUntilEtcdReady).SkipIf(hibernationEnabled),
 			Dependencies: flow.NewTaskIDs(deployETCD),
 		})
 		deployControlPlane = g.Add(flow.Task{
@@ -185,7 +213,7 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		waitUntilKubeAPIServerIsReady = g.Add(flow.Task{
 			Name:         "Waiting until Kubernetes API server reports readiness",
-			Fn:           flow.TaskFn(botanist.WaitUntilKubeAPIServerReady).SkipIf(o.Shoot.HibernationEnabled),
+			Fn:           flow.TaskFn(botanist.WaitUntilKubeAPIServerReady).SkipIf(hibernationEnabled),
 			Dependencies: flow.NewTaskIDs(deployKubeAPIServer),
 		})
 		deployControlPlaneExposure = g.Add(flow.Task{
@@ -205,7 +233,7 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Rewriting Shoot secrets if EncryptionConfiguration has changed",
-			Fn:           flow.TaskFn(botanist.RewriteShootSecretsIfEncryptionConfigurationChanged).DoIf(enableEtcdEncryption && !o.Shoot.HibernationEnabled).RetryUntilTimeout(defaultInterval, 15*time.Minute),
+			Fn:           flow.TaskFn(botanist.RewriteShootSecretsIfEncryptionConfigurationChanged).DoIf(enableEtcdEncryption && !hibernationEnabled).RetryUntilTimeout(defaultInterval, 15*time.Minute),
 			Dependencies: flow.NewTaskIDs(initializeShootClients, createOrUpdateEtcdEncryptionConfiguration),
 		})
 		_ = g.Add(flow.Task{
@@ -245,7 +273,7 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		deployManagedResources = g.Add(flow.Task{
 			Name:         "Deploying managed resources",
-			Fn:           flow.TaskFn(botanist.DeployManagedResources).RetryUntilTimeout(defaultInterval, defaultTimeout).SkipIf(o.Shoot.HibernationEnabled),
+			Fn:           flow.TaskFn(botanist.DeployManagedResources).RetryUntilTimeout(defaultInterval, defaultTimeout).SkipIf(hibernationEnabled),
 			Dependencies: flow.NewTaskIDs(deployGardenerResourceManager, computeShootOSConfig),
 		})
 		deployWorker = g.Add(flow.Task{
@@ -265,7 +293,7 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		waitUntilVPNConnectionExists = g.Add(flow.Task{
 			Name:         "Waiting until the Kubernetes API server can connect to the Shoot workers",
-			Fn:           flow.TaskFn(botanist.WaitUntilVPNConnectionExists).SkipIf(o.Shoot.HibernationEnabled),
+			Fn:           flow.TaskFn(botanist.WaitUntilVPNConnectionExists).SkipIf(hibernationEnabled),
 			Dependencies: flow.NewTaskIDs(deployManagedResources, waitUntilNetworkIsReady, waitUntilWorkerReady),
 		})
 		deploySeedMonitoring = g.Add(flow.Task{
@@ -290,7 +318,7 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Hibernating control plane",
-			Fn:           flow.TaskFn(botanist.HibernateControlPlane).RetryUntilTimeout(defaultInterval, 2*time.Minute).DoIf(o.Shoot.HibernationEnabled),
+			Fn:           flow.TaskFn(botanist.HibernateControlPlane).RetryUntilTimeout(defaultInterval, 2*time.Minute).DoIf(hibernationEnabled),
 			Dependencies: flow.NewTaskIDs(initializeShootClients, deploySeedMonitoring, deploySeedLogging, deployClusterAutoscaler),
 		})
 		deployExtensionResources = g.Add(flow.Task{
@@ -310,33 +338,10 @@ func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Waiting until stale extension resources are deleted",
-			Fn:           flow.TaskFn(botanist.WaitUntilExtensionResourcesDeleted).SkipIf(o.Shoot.HibernationEnabled),
+			Fn:           flow.TaskFn(botanist.WaitUntilExtensionResourcesDeleted).SkipIf(hibernationEnabled),
 			Dependencies: flow.NewTaskIDs(deleteStaleExtensionResources),
 		})
-		f = g.Compile()
 	)
-
-	err = f.Run(flow.Opts{Logger: o.Logger, ProgressReporter: o.ReportShootProgress, ErrorContext: errorContext, ErrorCleaner: o.CleanShootTaskError})
-	if err != nil {
-		o.Logger.Errorf("Failed to reconcile Shoot %q: %+v", o.Shoot.Info.Name, err)
-		return gardencorev1alpha1helper.NewWrappedLastErrors(gardencorev1alpha1helper.FormatLastErrDescription(err), flow.Errors(err))
-	}
-
-	// Register the Shoot as Seed cluster if it was annotated properly and in the garden namespace
-	if o.Shoot.Info.Namespace == v1alpha1constants.GardenNamespace {
-		if o.ShootedSeed != nil {
-			if err := botanist.RegisterAsSeed(o.ShootedSeed.Protected, o.ShootedSeed.Visible, o.ShootedSeed.MinimumVolumeSize, o.ShootedSeed.BlockCIDRs, o.ShootedSeed.ShootDefaults, o.ShootedSeed.Backup); err != nil {
-				o.Logger.Errorf("Could not register Shoot %q as Seed: %+v", o.Shoot.Info.Name, err)
-			}
-		} else {
-			if err := botanist.UnregisterAsSeed(); err != nil {
-				o.Logger.Errorf("Could not unregister Shoot %q as Seed: %+v", o.Shoot.Info.Name, err)
-			}
-		}
-	}
-
-	o.Logger.Infof("Successfully reconciled Shoot %q", o.Shoot.Info.Name)
-	return nil
 }
 
 func (c *Controller) updateShootStatusReconcile(o *operation.Operation, operationType gardencorev1alpha1.LastOperationType, state gardencorev1alpha1.LastOperationState, retryCycleStartTime *metav1.Time) error {

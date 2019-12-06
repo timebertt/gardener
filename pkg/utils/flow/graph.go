@@ -106,3 +106,10 @@ func (g *Graph) Compile() *Flow {
 		nodes,
 	}
 }
+
+// GraphInterface is an interface that allows mocking `flow.Graph`s.
+type GraphInterface interface {
+	Name() string
+	Add(task Task) TaskID
+	Compile() *Flow
+}

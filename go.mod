@@ -34,7 +34,10 @@ require (
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.5
 	golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4
+	golang.org/x/exp v0.0.0-20191126135315-41df83031236 // indirect
 	golang.org/x/lint v0.0.0-20190409202823-959b441ac422
+	golang.org/x/tools v0.0.0-20191126055441-b0650ceb63d9 // indirect
+	gonum.org/v1/gonum v0.6.1
 	gopkg.in/yaml.v2 v2.2.4
 	k8s.io/api v0.0.0-20191004102349-159aefb8556b
 	k8s.io/apiextensions-apiserver v0.0.0-20190409022649-727a075fdec8
