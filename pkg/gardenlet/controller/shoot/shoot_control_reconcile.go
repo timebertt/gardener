@@ -38,6 +38,7 @@ import (
 
 // runReconcileShootFlow reconciles the Shoot cluster's state.
 // It receives an Operation object <o> which stores the Shoot object.
+// +gardener:flow-viz-gen="Shoot Reconcile"
 func (c *Controller) runReconcileShootFlow(o *operation.Operation, operationType gardencorev1beta1.LastOperationType) *gardencorev1beta1helper.WrappedLastErrors {
 	// We create the botanists (which will do the actual work).
 	var (

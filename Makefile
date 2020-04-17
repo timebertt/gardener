@@ -154,6 +154,7 @@ check:
 .PHONY: generate
 generate:
 	@hack/generate.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
+	@hack/update-flow-viz.sh
 
 .PHONY: format
 format:
