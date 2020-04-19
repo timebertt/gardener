@@ -42,10 +42,9 @@ limitations under the License.
 package main
 
 import (
-	"github.com/gardener/gardener/cmd/flow-viz-gen/args"
-	"github.com/gardener/gardener/cmd/flow-viz-gen/generators"
-
 	"k8s.io/klog/v2"
+
+	"github.com/gardener/gardener/cmd/flow-viz-gen/args"
 )
 
 func main() {
@@ -54,7 +53,7 @@ func main() {
 
 	// Run it.
 	if err := arguments.Execute(
-		generators.Packages,
+		Packages,
 	); err != nil {
 		klog.Fatalf("Error: %v", err)
 	}

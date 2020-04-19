@@ -22,7 +22,6 @@ import (
 	"go/build"
 	"go/parser"
 	"go/token"
-	tc "go/types"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -31,7 +30,6 @@ import (
 	"sort"
 	"strings"
 
-	"k8s.io/gengo/types"
 	"k8s.io/klog"
 )
 
@@ -73,6 +71,11 @@ type fileLine struct {
 	file string
 	line int
 }
+
+type (
+	PackageFuncs map[string]Funcs
+	Funcs        map[string]*ast.FuncDecl
+)
 
 // New constructs a new builder.
 func New() *Builder {
@@ -227,7 +230,7 @@ func (b *Builder) addDir(dir string, userRequested bool) error {
 		b.absPaths[pkgPath] = buildPkg.Dir
 	}
 
-	files := []string{}
+	var files []string
 	files = append(files, buildPkg.GoFiles...)
 	if b.IncludeTestFiles {
 		files = append(files, buildPkg.TestGoFiles...)
@@ -283,7 +286,6 @@ func (b *Builder) importPackage(dir string, userRequested bool) (*build.Package,
 }
 
 // FindPackages fetches a list of the user-imported packages.
-// Note that you need to call b.FindTypes() first.
 func (b *Builder) FindPackages() []string {
 	// Iterate packages in a predictable order.
 	var pkgPaths []string
@@ -293,6 +295,14 @@ func (b *Builder) FindPackages() []string {
 	sort.Strings(pkgPaths)
 
 	return pkgPaths
+}
+
+func (b *Builder) GetBuildPackage(dir string) *build.Package {
+	return b.buildPackages[dir]
+}
+
+func (b *Builder) GetPackageParsedFiles(dir string) []parsedFile {
+	return b.parsed[canonicalizeImportPath(dir)]
 }
 
 func (b *Builder) importWithMode(dir string, mode build.ImportMode) (*build.Package, error) {
@@ -321,232 +331,25 @@ func (b *Builder) priorCommentLines(pos token.Pos, lines int) *ast.CommentGroup 
 	return b.endLineToCommentGroup[key]
 }
 
-func splitLines(str string) []string {
-	return strings.Split(strings.TrimRight(str, "\n"), "\n")
-}
+func (b *Builder) FindFuncs() PackageFuncs {
+	funcs := map[string]Funcs{}
 
-func tcFuncNameToName(in string) types.Name {
-	name := strings.TrimPrefix(in, "func ")
-	nameParts := strings.Split(name, "(")
-	return tcNameToName(nameParts[0])
-}
+	for pkg, parsedFiles := range b.parsed {
+		pkgString := string(pkg)
+		funcs[pkgString] = Funcs{}
 
-func tcVarNameToName(in string) types.Name {
-	nameParts := strings.Split(in, " ")
-	// nameParts[0] is "var".
-	// nameParts[2:] is the type of the variable, we ignore it for now.
-	return tcNameToName(nameParts[1])
-}
-
-func tcNameToName(in string) types.Name {
-	// Detect anonymous type names. (These may have '.' characters because
-	// embedded types may have packages, so we detect them specially.)
-	if strings.HasPrefix(in, "struct{") ||
-		strings.HasPrefix(in, "<-chan") ||
-		strings.HasPrefix(in, "chan<-") ||
-		strings.HasPrefix(in, "chan ") ||
-		strings.HasPrefix(in, "func(") ||
-		strings.HasPrefix(in, "*") ||
-		strings.HasPrefix(in, "map[") ||
-		strings.HasPrefix(in, "[") {
-		return types.Name{Name: in}
-	}
-
-	// Otherwise, if there are '.' characters present, the name has a
-	// package path in front.
-	nameParts := strings.Split(in, ".")
-	name := types.Name{Name: in}
-	if n := len(nameParts); n >= 2 {
-		// The final "." is the name of the type--previous ones must
-		// have been in the package path.
-		name.Package, name.Name = strings.Join(nameParts[:n-1], "."), nameParts[n-1]
-	}
-	return name
-}
-
-func (b *Builder) convertSignature(u types.Universe, t *tc.Signature) *types.Signature {
-	signature := &types.Signature{}
-	for i := 0; i < t.Params().Len(); i++ {
-		signature.Parameters = append(signature.Parameters, b.walkType(u, nil, t.Params().At(i).Type()))
-	}
-	for i := 0; i < t.Results().Len(); i++ {
-		signature.Results = append(signature.Results, b.walkType(u, nil, t.Results().At(i).Type()))
-	}
-	if r := t.Recv(); r != nil {
-		signature.Receiver = b.walkType(u, nil, r.Type())
-	}
-	signature.Variadic = t.Variadic()
-	return signature
-}
-
-// walkType adds the type, and any necessary child types.
-func (b *Builder) walkType(u types.Universe, useName *types.Name, in tc.Type) *types.Type {
-	// Most of the cases are underlying types of the named type.
-	name := tcNameToName(in.String())
-	if useName != nil {
-		name = *useName
-	}
-
-	switch t := in.(type) {
-	case *tc.Struct:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Struct
-		for i := 0; i < t.NumFields(); i++ {
-			f := t.Field(i)
-			m := types.Member{
-				Name:         f.Name(),
-				Embedded:     f.Anonymous(),
-				Tags:         t.Tag(i),
-				Type:         b.walkType(u, nil, f.Type()),
-				CommentLines: splitLines(b.priorCommentLines(f.Pos(), 1).Text()),
-			}
-			out.Members = append(out.Members, m)
-		}
-		return out
-	case *tc.Map:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Map
-		out.Elem = b.walkType(u, nil, t.Elem())
-		out.Key = b.walkType(u, nil, t.Key())
-		return out
-	case *tc.Pointer:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Pointer
-		out.Elem = b.walkType(u, nil, t.Elem())
-		return out
-	case *tc.Slice:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Slice
-		out.Elem = b.walkType(u, nil, t.Elem())
-		return out
-	case *tc.Array:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Array
-		out.Elem = b.walkType(u, nil, t.Elem())
-		// TODO: need to store array length, otherwise raw type name
-		// cannot be properly written.
-		return out
-	case *tc.Chan:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Chan
-		out.Elem = b.walkType(u, nil, t.Elem())
-		// TODO: need to store direction, otherwise raw type name
-		// cannot be properly written.
-		return out
-	case *tc.Basic:
-		out := u.Type(types.Name{
-			Package: "",
-			Name:    t.Name(),
-		})
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Unsupported
-		return out
-	case *tc.Signature:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Func
-		out.Signature = b.convertSignature(u, t)
-		return out
-	case *tc.Interface:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Interface
-		t.Complete()
-		for i := 0; i < t.NumMethods(); i++ {
-			if out.Methods == nil {
-				out.Methods = map[string]*types.Type{}
-			}
-			out.Methods[t.Method(i).Name()] = b.walkType(u, nil, t.Method(i).Type())
-		}
-		return out
-	case *tc.Named:
-		var out *types.Type
-		switch t.Underlying().(type) {
-		case *tc.Named, *tc.Basic, *tc.Map, *tc.Slice:
-			name := tcNameToName(t.String())
-			out = u.Type(name)
-			if out.Kind != types.Unknown {
-				return out
-			}
-			out.Kind = types.Alias
-			out.Underlying = b.walkType(u, nil, t.Underlying())
-		default:
-			// tc package makes everything "named" with an
-			// underlying anonymous type--we remove that annoying
-			// "feature" for users. This flattens those types
-			// together.
-			name := tcNameToName(t.String())
-			if out := u.Type(name); out.Kind != types.Unknown {
-				return out // short circuit if we've already made this.
-			}
-			out = b.walkType(u, &name, t.Underlying())
-		}
-		// If the underlying type didn't already add methods, add them.
-		// (Interface types will have already added methods.)
-		if len(out.Methods) == 0 {
-			for i := 0; i < t.NumMethods(); i++ {
-				if out.Methods == nil {
-					out.Methods = map[string]*types.Type{}
+		for _, file := range parsedFiles {
+			for _, decls := range file.file.Decls {
+				funcDecl, ok := decls.(*ast.FuncDecl)
+				if !ok {
+					continue
 				}
-				out.Methods[t.Method(i).Name()] = b.walkType(u, nil, t.Method(i).Type())
+				funcs[pkgString][funcDecl.Name.Name] = funcDecl
 			}
 		}
-		return out
-	default:
-		out := u.Type(name)
-		if out.Kind != types.Unknown {
-			return out
-		}
-		out.Kind = types.Unsupported
-		klog.Warningf("Making unsupported type entry %q for: %#v\n", out, t)
-		return out
 	}
-}
 
-func (b *Builder) addFunction(u types.Universe, useName *types.Name, in *tc.Func) *types.Type {
-	name := tcFuncNameToName(in.String())
-	if useName != nil {
-		name = *useName
-	}
-	out := u.Function(name)
-	out.Kind = types.DeclarationOf
-	out.Underlying = b.walkType(u, nil, in.Type())
-	return out
-}
-
-func (b *Builder) addVariable(u types.Universe, useName *types.Name, in *tc.Var) *types.Type {
-	name := tcVarNameToName(in.String())
-	if useName != nil {
-		name = *useName
-	}
-	out := u.Variable(name)
-	out.Kind = types.DeclarationOf
-	out.Underlying = b.walkType(u, nil, in.Type())
-	return out
+	return funcs
 }
 
 // canonicalizeImportPath takes an import path and returns the actual package.

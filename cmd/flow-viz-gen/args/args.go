@@ -6,11 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gardener/gardener/cmd/flow-viz-gen/generators"
+	"github.com/gardener/gardener/cmd/flow-viz-gen/generator"
 	"github.com/gardener/gardener/cmd/flow-viz-gen/parser"
 
 	"github.com/spf13/pflag"
-	"k8s.io/gengo/generator"
 )
 
 func Default() *GeneratorArgs {
@@ -27,17 +26,17 @@ func Default() *GeneratorArgs {
 
 type GeneratorArgs struct {
 	InputDirs    []string
-	OutputDir    string
+	OutputBase   string
 	OutputSuffix string
 }
 
 func (g *GeneratorArgs) AddFlags(fs *pflag.FlagSet) {
 	fs.StringSliceVarP(&g.InputDirs, "input-dirs", "i", g.InputDirs, "Comma-separated list of import paths to get input types from (defaults to the current working directory)")
-	fs.StringVarP(&g.OutputDir, "output-dir", "o", g.OutputDir, "Output directory for generated files")
-	fs.StringVarP(&g.OutputSuffix, "output-suffix", "o", g.OutputSuffix, "Suffix for generated files (defaults to _flow)")
+	fs.StringVarP(&g.OutputBase, "output-base", "o", g.OutputBase, "Output base; defaults to $GOPATH/src/ or ./ if $GOPATH is not set.")
+	fs.StringVarP(&g.OutputSuffix, "output-suffix", "s", g.OutputSuffix, "Suffix for generated files (defaults to _flow)")
 }
 
-func (g *GeneratorArgs) Execute(pkgs func(*generators.Context, *GeneratorArgs) generator.Packages) error {
+func (g *GeneratorArgs) Execute(pkgs func(*generator.Context, *GeneratorArgs) generator.Packages) error {
 	g.AddFlags(pflag.CommandLine)
 	pflag.CommandLine.AddGoFlagSet(goflag.CommandLine)
 	pflag.Parse()
@@ -47,7 +46,7 @@ func (g *GeneratorArgs) Execute(pkgs func(*generators.Context, *GeneratorArgs) g
 		return fmt.Errorf("Failed making a parser: %v", err)
 	}
 
-	c, err := generators.NewContext(b)
+	c, err := generator.NewContext(b)
 	if err != nil {
 		return fmt.Errorf("Failed making a context: %v", err)
 	}

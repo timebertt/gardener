@@ -17,11 +17,13 @@ limitations under the License.
 package generator
 
 import (
-	"bytes"
+	"go/ast"
 	"io"
 
+	"github.com/gardener/gardener/cmd/flow-viz-gen/parser"
+
+	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"
-	"k8s.io/gengo/parser"
 	"k8s.io/gengo/types"
 )
 
@@ -37,7 +39,7 @@ type Package interface {
 	// Filter should return true if this package cares about this type.
 	// Otherwise, this type will be omitted from the type ordering for
 	// this package.
-	Filter(*Context, *types.Type) bool
+	Filter(*Context, string, string) bool
 
 	// Header should return a header for the file, including comment markers.
 	// Useful for copyright notices and doc strings. Include an
@@ -49,24 +51,6 @@ type Package interface {
 	// A Context is passed in case the list of generators depends on the
 	// input types.
 	Generators(*Context) []Generator
-}
-
-type File struct {
-	Name              string
-	FileType          string
-	PackageName       string
-	Header            []byte
-	PackagePath       string
-	PackageSourcePath string
-	Imports           map[string]struct{}
-	Vars              bytes.Buffer
-	Consts            bytes.Buffer
-	Body              bytes.Buffer
-}
-
-type FileType interface {
-	AssembleFile(f *File, path string) error
-	VerifyFile(f *File, path string) error
 }
 
 // Packages is a list of packages to generate.
@@ -83,7 +67,7 @@ type Packages []Package
 // 3. PackageVars()
 // 4. PackageConsts()
 // 5. Init()
-// 6. GenerateType()  // Called N times, once per type in the context's Order.
+// 6. GenerateFunc()  // Called N times, once per type in the context's Order.
 // 7. Imports()
 //
 // You may have multiple generators for the same file.
@@ -92,7 +76,7 @@ type Generator interface {
 	Name() string
 
 	// Filter should return true if this generator cares about this type.
-	// (otherwise, GenerateType will not be called.)
+	// (otherwise, GenerateFunc will not be called.)
 	//
 	// Filter is called before any of the generator's other functions;
 	// subsequent calls will get a context with only the types that passed
@@ -128,14 +112,14 @@ type Generator interface {
 	// \t or trailing \n.
 	PackageConsts(*Context) []string
 
-	// GenerateType should emit the code for a particular type.
-	GenerateType(*Context, *types.Type, io.Writer) error
+	// GenerateFunc should emit the code for a particular type.
+	GenerateFunc(*Context, *ast.FuncDecl, io.Writer) error
 
 	// Imports should return a list of necessary imports. They will be
 	// formatted correctly. You do not need to include quotation marks,
 	// return only the package name; alternatively, you can also return
 	// imports in the format `name "path/to/pkg"`. Imports will be called
-	// after Init, PackageVars, PackageConsts, and GenerateType, to allow
+	// after Init, PackageVars, PackageConsts, and GenerateFunc, to allow
 	// you to keep track of what imports you actually need.
 	Imports(*Context) []string
 
@@ -153,104 +137,35 @@ type Generator interface {
 
 // Context is global context for individual generators to consume.
 type Context struct {
-	// A map from the naming system to the names for that system. E.g., you
-	// might have public names and several private naming systems.
-	Namers namer.NameSystems
-
-	// All the types, in case you want to look up something.
-	Universe types.Universe
-
-	// Incoming imports, i.e. packages importing the given package.
-	incomingImports map[string][]string
-
-	// Incoming transitive imports, i.e. the transitive closure of IncomingImports
-	incomingTransitiveImports map[string][]string
-
-	// All the user-specified packages.  This is after recursive expansion.
+	// All the user-specified packages. This is after recursive expansion.
 	Inputs []string
 
-	// The canonical ordering of the types (will be filtered by both the
-	// Package's and Generator's Filter methods).
-	Order []*types.Type
+	// Allows generators to add packages at runtime.
+	Builder *parser.Builder
 
 	// A set of types this context can process. If this is empty or nil,
 	// the default "golang" filetype will be provided.
-	FileTypes map[string]FileType
+	FileTypes map[string]generator.FileType
+
+	// A list of function declarations by package path
+	Funcs parser.PackageFuncs
 
 	// If true, Execute* calls will just verify that the existing output is
 	// correct. (You may set this after calling NewContext.)
 	Verify bool
-
-	// Allows generators to add packages at runtime.
-	builder *parser.Builder
 }
 
 // NewContext generates a context from the given builder, naming systems, and
 // the naming system you wish to construct the canonical ordering from.
-func NewContext(b *parser.Builder, nameSystems namer.NameSystems, canonicalOrderName string) (*Context, error) {
-	universe, err := b.FindTypes()
-	if err != nil {
-		return nil, err
-	}
+func NewContext(b *parser.Builder) (*Context, error) {
+	funcs := b.FindFuncs()
 
 	c := &Context{
-		Namers:   namer.NameSystems{},
-		Universe: universe,
-		Inputs:   b.FindPackages(),
-		FileTypes: map[string]FileType{
-			GolangFileType: NewGolangFile(),
-		},
-		builder: b,
+		Inputs:    b.FindPackages(),
+		Builder:   b,
+		FileTypes: map[string]generator.FileType{},
+		Funcs:     funcs,
 	}
 
-	for name, systemNamer := range nameSystems {
-		c.Namers[name] = systemNamer
-		if name == canonicalOrderName {
-			orderer := namer.Orderer{Namer: systemNamer}
-			c.Order = orderer.OrderUniverse(universe)
-		}
-	}
 	return c, nil
-}
-
-// IncomingImports returns the incoming imports for each package. The map is lazily computed.
-func (ctxt *Context) IncomingImports() map[string][]string {
-	if ctxt.incomingImports == nil {
-		incoming := map[string][]string{}
-		for _, pkg := range ctxt.Universe {
-			for imp := range pkg.Imports {
-				incoming[imp] = append(incoming[imp], pkg.Path)
-			}
-		}
-		ctxt.incomingImports = incoming
-	}
-	return ctxt.incomingImports
-}
-
-// TransitiveIncomingImports returns the transitive closure of the incoming imports for each package.
-// The map is lazily computed.
-func (ctxt *Context) TransitiveIncomingImports() map[string][]string {
-	if ctxt.incomingTransitiveImports == nil {
-		ctxt.incomingTransitiveImports = transitiveClosure(ctxt.IncomingImports())
-	}
-	return ctxt.incomingTransitiveImports
-}
-
-// AddDir adds a Go package to the context. The specified path must be a single
-// go package import path.  GOPATH, GOROOT, and the location of your go binary
-// (`which go`) will all be searched, in the normal Go fashion.
-// Deprecated. Please use AddDirectory.
-func (ctxt *Context) AddDir(path string) error {
-	ctxt.incomingImports = nil
-	ctxt.incomingTransitiveImports = nil
-	return ctxt.builder.AddDirTo(path, &ctxt.Universe)
-}
-
-// AddDirectory adds a Go package to the context. The specified path must be a
-// single go package import path.  GOPATH, GOROOT, and the location of your go
-// binary (`which go`) will all be searched, in the normal Go fashion.
-func (ctxt *Context) AddDirectory(path string) (*types.Package, error) {
-	ctxt.incomingImports = nil
-	ctxt.incomingTransitiveImports = nil
-	return ctxt.builder.AddDirectoryTo(path, &ctxt.Universe)
 }

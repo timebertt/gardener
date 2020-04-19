@@ -37,7 +37,7 @@ require (
 	go.uber.org/zap v1.13.0
 	golang.org/x/crypto v0.0.0-20200220183623-bac4c82f6975
 	golang.org/x/lint v0.0.0-20191125180803-fdd1cda4f05f
-	golang.org/x/tools v0.0.0-20200408032209-46bd65c8538f // indirect
+	golang.org/x/tools v0.0.0-20200408032209-46bd65c8538f
 	gomodules.xyz/jsonpatch/v2 v2.0.1
 	google.golang.org/grpc v1.26.0
 	gopkg.in/yaml.v2 v2.2.8
@@ -50,7 +50,7 @@ require (
 	k8s.io/cluster-bootstrap v0.16.8
 	k8s.io/code-generator v0.16.8
 	k8s.io/component-base v0.16.8
-	k8s.io/gengo v0.0.0-20190826232639-a874a240740c
+	k8s.io/gengo v0.0.0-20200413195148-3a45101e95ac
 	k8s.io/helm v2.16.1+incompatible
 	k8s.io/klog v1.0.0
 	k8s.io/klog/v2 v2.0.0
