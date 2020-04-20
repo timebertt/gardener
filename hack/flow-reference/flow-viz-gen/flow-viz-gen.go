@@ -19,7 +19,9 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"io"
+	"strconv"
 	"strings"
 
 	gengogenerator "k8s.io/gengo/generator"
@@ -122,16 +124,18 @@ func Packages(context *generator.Context, a *args.GeneratorArgs) generator.Packa
 				continue
 			}
 
+			flowName := ""
+
 			klog.V(5).Infof("found function %q with %q tag", funcName, tagName)
 			if len(tags) > 1 {
 				panic(fmt.Sprintf("there can only be exactly one %q tag for each func, got %#v for %q", tagName, tags, funcName))
 			}
 			if tags[0] == "" {
-				panic(fmt.Sprintf("flow name cannot be empty, found empty %q tag for function %q", tagName, funcName))
+				//panic(fmt.Sprintf("flow name cannot be empty, found empty %q tag for function %q", tagName, funcName))
+			} else {
+				flowName = strings.Trim(tags[0], "\"")
+				klog.V(5).Infof("found flow name %q for function %q", flowName, funcName)
 			}
-
-			flowName := strings.Trim(tags[0], "\"")
-			klog.V(5).Infof("found flow name %q for function %q", flowName, funcName)
 
 			flowFuncs[funcName] = flowFunc{
 				funcDel: funcDecl,
@@ -146,7 +150,7 @@ func Packages(context *generator.Context, a *args.GeneratorArgs) generator.Packa
 				GeneratorFunc: func(c *generator.Context) []generator.Generator {
 					var generators []generator.Generator
 					for _, ff := range flowFuncs {
-						generators = append(generators, NewGenFlowViz(ff.funcDel, ff.name, a.OutputSuffix))
+						generators = append(generators, NewGenFlowViz(ff.funcDel, ff.name, a.OutputSuffix, c.Builder.FileSet))
 					}
 
 					return generators
@@ -168,28 +172,33 @@ func sanitizeFlowName(name string) string {
 type genFlowViz struct {
 	generator.DefaultGen
 	name     string
-	filename string
+	suffix   string
 	funcDecl *ast.FuncDecl
+	fset     *token.FileSet
 }
 
-func NewGenFlowViz(funcDecl *ast.FuncDecl, name, suffix string) generator.Generator {
-	filename := sanitizeFlowName(name) + suffix
+func NewGenFlowViz(funcDecl *ast.FuncDecl, name, suffix string, fset *token.FileSet) generator.Generator {
 	return &genFlowViz{
-		DefaultGen: generator.DefaultGen{
-			OptionalName: filename,
-		},
-		name:     name,
-		filename: filename,
-		funcDecl: funcDecl,
+		DefaultGen: generator.DefaultGen{},
+		name:       name,
+		funcDecl:   funcDecl,
+		suffix:     suffix,
 	}
 }
 
 func (g *genFlowViz) Filename() string {
-	return g.filename + ".dot"
+	filename := sanitizeFlowName(g.name) + g.suffix
+	return filename + ".dot"
 }
 
 func (g *genFlowViz) FileType() string {
 	return dotFileType
+}
+
+func (g *genFlowViz) Finalize(_ *generator.Context, _ io.Writer, f *gengogenerator.File) error {
+	f.Name = g.Filename()
+
+	return nil
 }
 
 func (g *genFlowViz) Filter(c *generator.Context, t *types.Type) bool {
@@ -197,17 +206,22 @@ func (g *genFlowViz) Filter(c *generator.Context, t *types.Type) bool {
 }
 
 func (g *genFlowViz) GenerateFunc(c *generator.Context, funcDecl *ast.FuncDecl, w io.Writer) error {
-	klog.V(5).Infof("generating flow with name %q for function %v", g.name, funcDecl.Name.Name)
+	funcName := funcDecl.Name.Name
+	klog.V(5).Infof("generating flow with name %q for function %v", g.name, funcName)
 
-	_, _ = fmt.Fprintf(w, "flow %q for function %q", g.name, funcDecl.Name.Name)
+	_, _ = fmt.Fprintf(w, "flow %q for function %q", g.name, funcName)
 
-	visitor := &funcVisitor{}
-
+	visitor := &funcVisitor{funcName: funcName, fset: g.fset}
 	ast.Walk(visitor, funcDecl)
-
 	if !visitor.graphFound {
-		return fmt.Errorf("could not find flow definition in function %q", g.name)
+		return fmt.Errorf("could not find flow definition in function %q", funcName)
 	}
+
+	if visitor.graphName != "" {
+		g.name = visitor.graphName
+	}
+
+	klog.V(5).Infof("found flow graph definition in function %q with name %q", funcName, visitor.graphName)
 
 	return nil
 }
@@ -215,8 +229,12 @@ func (g *genFlowViz) GenerateFunc(c *generator.Context, funcDecl *ast.FuncDecl, 
 var _ = ast.Visitor(&funcVisitor{})
 
 type funcVisitor struct {
+	funcName string
+	fset     *token.FileSet
+
 	graphFound  bool
-	graphObject ast.Object
+	graphObject *ast.Object
+	graphName   string
 	graphNodes  []*graphNode
 }
 
@@ -225,8 +243,95 @@ type graphNode struct {
 	deps []*graphNode
 }
 
+// business logic
 func (f *funcVisitor) Visit(node ast.Node) (w ast.Visitor) {
-	// business logic
+	switch n := node.(type) {
+	case *ast.ValueSpec:
+		finder := &graphFinder{fset: f.fset}
+		ast.Walk(finder, n)
+		if finder.found {
+			if f.graphFound {
+				panic(fmt.Errorf("multiple flow graphs defined in func %q which is not supported", f.funcName))
+			}
 
-	return nil
+			f.graphFound = true
+			f.graphName = finder.name
+			f.graphObject = finder.obj
+
+			return nil
+		}
+	}
+
+	return f
+}
+
+type graphFinder struct {
+	found bool
+	name  string
+	obj   *ast.Object
+	fset  *token.FileSet
+}
+
+func (g *graphFinder) Visit(node ast.Node) (w ast.Visitor) {
+	switch n := node.(type) {
+	case *ast.ValueSpec:
+		indexOfNewGraphExpr := -1
+		for i, expr := range n.Values {
+			ast.Walk(g, expr)
+			if g.found {
+				indexOfNewGraphExpr = i
+				break
+			}
+		}
+
+		if indexOfNewGraphExpr != -1 {
+			g.obj = n.Names[indexOfNewGraphExpr].Obj
+			return nil
+		}
+	case *ast.CallExpr:
+		if g.visitPotentialNewGraphCall(n) {
+			return nil
+		}
+	}
+
+	return g
+}
+
+func (g *graphFinder) visitPotentialNewGraphCall(call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkgIdent, ok := selector.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != "flow" {
+		return false
+	}
+	if selector.Sel.Name != "NewGraph" {
+		return false
+	}
+
+	if len(call.Args) == 0 {
+		klog.V(2).Infof("could not determine name of flow graph definition, no arguments for flow.NewGraph: %s", getFilePos(g.fset, call.Lparen))
+		return false
+	}
+
+	if nameArg, ok := call.Args[0].(*ast.BasicLit); ok && nameArg.Kind == token.STRING {
+		if name, err := strconv.Unquote(nameArg.Value); err == nil {
+			g.found = true
+			g.name = name
+			return true
+		} else {
+			klog.V(2).Infof("error unquoting string literal to determine flow name: %s: %v", getFilePos(g.fset, call.Lparen), err)
+		}
+	} else {
+		klog.V(2).Infof("could not find name of flow graph definition, "+
+			"first argument for flow.NewGraph is not a string literal: %s", getFilePos(g.fset, call.Lparen))
+	}
+
+	return false
+}
+
+func getFilePos(fset *token.FileSet, pos token.Pos) string {
+	position := fset.Position(pos)
+	return fmt.Sprintf("%s:%d:%d", position.Filename, position.Line, position.Column)
 }

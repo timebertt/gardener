@@ -20,6 +20,7 @@ import (
 	"go/ast"
 	"io"
 
+	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"
 	"k8s.io/gengo/types"
 )
@@ -51,7 +52,7 @@ func (d DefaultGen) PackageConsts(*Context) []string                       { ret
 func (d DefaultGen) GenerateFunc(*Context, *ast.FuncDecl, io.Writer) error { return nil }
 func (d DefaultGen) Filename() string                                      { return d.OptionalName + ".go" }
 func (d DefaultGen) FileType() string                                      { return GolangFileType }
-func (d DefaultGen) Finalize(*Context, io.Writer) error                    { return nil }
+func (d DefaultGen) Finalize(*Context, io.Writer, *generator.File) error   { return nil }
 
 func (d DefaultGen) Init(c *Context, w io.Writer) error {
 	_, err := w.Write(d.OptionalBody)

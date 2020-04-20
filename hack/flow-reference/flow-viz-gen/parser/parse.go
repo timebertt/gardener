@@ -50,7 +50,8 @@ type Builder struct {
 	// differently that what humans would type.
 	buildPackages map[string]*build.Package
 
-	fset *token.FileSet
+	FileSet *token.FileSet
+
 	// map of package path to list of parsed files
 	parsed map[importPathString][]parsedFile
 	// map of package path to absolute path (to prevent overlap)
@@ -94,7 +95,7 @@ func New() *Builder {
 	return &Builder{
 		context:               &c,
 		buildPackages:         map[string]*build.Package{},
-		fset:                  token.NewFileSet(),
+		FileSet:               token.NewFileSet(),
 		parsed:                map[importPathString][]parsedFile{},
 		absPaths:              map[importPathString]string{},
 		endLineToCommentGroup: map[fileLine]*ast.CommentGroup{},
@@ -152,14 +153,14 @@ func (b *Builder) addFile(pkgPath importPathString, path string, src []byte, use
 		}
 	}
 	klog.V(6).Infof("addFile %s %s", pkgPath, path)
-	p, err := parser.ParseFile(b.fset, path, src, parser.DeclarationErrors|parser.ParseComments)
+	p, err := parser.ParseFile(b.FileSet, path, src, parser.DeclarationErrors|parser.ParseComments)
 	if err != nil {
 		return err
 	}
 
 	b.parsed[pkgPath] = append(b.parsed[pkgPath], parsedFile{path, p})
 	for _, c := range p.Comments {
-		position := b.fset.Position(c.End())
+		position := b.FileSet.Position(c.End())
 		b.endLineToCommentGroup[fileLine{position.Filename, position.Line}] = c
 	}
 
@@ -326,7 +327,7 @@ func (b *Builder) importWithMode(dir string, mode build.ImportMode) (*build.Pack
 
 // if there's a comment on the line `lines` before pos, return its text, otherwise "".
 func (b *Builder) priorCommentLines(pos token.Pos, lines int) *ast.CommentGroup {
-	position := b.fset.Position(pos)
+	position := b.FileSet.Position(pos)
 	key := fileLine{position.Filename, position.Line - lines}
 	return b.endLineToCommentGroup[key]
 }

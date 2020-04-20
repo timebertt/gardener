@@ -123,7 +123,7 @@ func (c *Context) ExecutePackage(outDir string, p Package) error {
 				}
 			}
 		}
-		if err := genContext.executeBody(&f.Body, g); err != nil {
+		if err := genContext.executeBody(&f.Body, g, f); err != nil {
 			return err
 		}
 		if imports := g.Imports(genContext); len(imports) > 0 {
@@ -131,6 +131,7 @@ func (c *Context) ExecutePackage(outDir string, p Package) error {
 				f.Imports[i] = struct{}{}
 			}
 		}
+		g.Name()
 	}
 
 	var errors []error
@@ -156,7 +157,7 @@ func (c *Context) ExecutePackage(outDir string, p Package) error {
 	return nil
 }
 
-func (c *Context) executeBody(w io.Writer, g Generator) error {
+func (c *Context) executeBody(w io.Writer, g Generator, file *generator.File) error {
 	et := generator.NewErrorTracker(w)
 	if err := g.Init(c, et); err != nil {
 		return err
@@ -168,7 +169,7 @@ func (c *Context) executeBody(w io.Writer, g Generator) error {
 			}
 		}
 	}
-	if err := g.Finalize(c, et); err != nil {
+	if err := g.Finalize(c, et, file); err != nil {
 		return err
 	}
 	return et.Error()
