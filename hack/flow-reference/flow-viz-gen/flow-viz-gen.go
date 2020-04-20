@@ -27,8 +27,8 @@ import (
 	"k8s.io/gengo/types"
 	"k8s.io/klog/v2"
 
-	"github.com/gardener/gardener/cmd/flow-viz-gen/args"
-	"github.com/gardener/gardener/cmd/flow-viz-gen/generator"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/args"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/generator"
 )
 
 // These are the comment tags that carry parameters for defaulter generation.

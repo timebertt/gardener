@@ -20,7 +20,7 @@ import (
 	"go/ast"
 	"io"
 
-	"github.com/gardener/gardener/cmd/flow-viz-gen/parser"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/parser"
 
 	"k8s.io/gengo/generator"
 	"k8s.io/gengo/namer"

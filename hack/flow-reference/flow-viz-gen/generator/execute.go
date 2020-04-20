@@ -26,7 +26,7 @@ import (
 	"k8s.io/gengo/generator"
 	"k8s.io/klog/v2"
 
-	"github.com/gardener/gardener/cmd/flow-viz-gen/parser"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/parser"
 )
 
 func errs2strings(errors []error) []string {

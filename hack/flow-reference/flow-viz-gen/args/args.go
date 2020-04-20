@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gardener/gardener/cmd/flow-viz-gen/generator"
-	"github.com/gardener/gardener/cmd/flow-viz-gen/parser"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/generator"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/parser"
 
 	"github.com/spf13/pflag"
 )
