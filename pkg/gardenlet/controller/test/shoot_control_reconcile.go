@@ -52,10 +52,14 @@ func runReconcileShootFlow() {
 			Fn:           flow.TaskFn(Foo).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			Dependencies: flow.NewTaskIDs(deployNamespace),
 		})
+		syncPointReadyForCleanup = flow.NewTaskIDs(
+			syncClusterResourceToSeed,
+			deployNamespace,
+		)
 		deployKubeAPIServerService = g.Add(flow.Task{
 			Name:         "Deploying Kubernetes API server service in the Seed cluster",
 			Fn:           flow.TaskFn(Foo).RetryUntilTimeout(defaultInterval, defaultTimeout).SkipIf(false),
-			Dependencies: flow.NewTaskIDs(deployNamespace),
+			Dependencies: flow.NewTaskIDs(syncPointReadyForCleanup),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Waiting until Kubernetes API server service in the Seed cluster has reported readiness",

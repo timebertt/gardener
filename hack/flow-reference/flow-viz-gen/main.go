@@ -45,6 +45,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/args"
+	"github.com/gardener/gardener/hack/flow-reference/flow-viz-gen/generators"
 )
 
 func main() {
@@ -53,7 +54,7 @@ func main() {
 
 	// Run it.
 	if err := arguments.Execute(
-		Packages,
+		generators.GetPackages,
 	); err != nil {
 		klog.Fatalf("Error: %v", err)
 	}
