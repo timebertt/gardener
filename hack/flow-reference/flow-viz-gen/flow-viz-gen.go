@@ -25,7 +25,6 @@ import (
 	"strings"
 
 	gengogenerator "k8s.io/gengo/generator"
-	"k8s.io/gengo/namer"
 	"k8s.io/gengo/types"
 	"k8s.io/klog/v2"
 
@@ -63,20 +62,6 @@ func extractTag(comments []string) []string {
 func checkTag(comments []string) bool {
 	values := types.ExtractCommentTags("+", comments)[tagName]
 	return len(values) == 1 && values[0] != ""
-}
-
-// NameSystems returns the name system used by the generators in this package.
-func NameSystems() namer.NameSystems {
-	return namer.NameSystems{
-		"public": namer.NewPublicNamer(1),
-		"raw":    namer.NewRawNamer("", nil),
-	}
-}
-
-// DefaultNameSystem returns the default name system for ordering the types to be
-// processed by the generators in this package.
-func DefaultNameSystem() string {
-	return "public"
 }
 
 func NewDotFileType() *gengogenerator.DefaultFileType {
@@ -224,7 +209,7 @@ func (g *genFlowViz) GenerateFunc(c *generator.Context, funcDecl *ast.FuncDecl, 
 
 	klog.V(5).Infof("found flow graph definition in function %q with name %q", funcName, visitor.graphName)
 
-	for id := range visitor.graphNodes {
+	for id := range visitor.tasks {
 		klog.V(5).Infof("found flow task with name %q", id)
 	}
 
@@ -237,153 +222,84 @@ type funcVisitor struct {
 	funcName string
 	fset     *token.FileSet
 
-	graphFound       bool
-	graphObject      *ast.Object
-	graphName        string
-	graphNodes       map[flow.TaskID]*graphNode
-	identToGraphNode map[*ast.Ident]*graphNode
+	graphFound   bool
+	graphObject  *ast.Object
+	graphName    string
+	tasks        map[flow.TaskID]*task
+	objectToTask map[*ast.Object]*task
+}
+
+type task struct {
+	name flow.TaskID
+	deps []*task
 }
 
 func newFuncVisitor(funcName string, fset *token.FileSet) *funcVisitor {
 	return &funcVisitor{
-		funcName:         funcName,
-		fset:             fset,
-		graphNodes:       map[flow.TaskID]*graphNode{},
-		identToGraphNode: map[*ast.Ident]*graphNode{},
+		funcName:     funcName,
+		fset:         fset,
+		tasks:        map[flow.TaskID]*task{},
+		objectToTask: map[*ast.Object]*task{},
 	}
-}
-
-type graphNode struct {
-	name flow.TaskID
-	deps []*graphNode
 }
 
 // business logic
 func (f *funcVisitor) Visit(node ast.Node) ast.Visitor {
 	switch n := node.(type) {
 	case *ast.ValueSpec:
-		finder := &graphFinder{fset: f.fset}
-		ast.Walk(finder, n)
-		if finder.found {
-			if f.graphFound {
-				panic(fmt.Errorf("multiple flow graphs defined in func %q which is not supported", f.funcName))
-			}
-
-			f.graphFound = true
-			f.graphName = finder.name
-			f.graphObject = finder.obj
-
+		if f.visitPotentialNewGraph(n) {
 			return nil
 		}
-
-	case *ast.CallExpr:
-		f.visitPotentialGraphAddCall(n)
-
+		if f.visitPotentialNewTask(n) {
+			return nil
+		}
 	}
 
 	return f
 }
 
-func (f *funcVisitor) visitPotentialGraphAddCall(call *ast.CallExpr) {
-	if !f.graphFound {
-		return
-	}
-
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return
-	}
-	leftIdent, ok := selector.X.(*ast.Ident)
-	if !ok || leftIdent.Obj != f.graphObject {
-		return
-	}
-	if selector.Sel.Name != "Add" {
-		return
-	}
-
-	if len(call.Args) != 1 {
-		klog.V(2).Infof("could not determine task for Graph.Add call, there should be exactly one argument: %s", getFilePos(f.fset, call.Lparen))
-		return
-	}
-
-	if taskLit, ok := call.Args[0].(*ast.CompositeLit); ok {
-		if !f.visitPotentialFlowTaskLiteral(taskLit) {
-			klog.V(2).Infof("could not determine flow.Task literal, unsupported expression: %s", getFilePos(f.fset, taskLit.Pos()))
+func (f *funcVisitor) visitPotentialNewGraph(spec *ast.ValueSpec) bool {
+	finder := &graphFinder{fset: f.fset}
+	ast.Walk(finder, spec)
+	if finder.found {
+		if f.graphFound {
+			panic(fmt.Errorf("multiple flow graphs defined in func %q which is not supported", f.funcName))
 		}
-	} else {
-		klog.V(2).Infof("could not determine flow.Task, is not a CompositeLit: %s", getFilePos(f.fset, call.Args[0].Pos()))
+
+		f.graphFound = true
+		f.graphName = finder.name
+		f.graphObject = finder.graphObject
+
+		return true
 	}
+
+	return false
 }
 
-func (f *funcVisitor) visitPotentialFlowTaskLiteral(lit *ast.CompositeLit) bool {
-	selector, ok := lit.Type.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	pkgIdent, ok := selector.X.(*ast.Ident)
-	if !ok || pkgIdent.Name != "flow" {
-		return false
-	}
-	if selector.Sel.Name != "Task" {
+func (f *funcVisitor) visitPotentialNewTask(spec *ast.ValueSpec) bool {
+	if f.graphObject == nil {
+		// flow.NewGraph call has not occurred yet
 		return false
 	}
 
-	var taskID flow.TaskID
+	finder := &taskFinder{fset: f.fset, graphObject: f.graphObject}
+	ast.Walk(finder, spec)
+	if finder.found {
+		f.tasks[finder.taskId] = finder.task
+		f.objectToTask[finder.taskObject] = finder.task
 
-	for i, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			klog.V(2).Infof("could not determine field in flow.Task literal, element %d is not a KeyValueExpr: %s", i, getFilePos(f.fset, elt.Pos()))
-			return false
-		}
-		keyIdent, ok := kv.Key.(*ast.Ident)
-		if !ok {
-			klog.V(2).Infof("could not determine field in flow.Task literal, key of element %d is not an Ident: %s", i, getFilePos(f.fset, elt.Pos()))
-			return false
-		}
-
-		switch keyIdent.Name {
-		case "Name":
-			taskID = flow.TaskID(f.visitPotentialFlowTaskName(kv.Value))
-			if taskID == "" {
-				return false
-			}
-		case "Dependencies":
-			// TODO resolve dependencies
-		}
+		return true
 	}
 
-	if taskID == "" {
-		return false
-	}
-
-	f.graphNodes[taskID] = &graphNode{
-		name: taskID,
-		deps: nil,
-	}
-
-	return true
-}
-
-func (f *funcVisitor) visitPotentialFlowTaskName(expr ast.Expr) string {
-	if nameLit, ok := expr.(*ast.BasicLit); ok && nameLit.Kind == token.STRING {
-		if name, err := strconv.Unquote(nameLit.Value); err == nil {
-			return name
-		} else {
-			klog.V(2).Infof("error unquoting string literal to determine flow task name: %s: %v", getFilePos(f.fset, nameLit.Pos()), err)
-		}
-	} else {
-		klog.V(2).Infof("could not find name of flow task, value is not a string literal: %s", getFilePos(f.fset, expr.Pos()))
-	}
-
-	return ""
+	return false
 }
 
 type graphFinder struct {
-	found bool
-	name  string
-	obj   *ast.Object
-	fset  *token.FileSet
+	fset *token.FileSet
+
+	found       bool
+	name        string
+	graphObject *ast.Object
 }
 
 func (g *graphFinder) Visit(node ast.Node) ast.Visitor {
@@ -399,9 +315,10 @@ func (g *graphFinder) Visit(node ast.Node) ast.Visitor {
 		}
 
 		if indexOfNewGraphExpr != -1 {
-			g.obj = n.Names[indexOfNewGraphExpr].Obj
+			g.graphObject = n.Names[indexOfNewGraphExpr].Obj
 			return nil
 		}
+
 	case *ast.CallExpr:
 		if found, name := g.visitPotentialNewGraphCall(n); found {
 			g.found = true
@@ -444,6 +361,141 @@ func (g *graphFinder) visitPotentialNewGraphCall(call *ast.CallExpr) (bool, stri
 	}
 
 	return false, ""
+}
+
+type taskFinder struct {
+	graphObject *ast.Object
+	fset        *token.FileSet
+
+	found      bool
+	task       *task
+	taskId     flow.TaskID
+	taskObject *ast.Object
+}
+
+func (t *taskFinder) Visit(node ast.Node) ast.Visitor {
+	switch n := node.(type) {
+	case *ast.ValueSpec:
+		indexOfGraphAddExpr := -1
+		for i, expr := range n.Values {
+			ast.Walk(t, expr)
+			if t.found {
+				indexOfGraphAddExpr = i
+				break
+			}
+		}
+
+		if indexOfGraphAddExpr != -1 {
+			t.taskObject = n.Names[indexOfGraphAddExpr].Obj
+			return nil
+		}
+
+	case *ast.CallExpr:
+		if t.visitPotentialNewTask(n) {
+			t.found = true
+			return nil
+		}
+	}
+
+	return t
+}
+
+func (t *taskFinder) visitPotentialNewTask(call *ast.CallExpr) bool {
+	if t.graphObject == nil {
+		return false
+	}
+
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	leftIdent, ok := selector.X.(*ast.Ident)
+	if !ok || leftIdent.Obj != t.graphObject {
+		return false
+	}
+	if selector.Sel.Name != "Add" {
+		return false
+	}
+
+	if len(call.Args) != 1 {
+		klog.V(2).Infof("could not determine task for Graph.Add call, there should be exactly one argument: %s", getFilePos(t.fset, call.Lparen))
+		return false
+	}
+
+	if taskLit, ok := call.Args[0].(*ast.CompositeLit); ok {
+		if t.visitPotentialFlowTaskLiteral(taskLit) {
+			return true
+		}
+		klog.V(2).Infof("could not determine flow.Task literal, unsupported expression: %s", getFilePos(t.fset, taskLit.Pos()))
+	} else {
+		klog.V(2).Infof("could not determine flow.Task, is not a CompositeLit: %s", getFilePos(t.fset, call.Args[0].Pos()))
+	}
+
+	return false
+}
+
+func (t *taskFinder) visitPotentialFlowTaskLiteral(lit *ast.CompositeLit) bool {
+	selector, ok := lit.Type.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkgIdent, ok := selector.X.(*ast.Ident)
+	if !ok || pkgIdent.Name != "flow" {
+		return false
+	}
+	if selector.Sel.Name != "Task" {
+		return false
+	}
+
+	var taskID flow.TaskID
+
+	for i, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			klog.V(2).Infof("could not determine field in flow.Task literal, element %d is not a KeyValueExpr: %s", i, getFilePos(f.fset, elt.Pos()))
+			return false
+		}
+		keyIdent, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			klog.V(2).Infof("could not determine field in flow.Task literal, key of element %d is not an Ident: %s", i, getFilePos(f.fset, elt.Pos()))
+			return false
+		}
+
+		switch keyIdent.Name {
+		case "Name":
+			taskID = flow.TaskID(t.visitPotentialFlowTaskName(kv.Value))
+			if taskID == "" {
+				return false
+			}
+		case "Dependencies":
+			// TODO resolve dependencies
+		}
+	}
+
+	if taskID == "" {
+		return false
+	}
+
+	t.task = &task{
+		name: taskID,
+		deps: nil,
+	}
+
+	return true
+}
+
+func (t *taskFinder) visitPotentialFlowTaskName(expr ast.Expr) string {
+	if nameLit, ok := expr.(*ast.BasicLit); ok && nameLit.Kind == token.STRING {
+		if name, err := strconv.Unquote(nameLit.Value); err == nil {
+			return name
+		} else {
+			klog.V(2).Infof("error unquoting string literal to determine flow task name: %s: %v", getFilePos(t.fset, nameLit.Pos()), err)
+		}
+	} else {
+		klog.V(2).Infof("could not find name of flow task, value is not a string literal: %s", getFilePos(t.fset, expr.Pos()))
+	}
+
+	return ""
 }
 
 func getFilePos(fset *token.FileSet, pos token.Pos) string {
