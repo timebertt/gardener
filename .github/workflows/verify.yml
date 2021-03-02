@@ -42,7 +42,8 @@ jobs:
         git config --global user.name "Gardener CI/CD"
 
     - run: make install-requirements
-    - run: sudo -E make check-generate # check-generate installs protoc to /usr/local/bin -> needs sudo
+    - run: sudo ./hack/install-protobuf.sh # installs protoc to /usr/local/bin -> needs sudo
+    - run: make check-generate
     - run: make check
     - run: make format
     - run: make test-cov

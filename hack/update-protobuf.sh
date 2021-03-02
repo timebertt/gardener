@@ -38,20 +38,6 @@ rm -f ${GOPATH}/bin/protoc-gen-gogo
 GOFLAGS="" go build -o ${GOPATH}/bin "$PROJECT_ROOT/vendor/k8s.io/code-generator/cmd/go-to-protobuf"
 GOFLAGS="" go build -o ${GOPATH}/bin "$PROJECT_ROOT/vendor/k8s.io/code-generator/cmd/go-to-protobuf/protoc-gen-gogo"
 
-if [[ -z "$(which protoc)" || "$(protoc --version)" != "libprotoc 3."* ]]; then
-  if [[ "$(uname -s)" == *"Darwin"* ]]; then
-    brew install protobuf
-  else
-    PROTOC_ZIP=protoc-3.7.1-linux-x86_64.zip
-    curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v3.7.1/$PROTOC_ZIP
-    unzip -o $PROTOC_ZIP -d /usr/local bin/protoc
-    unzip -o $PROTOC_ZIP -d /usr/local 'include/*'
-    rm -f $PROTOC_ZIP
-  fi
-
-  echo "WARNING: Protobuf changes are not being validated"
-fi
-
 read -ra PACKAGES <<< $(echo ${APIROOTS})
 
 # requires the 'proto' tag to build (will remove when ready)
