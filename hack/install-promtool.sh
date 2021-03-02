@@ -40,5 +40,5 @@ curl \
   "https://github.com/prometheus/prometheus/releases/download/v${version}/${file_name}"
 
 tar -xzm -C "${temp_dir}" -f "${temp_dir}/${file_name}"
-mv "${temp_dir}/${archive_name}/promtool" /usr/local/bin/
-chmod +x /usr/local/bin/promtool
+mv "${temp_dir}/${archive_name}/promtool" $(go env GOPATH)/bin/
+chmod +x $(go env GOPATH)/bin/promtool

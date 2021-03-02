@@ -21,8 +21,20 @@ echo "> Installing requirements"
 GO111MODULE=off go get -u golang.org/x/tools/cmd/goimports
 
 export GO111MODULE=on
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.27.0
-curl -s "https://raw.githubusercontent.com/helm/helm/v2.17.0/scripts/get" | bash -s -- --version 'v2.17.0'
+
+GOLANGCI_VERSION=v1.27.0
+if which golangci-lint && golangci-lint --version | grep ${GOLANGCI_VERSION#v} ; then
+  echo "golangci-lint $GOLANGCI_VERSION is already installed, skipping the installation..."
+else
+  curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.27.0
+fi
+
+HELM_VERSION=v2.17.0
+if which helm && helm version --client | grep ${HELM_VERSION} ; then
+  echo "helm $HELM_VERSION is already installed, skipping the installation..."
+else
+  curl -s "https://raw.githubusercontent.com/helm/helm/$HELM_VERSION/scripts/get" | bash -s -- --version $HELM_VERSION
+fi
 
 platform=$(uname -s)
 if [[ ${platform} == "Linux" ]]; then
