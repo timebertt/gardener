@@ -36,5 +36,8 @@ var _ = Describe("Checksums", func() {
 			Expect(checksum).To(Equal("b2213295d564916f89a6a42455567c87c3f480fcd7a1c15e220f17d7169a790b"))
 			Expect(checksum).To(HaveLen(64))
 		})
+		It("should foo", func() {
+			Expect("foo").To(Equal("foo"))
+		})
 	})
 })
