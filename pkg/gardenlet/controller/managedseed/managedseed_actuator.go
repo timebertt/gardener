@@ -78,17 +78,18 @@ func newActuator(gardenClient kubernetes.Interface, clientMap clientmap.ClientMa
 func (a *actuator) Reconcile(ctx context.Context, managedSeed *seedmanagementv1alpha1.ManagedSeed, shoot *gardencorev1beta1.Shoot) error {
 	managedSeedLogger := logger.NewFieldLogger(a.logger, "managedSeed", kutil.ObjectName(managedSeed))
 
-	// Get shoot client
-	shootClient, err := a.clientMap.GetClient(ctx, keys.ForShoot(shoot))
-	if err != nil {
-		return fmt.Errorf("could not get shoot client for shoot %s: %w", kutil.ObjectName(shoot), err)
-	}
-
-	// Create or update garden namespace in the shoot
-	managedSeedLogger.Infof("Creating or updating garden namespace in shoot %s", kutil.ObjectName(shoot))
-	if err := a.createOrUpdateGardenNamespace(ctx, shootClient); err != nil {
-		return fmt.Errorf("could not create or update garden namespace in shoot %s: %w", kutil.ObjectName(shoot), err)
-	}
+	var shootClient kubernetes.Interface
+	// // Get shoot client
+	// shootClient, err := a.clientMap.GetClient(ctx, keys.ForShoot(shoot))
+	// if err != nil {
+	// 	return fmt.Errorf("could not get shoot client for shoot %s: %w", kutil.ObjectName(shoot), err)
+	// }
+	//
+	// // Create or update garden namespace in the shoot
+	// managedSeedLogger.Infof("Creating or updating garden namespace in shoot %s", kutil.ObjectName(shoot))
+	// if err := a.createOrUpdateGardenNamespace(ctx, shootClient); err != nil {
+	// 	return fmt.Errorf("could not create or update garden namespace in shoot %s: %w", kutil.ObjectName(shoot), err)
+	// }
 
 	switch {
 	case managedSeed.Spec.SeedTemplate != nil:
@@ -113,11 +114,12 @@ func (a *actuator) Reconcile(ctx context.Context, managedSeed *seedmanagementv1a
 func (a *actuator) Delete(ctx context.Context, managedSeed *seedmanagementv1alpha1.ManagedSeed, shoot *gardencorev1beta1.Shoot) error {
 	managedSeedLogger := logger.NewFieldLogger(a.logger, "managedSeed", kutil.ObjectName(managedSeed))
 
-	// Get shoot client
-	shootClient, err := a.clientMap.GetClient(ctx, keys.ForShoot(shoot))
-	if err != nil {
-		return fmt.Errorf("could not get shoot client for shoot %s: %w", kutil.ObjectName(shoot), err)
-	}
+	var shootClient kubernetes.Interface
+	// // Get shoot client
+	// shootClient, err := a.clientMap.GetClient(ctx, keys.ForShoot(shoot))
+	// if err != nil {
+	// 	return fmt.Errorf("could not get shoot client for shoot %s: %w", kutil.ObjectName(shoot), err)
+	// }
 
 	switch {
 	case managedSeed.Spec.SeedTemplate != nil:
@@ -141,11 +143,11 @@ func (a *actuator) Delete(ctx context.Context, managedSeed *seedmanagementv1alph
 		}
 	}
 
-	// Ensure garden namespace is deleted from the shoot
-	managedSeedLogger.Infof("Ensuring garden namespace is deleted from shoot %s", kutil.ObjectName(shoot))
-	if err := a.ensureGardenNamespaceDeleted(ctx, shootClient); err != nil {
-		return fmt.Errorf("could not ensure garden namespace is deleted from shoot %s: %w", kutil.ObjectName(shoot), err)
-	}
+	// // Ensure garden namespace is deleted from the shoot
+	// managedSeedLogger.Infof("Ensuring garden namespace is deleted from shoot %s", kutil.ObjectName(shoot))
+	// if err := a.ensureGardenNamespaceDeleted(ctx, shootClient); err != nil {
+	// 	return fmt.Errorf("could not ensure garden namespace is deleted from shoot %s: %w", kutil.ObjectName(shoot), err)
+	// }
 
 	return nil
 }

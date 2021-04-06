@@ -360,11 +360,11 @@ func (c *Controller) deleteShoot(ctx context.Context, logger *logrus.Entry, gard
 		return c.updateShootStatusAndRequeueOnSyncError(ctx, gardenClient.GardenCore(), o.Shoot.Info, logger, err)
 	}
 
-	if flowErr := c.runDeleteShootFlow(ctx, o); flowErr != nil {
-		c.recorder.Event(o.Shoot.Info, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, flowErr.Description)
-		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o.Shoot.Info, flowErr.Description, operationType, flowErr.LastErrors...)
-		return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(flowErr.Description), updateErr)
-	}
+	// if flowErr := c.runDeleteShootFlow(ctx, o); flowErr != nil {
+	// 	c.recorder.Event(o.Shoot.Info, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, flowErr.Description)
+	// 	_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o.Shoot.Info, flowErr.Description, operationType, flowErr.LastErrors...)
+	// 	return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(flowErr.Description), updateErr)
+	// }
 
 	c.recorder.Event(o.Shoot.Info, corev1.EventTypeNormal, gardencorev1beta1.EventDeleted, "Deleted Shoot cluster")
 	return c.finalizeShootDeletion(ctx, gardenClient, o.Shoot.Info, project.Name)
@@ -484,11 +484,11 @@ func (c *Controller) reconcileShoot(ctx context.Context, logger *logrus.Entry, g
 
 	c.shootReconciliationDueTracker.off(key)
 
-	if flowErr := c.runReconcileShootFlow(ctx, o); flowErr != nil {
-		c.recorder.Event(o.Shoot.Info, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, flowErr.Description)
-		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o.Shoot.Info, flowErr.Description, operationType, flowErr.LastErrors...)
-		return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(flowErr.Description), updateErr)
-	}
+	// if flowErr := c.runReconcileShootFlow(ctx, o); flowErr != nil {
+	// 	c.recorder.Event(o.Shoot.Info, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, flowErr.Description)
+	// 	_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o.Shoot.Info, flowErr.Description, operationType, flowErr.LastErrors...)
+	// 	return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(flowErr.Description), updateErr)
+	// }
 
 	c.recorder.Event(o.Shoot.Info, corev1.EventTypeNormal, gardencorev1beta1.EventReconciled, "Reconciled Shoot cluster state")
 	o.Shoot.Info, err = c.updateShootStatusOperationSuccess(ctx, gardenClient.GardenCore(), o.Shoot.Info, o.Shoot.SeedNamespace, &o.Seed.Info.Name, operationType)

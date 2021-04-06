@@ -542,6 +542,8 @@ func determineGardenletIdentity() (*gardencorev1beta1.Gardener, string, error) {
 		}
 	}
 
+	gardenletID = "local"
+
 	if gardenletID == "" {
 		gardenletID, err = gardenerutils.GenerateRandomString(64)
 		if err != nil {

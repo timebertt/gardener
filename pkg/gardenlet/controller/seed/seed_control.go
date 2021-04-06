@@ -32,7 +32,6 @@ import (
 	"github.com/gardener/gardener/pkg/gardenlet/apis/config"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation/common"
-	"github.com/gardener/gardener/pkg/operation/garden"
 	seedpkg "github.com/gardener/gardener/pkg/operation/seed"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -256,13 +255,13 @@ func (c *defaultControl) ReconcileSeed(obj *gardencorev1beta1.Seed, key string) 
 		if len(associatedShoots) == 0 && len(associatedBackupBuckets) == 0 {
 			seedLogger.Info("No Shoots, ControllerInstallations or BackupBuckets are referencing the Seed. Deletion accepted.")
 
-			if err := seedpkg.RunDeleteSeedFlow(ctx, seedClient, gardenClient, seedObj, seedLogger); err != nil {
-				message := fmt.Sprintf("Failed to delete Seed Cluster (%s).", err.Error())
-				conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionFalse, "DebootstrapFailed", message)
-				seedLogger.Error(message)
-				_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, "<unknown>", capacity, allocatable, conditionSeedBootstrapped)
-				return err
-			}
+			// if err := seedpkg.RunDeleteSeedFlow(ctx, seedClient, gardenClient, seedObj, seedLogger); err != nil {
+			// 	message := fmt.Sprintf("Failed to delete Seed Cluster (%s).", err.Error())
+			// 	conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionFalse, "DebootstrapFailed", message)
+			// 	seedLogger.Error(message)
+			// 	_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, "<unknown>", capacity, allocatable, conditionSeedBootstrapped)
+			// 	return err
+			// }
 
 			if seed.Spec.SecretRef != nil {
 				// Remove finalizer from referenced secret
@@ -355,26 +354,26 @@ func (c *defaultControl) ReconcileSeed(obj *gardencorev1beta1.Seed, key string) 
 		return err
 	}
 
-	gardenSecrets, err := garden.ReadGardenSecrets(
-		ctx,
-		gardenClient.Client(),
-		c.seedLister,
-		seedpkg.ComputeGardenNamespace(seed.Name),
-	)
-	if err != nil {
-		conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionFalse, "GardenSecretsError", err.Error())
-		_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, seedKubernetesVersion, capacity, allocatable, conditionSeedBootstrapped)
-		seedLogger.Errorf("Reading Garden secrets failed: %+v", err)
-		return err
-	}
+	// gardenSecrets, err := garden.ReadGardenSecrets(
+	// 	ctx,
+	// 	gardenClient.Client(),
+	// 	c.seedLister,
+	// 	seedpkg.ComputeGardenNamespace(seed.Name),
+	// )
+	// if err != nil {
+	// 	conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionFalse, "GardenSecretsError", err.Error())
+	// 	_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, seedKubernetesVersion, capacity, allocatable, conditionSeedBootstrapped)
+	// 	seedLogger.Errorf("Reading Garden secrets failed: %+v", err)
+	// 	return err
+	// }
 
-	// Bootstrap the Seed cluster.
-	if err := seedpkg.RunReconcileSeedFlow(ctx, gardenClient, seedClient, seedObj, gardenSecrets, c.imageVector, c.componentImageVectors, c.config.DeepCopy(), seedLogger); err != nil {
-		conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionFalse, "BootstrappingFailed", err.Error())
-		_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, seedKubernetesVersion, capacity, allocatable, conditionSeedBootstrapped)
-		seedLogger.Errorf("Seed bootstrapping failed: %+v", err)
-		return err
-	}
+	// // Bootstrap the Seed cluster.
+	// if err := seedpkg.RunReconcileSeedFlow(ctx, gardenClient, seedClient, seedObj, gardenSecrets, c.imageVector, c.componentImageVectors, c.config.DeepCopy(), seedLogger); err != nil {
+	// 	conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionFalse, "BootstrappingFailed", err.Error())
+	// 	_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, seedKubernetesVersion, capacity, allocatable, conditionSeedBootstrapped)
+	// 	seedLogger.Errorf("Seed bootstrapping failed: %+v", err)
+	// 	return err
+	// }
 
 	conditionSeedBootstrapped = gardencorev1beta1helper.UpdatedCondition(conditionSeedBootstrapped, gardencorev1beta1.ConditionTrue, "BootstrappingSucceeded", "Seed cluster has been bootstrapped successfully.")
 	_ = c.updateSeedStatus(ctx, gardenClient.Client(), seed, seedKubernetesVersion, capacity, allocatable, conditionSeedBootstrapped)
