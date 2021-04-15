@@ -39,5 +39,8 @@ var _ = Describe("Checksums", func() {
 		It("should foo", func() {
 			Expect("foo").To(Equal("foo"))
 		})
+		It("should bar", func() {
+			Expect("bar").To(Equal("bar"))
+		})
 	})
 })
