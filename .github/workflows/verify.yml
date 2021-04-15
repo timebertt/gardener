@@ -5,7 +5,7 @@ on:
     branches: [ master, release-* ]
 
 jobs:
-  verify:
+  check:
     runs-on: ubuntu-latest
     env:
       GOPATH: ${{ github.workspace }}
@@ -28,6 +28,7 @@ jobs:
     - name: Go Cache
       uses: actions/cache@v2
       with:
+        # TODO: cache envtest binaries
         path: |
           ~/go/bin
           ~/go/pkg/mod
@@ -37,20 +38,61 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
 
+    - run: make install-requirements
+    # TODO: install requirements to ./hack/tools/bin
+    - run: sudo ./hack/install-protobuf.sh # installs protoc to /usr/local/bin -> needs sudo
+
+    - run: make check
+    - run: make test
+
+    # TODO: enable test coverage
+#    - run: make test-cov
+#    - name: Coverprofile artifacts
+#      uses: actions/upload-artifact@v2
+#      with:
+#        name: coverage-report
+#        path: test.coverage.html
+
+  check-generate:
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/github.com/gardener/gardener
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        path: ${{ env.GOPATH }}/src/github.com/gardener/gardener
+    - name: Setup Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.15
+    - name: Install Helm
+      uses: azure/setup-helm@v1
+      with:
+        version: v2.17.0
+#    - name: Go Cache
+#      uses: actions/cache@v2
+#      with:
+#        # TODO: cache envtest binaries
+#        path: |
+#          ~/go/bin
+#          ~/go/pkg/mod
+#          ~/.cache/go-build
+#          ~/.cache/golangci-lint
+#        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+#        restore-keys: |
+#          ${{ runner.os }}-go-
+
     - name: Configure Git
       run: |
         git config --global user.email "gardener@sap.com"
         git config --global user.name "Gardener CI/CD"
 
     - run: make install-requirements
+    # TODO: install requirements to ./hack/tools/bin
     - run: sudo ./hack/install-protobuf.sh # installs protoc to /usr/local/bin -> needs sudo
-    - run: make check-generate
-    - run: make check
-    - run: make format
-    - run: make test-cov
 
-    - name: Coverprofile artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: coverage-report
-        path: test.coverage.html
+    - run: make check-generate
