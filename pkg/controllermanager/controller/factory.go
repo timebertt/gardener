@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"time"
 
+	runtimecache "sigs.k8s.io/controller-runtime/pkg/cache"
+
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
@@ -104,6 +106,14 @@ func (f *GardenControllerFactory) Run(ctx context.Context) error {
 			opts.LabelSelector = uncontrolledSecretSelector.String()
 		})
 		return secretInformer
+	})
+
+	secretCache, err := runtimecache.New(k8sGardenClient.RESTConfig(), runtimecache.Options{
+		Scheme: k8sGardenClient.Client().Scheme(),
+		Mapper: k8sGardenClient.Client().RESTMapper(),
+		SelectorsByObject: runtimecache.SelectorsByObject{
+			&corev1.Secret{}: {uncontrolledSecretSelector},
+		},
 	})
 
 	var (
