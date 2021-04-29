@@ -1,0 +1,27 @@
+name: 'Commit Message Check'
+on:
+  pull_request:
+    types:
+    - opened
+    - reopened
+    - synchronize
+#  pull_request_target:
+#    types:
+#    - opened
+#    - reopened
+#    - synchronize
+
+jobs:
+  check-commit-message:
+    name: Check Commit Message
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deny mentions
+      uses: gsactions/commit-message-checker@v1
+      with:
+        pattern: '\@[a-zA-Z0-9-]+'
+        error: 'Commit messages may not contain mentions.'
+        excludeTitle: 'true' # don't check PR title
+        excludeDescription: 'true' # don't check PR description
+        checkAllCommitMessages: 'true'
+        accessToken: ${{ secrets.GITHUB_TOKEN }}
