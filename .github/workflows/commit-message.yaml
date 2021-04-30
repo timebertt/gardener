@@ -5,23 +5,63 @@ on:
     - opened
     - reopened
     - synchronize
-#  pull_request_target:
-#    types:
-#    - opened
-#    - reopened
-#    - synchronize
 
 jobs:
-  check-commit-message:
-    name: Check Commit Message
+  check-commit-messages:
+    name: Check Commit Messages
     runs-on: ubuntu-latest
     steps:
-    - name: Deny mentions
-      uses: gsactions/commit-message-checker@v1
+    - name: Dump GitHub context
+      env:
+        GITHUB_CONTEXT: ${{ toJSON(github) }}
+      run: echo "$GITHUB_CONTEXT"
+    - name: Block mentions
+      uses: actions/github-script@v4
       with:
-        pattern: '\@[a-zA-Z0-9-]+'
-        error: 'Commit messages may not contain mentions.'
-        excludeTitle: 'true' # don't check PR title
-        excludeDescription: 'true' # don't check PR description
-        checkAllCommitMessages: 'true'
-        accessToken: ${{ secrets.GITHUB_TOKEN }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const commits = await github.pulls.listCommits({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+
+          const mentionRegex = /(^| )@([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})/gmi;
+          let mentioningCommitShas = [];
+
+          for (const commit of commits.data) {
+            while (match = mentionRegex.exec(commit.commit.message)) {
+              const mention = match[2];
+
+              // check if detected mention is actually a github username
+              try {
+                const user = await github.users.getByUsername({
+                  username: mention,
+                });
+                if (user.data.login == mention) {
+                  mentioningCommitShas.push(commit.sha);
+                }
+              } catch (err) {
+                if (err.status != 404) {
+                  throw err;
+                }
+              }
+            }
+          }
+
+          if (mentioningCommitShas.length == 0) {
+            core.info("no commit messages with mentions detected");
+            return;
+          }
+
+          errMsg = `This PR contains commits including \`@mentions\` in the commit message: ${mentioningCommitShas.join(", ")}\n`+
+            `Please remove the mentions from the commit messages to prevent notifying the mentioned users every time the commit is pushed to some fork of this repository.`;
+
+          await github.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `@${context.payload.pull_request.user.login} ` + errMsg
+          });
+
+          core.setFailed(errMsg);
