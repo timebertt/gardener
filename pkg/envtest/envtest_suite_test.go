@@ -44,7 +44,7 @@ var (
 	testClient client.Client
 )
 
-var _ = Describe("Envtest experiment", func() {
+var _ = Describe("Envtest", func() {
 	BeforeSuite(func() {
 		logf.SetLogger(logzap.New(logzap.UseDevMode(true), logzap.WriteTo(GinkgoWriter)))
 
