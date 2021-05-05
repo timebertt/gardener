@@ -45,7 +45,8 @@ func (e *GardenerTestEnvironment) Start() (*rest.Config, error) {
 		e.Environment.ControlPlane.APIServer = &envtest.APIServer{}
 	}
 	e.Environment.ControlPlane.APIServer.Args = append(envtest.DefaultKubeAPIServerFlags,
-		"--client-ca-file={{ .CertDir }}/apiserver-ca.crt",
+		// TODO: remove --client-ca-file when vendoring the next controller-runtime release
+		// "--client-ca-file={{ .CertDir }}/apiserver-ca.crt",
 		"--proxy-client-key-file={{ .CertDir }}/apiserver.key",
 		"--proxy-client-cert-file={{ .CertDir }}/apiserver.crt",
 		"--requestheader-client-ca-file={{ .CertDir }}/apiserver-ca.crt",
