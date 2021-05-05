@@ -54,7 +54,7 @@ var _ = Describe("Patch", func() {
 		ctrl.Finish()
 	})
 
-	testSuite := func(f func(ctx context.Context, c client.Writer, obj client.Object, f controllerutil.MutateFn) (controllerutil.OperationResult, error), patchType types.PatchType) {
+	testSuite := func(f func(ctx context.Context, c client.Writer, obj client.Object, f controllerutil.MutateFn, opts ...client.MergeFromOption) (controllerutil.OperationResult, error), patchType types.PatchType) {
 		It("should return an error because the mutate function returned an error", func() {
 			result, err := f(ctx, c, obj, func() error { return fakeErr })
 			Expect(result).To(Equal(controllerutil.OperationResultNone))
@@ -104,6 +104,25 @@ var _ = Describe("Patch", func() {
 			test.EXPECTPatch(ctx, c, objCopy, obj, patchType)
 
 			result, err := f(ctx, c, obj, mutateFn(obj))
+			Expect(result).To(Equal(controllerutil.OperationResultUpdated))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should successfully patch the object with optimistic locking", func() {
+			obj.SetResourceVersion("42")
+			objCopy := obj.DeepCopy()
+
+			c.EXPECT().Patch(ctx, objCopy, gomock.Any()).DoAndReturn(func(_ context.Context, _ client.Object, patch client.Patch, _ ...client.PatchOption) error {
+				data, err := patch.Data(obj)
+				Expect(err).To(BeNil())
+				Expect(patch.Type()).To(Equal(patchType))
+				Expect(data).To(BeEquivalentTo(`{"metadata":{"resourceVersion":"42"}}`))
+				return nil
+			})
+
+			result, err := f(ctx, c, obj, func() error {
+				return nil
+			}, client.MergeFromWithOptimisticLock{})
 			Expect(result).To(Equal(controllerutil.OperationResultUpdated))
 			Expect(err).NotTo(HaveOccurred())
 		})

@@ -29,9 +29,9 @@ import (
 // The MutateFn is called regardless of creating or patching an object.
 //
 // It returns the executed operation and an error.
-func MergePatchOrCreate(ctx context.Context, c client.Writer, obj client.Object, f controllerutil.MutateFn) (controllerutil.OperationResult, error) {
+func MergePatchOrCreate(ctx context.Context, c client.Writer, obj client.Object, f controllerutil.MutateFn, opts ...client.MergeFromOption) (controllerutil.OperationResult, error) {
 	return patchOrCreate(ctx, c, obj, func(obj client.Object) client.Patch {
-		return client.MergeFrom(obj)
+		return client.MergeFromWithOptions(obj, opts...)
 	}, f)
 }
 
@@ -42,9 +42,9 @@ func MergePatchOrCreate(ctx context.Context, c client.Writer, obj client.Object,
 // The MutateFn is called regardless of creating or patching an object.
 //
 // It returns the executed operation and an error.
-func StrategicMergePatchOrCreate(ctx context.Context, c client.Writer, obj client.Object, f controllerutil.MutateFn) (controllerutil.OperationResult, error) {
+func StrategicMergePatchOrCreate(ctx context.Context, c client.Writer, obj client.Object, f controllerutil.MutateFn, opts ...client.MergeFromOption) (controllerutil.OperationResult, error) {
 	return patchOrCreate(ctx, c, obj, func(obj client.Object) client.Patch {
-		return client.StrategicMergeFrom(obj)
+		return client.StrategicMergeFrom(obj, opts...)
 	}, f)
 }
 
