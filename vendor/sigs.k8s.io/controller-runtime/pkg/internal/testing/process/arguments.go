@@ -18,7 +18,7 @@ package process
 
 import (
 	"bytes"
-	"html/template"
+	"text/template"
 	"sort"
 	"strings"
 )
