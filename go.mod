@@ -84,5 +84,5 @@ replace (
 	k8s.io/component-base => k8s.io/component-base v0.20.6
 	k8s.io/helm => k8s.io/helm v2.13.1+incompatible
 	k8s.io/kube-aggregator => k8s.io/kube-aggregator v0.20.6
-	sigs.k8s.io/controller-runtime => github.com/gardener/controller-runtime v0.8.3-gardener.1
+	sigs.k8s.io/controller-runtime => github.com/timebertt/controller-runtime v0.6.1-0.20210505111143-16a67ecbbec1
 )
