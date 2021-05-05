@@ -75,6 +75,10 @@ var _ = BeforeSuite(func() {
 			MutatingWebhooks:   []client.Object{getMutatingWebhookConfig()},
 		},
 	}
+	testEnv.ControlPlane.APIServer = &envtest.APIServer{}
+	testEnv.ControlPlane.APIServer.Args = append(envtest.DefaultKubeAPIServerFlags, "--v=2")
+	// testEnv.ControlPlane.APIServer.Configure().Set("v", "2")
+
 	restConfig, err = testEnv.Start()
 	Expect(err).ToNot(HaveOccurred())
 	Expect(restConfig).ToNot(BeNil())
