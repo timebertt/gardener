@@ -415,6 +415,11 @@ func apiServiceNameForSchemeGroupVersion(gv schema.GroupVersion) string {
 
 // Stop stops this GardenerAPIServer and cleans its temporary resources.
 func (g *GardenerAPIServer) Stop() error {
+	if g.terminateFunc == nil {
+		// gardener-apiserver was never started, no cleanup needed
+		return nil
+	}
+
 	// trigger stop procedure
 	g.terminateFunc()
 
