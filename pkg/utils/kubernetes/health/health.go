@@ -351,7 +351,7 @@ func ExtensionOperationHasBeenUpdatedSince(lastUpdateTime metav1.Time) Func {
 
 		lastOperation := obj.GetExtensionStatus().GetLastOperation()
 		if lastOperation == nil || !lastOperation.LastUpdateTime.After(lastUpdateTime.Time) {
-			return fmt.Errorf("extension operation was not updated yet")
+			return fmt.Errorf("extension operation has not been updated yet")
 		}
 		return nil
 	}
