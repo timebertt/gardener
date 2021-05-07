@@ -28,7 +28,6 @@ import (
 	mocktime "github.com/gardener/gardener/pkg/mock/go/time"
 	"github.com/gardener/gardener/pkg/operation/botanist/component/extensions/controlplane"
 	gutil "github.com/gardener/gardener/pkg/utils/gardener"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 
@@ -36,7 +35,6 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -64,13 +62,8 @@ var _ = Describe("ControlPlane", func() {
 		providerConfig               = &runtime.RawExtension{Raw: []byte(`{"bar":"baz"}`)}
 		infrastructureProviderStatus = &runtime.RawExtension{Raw: []byte(`{"baz":"foo"}`)}
 
-		cp = &extensionsv1alpha1.ControlPlane{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-			},
-		}
-		cpSpec extensionsv1alpha1.ControlPlaneSpec
+		cp, empty *extensionsv1alpha1.ControlPlane
+		cpSpec    extensionsv1alpha1.ControlPlaneSpec
 
 		defaultDepWaiter controlplane.Interface
 		values           *controlplane.Values
@@ -83,6 +76,14 @@ var _ = Describe("ControlPlane", func() {
 		s := runtime.NewScheme()
 		Expect(extensionsv1alpha1.AddToScheme(s)).NotTo(HaveOccurred())
 		c = fake.NewFakeClientWithScheme(s)
+
+		empty = &extensionsv1alpha1.ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		}
+		cp = empty.DeepCopy()
 
 		cpSpec = extensionsv1alpha1.ControlPlaneSpec{
 			DefaultSpec: extensionsv1alpha1.DefaultSpec{
@@ -330,20 +331,24 @@ var _ = Describe("ControlPlane", func() {
 			)()
 			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
+			mc := mockclient.NewMockClient(ctrl)
+			mc.EXPECT().Status().Return(mc)
+
+			// deploy with wait-for-state annotation
 			obj := cp.DeepCopy()
 			obj.Spec = cpSpec
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/operation", "wait-for-state")
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/timestamp", now.UTC().String())
+			test.EXPECTPatch(ctx, mc, obj, empty, types.MergePatchType)
+
+			// restore state
 			expectedWithState := obj.DeepCopy()
 			expectedWithState.Status.State = state
-			expectedWithRestore := expectedWithState.DeepCopy()
-			expectedWithRestore.Annotations["gardener.cloud/operation"] = "restore"
+			test.EXPECTPatch(ctx, mc, expectedWithState, obj, types.MergePatchType)
 
-			mc := mockclient.NewMockClient(ctrl)
-			mc.EXPECT().Get(ctx, kutil.Key(namespace, name), gomock.AssignableToTypeOf(&extensionsv1alpha1.ControlPlane{})).Return(apierrors.NewNotFound(extensionsv1alpha1.Resource("ControlPlane"), name))
-			mc.EXPECT().Create(ctx, obj)
-			mc.EXPECT().Status().Return(mc)
-			mc.EXPECT().Update(ctx, expectedWithState)
+			// annotate with restore annotation
+			expectedWithRestore := expectedWithState.DeepCopy()
+			metav1.SetMetaDataAnnotation(&expectedWithRestore.ObjectMeta, "gardener.cloud/operation", "restore")
 			test.EXPECTPatch(ctx, mc, expectedWithRestore, expectedWithState, types.MergePatchType)
 
 			Expect(controlplane.New(log, mc, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond).Restore(ctx, shootState)).To(Succeed())
@@ -356,29 +361,33 @@ var _ = Describe("ControlPlane", func() {
 			)()
 			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
+			mc := mockclient.NewMockClient(ctrl)
+			mc.EXPECT().Status().Return(mc)
+
+			// deploy with wait-for-state annotation
 			values.Purpose = extensionsv1alpha1.Exposure
+			empty.Name += "-exposure"
+			cp.Name += "-exposure"
 			obj := cp.DeepCopy()
-			obj.Name += "-exposure"
 			obj.Spec = cpSpec
 			obj.Spec.Purpose = &values.Purpose
-			shootState.Spec.Extensions[0].Name = &obj.Name
-			shootState.Spec.Extensions[0].Purpose = pointer.StringPtr(string(values.Purpose))
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/operation", "wait-for-state")
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/timestamp", now.UTC().String())
+			test.EXPECTPatch(ctx, mc, obj, empty, types.MergePatchType)
+
+			// restore state
+			shootState.Spec.Extensions[0].Name = &obj.Name
+			shootState.Spec.Extensions[0].Purpose = pointer.StringPtr(string(values.Purpose))
 			expectedWithState := obj.DeepCopy()
 			expectedWithState.Status.State = state
+			test.EXPECTPatch(ctx, mc, expectedWithState, obj, types.MergePatchType)
+
+			// annotate with restore annotation
 			expectedWithRestore := expectedWithState.DeepCopy()
 			expectedWithRestore.Annotations["gardener.cloud/operation"] = "restore"
-
-			mc := mockclient.NewMockClient(ctrl)
-			mc.EXPECT().Get(ctx, kutil.Key(obj.Namespace, obj.Name), gomock.AssignableToTypeOf(&extensionsv1alpha1.ControlPlane{})).Return(apierrors.NewNotFound(extensionsv1alpha1.Resource("ControlPlane"), obj.Name))
-			mc.EXPECT().Create(ctx, obj)
-			mc.EXPECT().Status().Return(mc)
-			mc.EXPECT().Update(ctx, expectedWithState)
 			test.EXPECTPatch(ctx, mc, expectedWithRestore, expectedWithState, types.MergePatchType)
 
-			defaultDepWaiter = controlplane.New(log, mc, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
-			Expect(defaultDepWaiter.Restore(ctx, shootState)).To(Succeed())
+			Expect(controlplane.New(log, mc, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond).Restore(ctx, shootState)).To(Succeed())
 		})
 	})
 
