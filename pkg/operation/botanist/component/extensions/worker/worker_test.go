@@ -30,7 +30,6 @@ import (
 	"github.com/gardener/gardener/pkg/operation/botanist/component/extensions/worker"
 	"github.com/gardener/gardener/pkg/utils"
 	gutil "github.com/gardener/gardener/pkg/utils/gardener"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 
@@ -39,7 +38,6 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -105,13 +103,8 @@ var _ = Describe("Worker", func() {
 		worker2MachineImageVersion       = "worker2machineimagev1"
 		worker2UserData                  = []byte("bootstrap-me-now")
 
-		w = &extensionsv1alpha1.Worker{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-			},
-		}
-		wSpec extensionsv1alpha1.WorkerSpec
+		w, empty *extensionsv1alpha1.Worker
+		wSpec    extensionsv1alpha1.WorkerSpec
 
 		defaultDepWaiter worker.Interface
 		values           *worker.Values
@@ -202,6 +195,14 @@ var _ = Describe("Worker", func() {
 				},
 			},
 		}
+
+		empty = &extensionsv1alpha1.Worker{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		}
+		w = empty.DeepCopy()
 
 		wSpec = extensionsv1alpha1.WorkerSpec{
 			DefaultSpec: extensionsv1alpha1.DefaultSpec{
@@ -413,20 +414,25 @@ var _ = Describe("Worker", func() {
 			)()
 			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
+			mc := mockclient.NewMockClient(ctrl)
+			mc.EXPECT().Status().Return(mc)
+
+			// deploy with wait-for-state annotation
 			obj := w.DeepCopy()
 			obj.Spec = wSpec
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/operation", "wait-for-state")
 			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/timestamp", now.UTC().String())
+			obj.TypeMeta = metav1.TypeMeta{}
+			test.EXPECTPatch(ctx, mc, obj, empty, types.MergePatchType)
+
+			// restore state
 			expectedWithState := obj.DeepCopy()
 			expectedWithState.Status.State = state
+			test.EXPECTPatch(ctx, mc, expectedWithState, obj, types.MergePatchType)
+
+			// annotate with restore annotation
 			expectedWithRestore := expectedWithState.DeepCopy()
 			expectedWithRestore.Annotations["gardener.cloud/operation"] = "restore"
-
-			mc := mockclient.NewMockClient(ctrl)
-			mc.EXPECT().Get(ctx, kutil.Key(namespace, name), gomock.AssignableToTypeOf(&extensionsv1alpha1.Worker{})).Return(apierrors.NewNotFound(extensionsv1alpha1.Resource("Worker"), name))
-			mc.EXPECT().Create(ctx, obj)
-			mc.EXPECT().Status().Return(mc)
-			mc.EXPECT().Update(ctx, expectedWithState)
 			test.EXPECTPatch(ctx, mc, expectedWithRestore, expectedWithState, types.MergePatchType)
 
 			Expect(worker.New(log, mc, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond).Restore(ctx, shootState)).To(Succeed())
