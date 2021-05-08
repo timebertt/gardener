@@ -29,7 +29,6 @@ import (
 	mocktime "github.com/gardener/gardener/pkg/mock/go/time"
 	"github.com/gardener/gardener/pkg/operation/botanist/component/extensions/extension"
 	gutil "github.com/gardener/gardener/pkg/utils/gardener"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 
@@ -38,10 +37,8 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,6 +67,7 @@ var _ = Describe("Extension", func() {
 
 		ctx      context.Context
 		c        client.Client
+		empty    *extensionsv1alpha1.Extension
 		expected []*extensionsv1alpha1.Extension
 		values   *extension.Values
 		log      logrus.FieldLogger
@@ -89,6 +87,12 @@ var _ = Describe("Extension", func() {
 		s := runtime.NewScheme()
 		Expect(extensionsv1alpha1.AddToScheme(s)).To(Succeed())
 		c = fake.NewFakeClientWithScheme(s)
+
+		empty = &extensionsv1alpha1.Extension{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: namespace,
+			},
+		}
 
 		expected = make([]*extensionsv1alpha1.Extension, 0, len(extensionsMap))
 		for _, ext := range extensionsMap {
@@ -258,25 +262,27 @@ var _ = Describe("Extension", func() {
 				&extension.TimeNow, mockNow.Do,
 				&extensions.TimeNow, mockNow.Do,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+			mc := mockclient.NewMockClient(ctrl)
+			mc.EXPECT().Status().Return(mc)
+
+			// deploy with wait-for-state annotation
+			empty.SetName(expected[0].GetName())
 			expected[0].Annotations[v1beta1constants.GardenerOperation] = v1beta1constants.GardenerOperationWaitForState
+			expected[0].Annotations[v1beta1constants.GardenerTimestamp] = now.UTC().String()
+			test.EXPECTPatch(ctx, mc, expected[0], empty, types.MergePatchType)
+
+			// restore state
 			expectedWithState := expected[0].DeepCopy()
 			expectedWithState.Status = extensionsv1alpha1.ExtensionStatus{
 				DefaultStatus: extensionsv1alpha1.DefaultStatus{State: &runtime.RawExtension{Raw: state}},
 			}
+			test.EXPECTPatch(ctx, mc, expectedWithState, expected[0], types.MergePatchType)
+
+			// annotate with restore annotation
 			expectedWithRestore := expectedWithState.DeepCopy()
 			expectedWithRestore.Annotations[v1beta1constants.GardenerOperation] = v1beta1constants.GardenerOperationRestore
-
-			mc := mockclient.NewMockClient(ctrl)
-			mc.EXPECT().Get(ctx, kutil.Key(namespace, expected[0].Name), gomock.AssignableToTypeOf(&extensionsv1alpha1.Extension{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, n *extensionsv1alpha1.Extension) error {
-				return apierrors.NewNotFound(schema.GroupResource{}, "")
-			})
-			mc.EXPECT().Create(ctx, expected[0]).Return(nil).Times(1)
-			mc.EXPECT().Status().DoAndReturn(func() *mockclient.MockClient {
-				return mc
-			})
-			mc.EXPECT().Update(ctx, expectedWithState).Return(nil)
 			test.EXPECTPatch(ctx, mc, expectedWithRestore, expectedWithState, types.MergePatchType)
 
 			defaultDepWaiter = extension.New(

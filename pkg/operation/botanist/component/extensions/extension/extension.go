@@ -21,15 +21,16 @@ import (
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
 	"github.com/gardener/gardener/pkg/utils/flow"
 
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -99,14 +100,23 @@ func New(
 
 // Deploy uses the seed client to create or update the Extension resources.
 func (e *extension) Deploy(ctx context.Context) error {
-	fns := e.forEach(func(ctx context.Context, extension extensionsv1alpha1.Extension, _ time.Duration) error {
-		deployer := &deployer{e.client, extension}
-
-		_, err := deployer.deploy(ctx, v1beta1constants.GardenerOperationReconcile)
+	fns := e.forEach(func(ctx context.Context, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension, _ time.Duration) error {
+		_, err := e.deploy(ctx, v1beta1constants.GardenerOperationReconcile, ext, extType, providerConfig)
 		return err
 	})
 
 	return flow.Parallel(fns...)(ctx)
+}
+
+func (e *extension) deploy(ctx context.Context, operation string, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension) (extensionsv1alpha1.Object, error) {
+	_, err := controllerutils.MergePatchOrCreate(ctx, e.client, ext, func() error {
+		metav1.SetMetaDataAnnotation(&ext.ObjectMeta, v1beta1constants.GardenerOperation, operation)
+		metav1.SetMetaDataAnnotation(&ext.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().String())
+		ext.Spec.Type = extType
+		ext.Spec.ProviderConfig = providerConfig
+		return nil
+	})
+	return ext, err
 }
 
 // Destroy deletes all the Extension resources.
@@ -116,15 +126,13 @@ func (e *extension) Destroy(ctx context.Context) error {
 
 // Wait waits until the Extension resources are ready.
 func (e *extension) Wait(ctx context.Context) error {
-	fns := e.forEach(func(ctx context.Context, extension extensionsv1alpha1.Extension, timeout time.Duration) error {
-		return extensions.WaitUntilExtensionCRReady(
+	fns := e.forEach(func(ctx context.Context, ext *extensionsv1alpha1.Extension, _ string, _ *runtime.RawExtension, timeout time.Duration) error {
+		return extensions.WaitUntilExtensionObjectReady(
 			ctx,
 			e.client,
 			e.logger,
-			func() client.Object { return &extensionsv1alpha1.Extension{} },
+			ext,
 			extensionsv1alpha1.ExtensionResource,
-			extension.Namespace,
-			extension.Name,
 			e.waitInterval,
 			e.waitSevereThreshold,
 			timeout,
@@ -137,12 +145,11 @@ func (e *extension) Wait(ctx context.Context) error {
 
 // WaitCleanup waits until the Extension resources are cleaned up.
 func (e *extension) WaitCleanup(ctx context.Context) error {
-	return extensions.WaitUntilExtensionCRsDeleted(
+	return extensions.WaitUntilExtensionObjectsDeleted(
 		ctx,
 		e.client,
 		e.logger,
 		&extensionsv1alpha1.ExtensionList{},
-		func() extensionsv1alpha1.Object { return &extensionsv1alpha1.Extension{} },
 		extensionsv1alpha1.ExtensionResource,
 		e.values.Namespace,
 		e.waitInterval,
@@ -153,16 +160,15 @@ func (e *extension) WaitCleanup(ctx context.Context) error {
 
 // Restore uses the seed client and the ShootState to create the Extension resources and restore their state.
 func (e *extension) Restore(ctx context.Context, shootState *gardencorev1alpha1.ShootState) error {
-	fns := e.forEach(func(ctx context.Context, extension extensionsv1alpha1.Extension, _ time.Duration) error {
-		deployer := &deployer{e.client, extension}
-
+	fns := e.forEach(func(ctx context.Context, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension, _ time.Duration) error {
 		return extensions.RestoreExtensionWithDeployFunction(
 			ctx,
 			e.client,
 			shootState,
 			extensionsv1alpha1.ExtensionResource,
-			e.values.Namespace,
-			deployer.deploy,
+			func(ctx context.Context, operationAnnotation string) (extensionsv1alpha1.Object, error) {
+				return e.deploy(ctx, operationAnnotation, ext, extType, providerConfig)
+			},
 		)
 	})
 
@@ -171,22 +177,20 @@ func (e *extension) Restore(ctx context.Context, shootState *gardencorev1alpha1.
 
 // Migrate migrates the Extension resources.
 func (e *extension) Migrate(ctx context.Context) error {
-	return extensions.MigrateExtensionCRs(
+	return extensions.MigrateExtensionObjects(
 		ctx,
 		e.client,
 		&extensionsv1alpha1.ExtensionList{},
-		func() extensionsv1alpha1.Object { return &extensionsv1alpha1.Extension{} },
 		e.values.Namespace,
 	)
 }
 
 // WaitMigrate waits until the Extension resources are migrated successfully.
 func (e *extension) WaitMigrate(ctx context.Context) error {
-	return extensions.WaitUntilExtensionCRsMigrated(
+	return extensions.WaitUntilExtensionObjectsMigrated(
 		ctx,
 		e.client,
 		&extensionsv1alpha1.ExtensionList{},
-		func() extensionsv1alpha1.Object { return &extensionsv1alpha1.Extension{} },
 		e.values.Namespace,
 		e.waitInterval,
 		e.waitTimeout,
@@ -203,11 +207,10 @@ func (e *extension) DeleteStaleResources(ctx context.Context) error {
 }
 
 func (e *extension) deleteExtensionResources(ctx context.Context, wantedExtensionTypes sets.String) error {
-	return extensions.DeleteExtensionCRs(
+	return extensions.DeleteExtensionObjects(
 		ctx,
 		e.client,
 		&extensionsv1alpha1.ExtensionList{},
-		func() extensionsv1alpha1.Object { return &extensionsv1alpha1.Extension{} },
 		e.values.Namespace,
 		func(obj extensionsv1alpha1.Object) bool {
 			return !wantedExtensionTypes.Has(obj.GetExtensionSpec().GetExtensionType())
@@ -215,15 +218,20 @@ func (e *extension) deleteExtensionResources(ctx context.Context, wantedExtensio
 	)
 }
 
-func (e *extension) forEach(fn func(context.Context, extensionsv1alpha1.Extension, time.Duration) error) []flow.TaskFn {
+func (e *extension) forEach(fn func(ctx context.Context, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension, timeout time.Duration) error) []flow.TaskFn {
 	fns := make([]flow.TaskFn, 0, len(e.values.Extensions))
 
 	for _, ext := range e.values.Extensions {
-		obj := ext.Extension
-		timeout := ext.Timeout
+		extension := ext
+		obj := &extensionsv1alpha1.Extension{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      extension.Name,
+				Namespace: e.values.Namespace,
+			},
+		}
 
 		fns = append(fns, func(ctx context.Context) error {
-			return fn(ctx, obj, timeout)
+			return fn(ctx, obj, extension.Spec.Type, extension.Spec.ProviderConfig, extension.Timeout)
 		})
 	}
 
@@ -233,28 +241,4 @@ func (e *extension) forEach(fn func(context.Context, extensionsv1alpha1.Extensio
 // Extensions returns the map of extensions where the key is the type and the value is an Extension structure.
 func (e *extension) Extensions() map[string]Extension {
 	return e.values.Extensions
-}
-
-type deployer struct {
-	client client.Client
-	obj    extensionsv1alpha1.Extension
-}
-
-func (d *deployer) deploy(ctx context.Context, operation string) (extensionsv1alpha1.Object, error) {
-	obj := &extensionsv1alpha1.Extension{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      d.obj.Name,
-			Namespace: d.obj.Namespace,
-		},
-	}
-
-	_, err := controllerutil.CreateOrUpdate(ctx, d.client, obj, func() error {
-		metav1.SetMetaDataAnnotation(&obj.ObjectMeta, v1beta1constants.GardenerOperation, operation)
-		metav1.SetMetaDataAnnotation(&obj.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().String())
-		obj.Spec.Type = d.obj.Spec.Type
-		obj.Spec.ProviderConfig = d.obj.Spec.ProviderConfig
-		return nil
-	})
-
-	return obj, err
 }
