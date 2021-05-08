@@ -33,7 +33,6 @@ import (
 	"github.com/gardener/gardener/pkg/utils"
 	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/test"
 
 	"github.com/Masterminds/semver"
@@ -43,10 +42,8 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/pointer"
@@ -143,6 +140,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 					KubeletDataVolumeName: &kubeletDataVolumeName,
 				},
 			}
+			empty    *extensionsv1alpha1.OperatingSystemConfig
 			expected []*extensionsv1alpha1.OperatingSystemConfig
 		)
 
@@ -175,6 +173,12 @@ var _ = Describe("OperatingSystemConfig", func() {
 					KubeletCLIFlags:         kubeletCLIFlags,
 					MachineTypes:            machineTypes,
 					SSHPublicKey:            sshPublicKey,
+				},
+			}
+
+			empty = &extensionsv1alpha1.OperatingSystemConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
 				},
 			}
 
@@ -337,9 +341,10 @@ var _ = Describe("OperatingSystemConfig", func() {
 					&TimeNow, mockNow.Do,
 					&extensions.TimeNow, mockNow.Do,
 				)()
-
 				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
 				mc := mockclient.NewMockClient(ctrl)
+				mc.EXPECT().Status().Return(mc).AnyTimes()
 
 				for i := range expected {
 					var state []byte
@@ -349,18 +354,23 @@ var _ = Describe("OperatingSystemConfig", func() {
 						state = stateOriginal
 					}
 
-					expected[i].Annotations[v1beta1constants.GardenerOperation] = v1beta1constants.GardenerOperationWaitForState
-					expectedWithState := expected[i].DeepCopy()
-					expectedWithState.Status = extensionsv1alpha1.OperatingSystemConfigStatus{
-						DefaultStatus: extensionsv1alpha1.DefaultStatus{State: &runtime.RawExtension{Raw: state}},
-					}
-					expectedWithRestore := expectedWithState.DeepCopy()
-					expectedWithRestore.Annotations[v1beta1constants.GardenerOperation] = v1beta1constants.GardenerOperationRestore
+					// deploy with wait-for-state annotation
+					emptyWithName := empty.DeepCopy()
+					emptyWithName.SetName(expected[i].GetName())
+					obj := expected[i].DeepCopy()
+					metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/operation", "wait-for-state")
+					metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "gardener.cloud/timestamp", now.UTC().String())
+					obj.TypeMeta = metav1.TypeMeta{}
+					test.EXPECTPatch(ctx, mc, obj, emptyWithName, types.MergePatchType)
 
-					mc.EXPECT().Get(ctx, kutil.Key(namespace, expected[i].Name), gomock.AssignableToTypeOf(&extensionsv1alpha1.OperatingSystemConfig{})).Return(apierrors.NewNotFound(schema.GroupResource{}, ""))
-					mc.EXPECT().Create(ctx, expected[i])
-					mc.EXPECT().Status().Return(mc)
-					mc.EXPECT().Update(ctx, expectedWithState)
+					// restore state
+					expectedWithState := obj.DeepCopy()
+					expectedWithState.Status.State = &runtime.RawExtension{Raw: state}
+					test.EXPECTPatch(ctx, mc, expectedWithState, obj, types.MergePatchType)
+
+					// annotate with restore annotation
+					expectedWithRestore := expectedWithState.DeepCopy()
+					metav1.SetMetaDataAnnotation(&expectedWithRestore.ObjectMeta, "gardener.cloud/operation", "restore")
 					test.EXPECTPatch(ctx, mc, expectedWithRestore, expectedWithState, types.MergePatchType)
 				}
 
