@@ -85,6 +85,7 @@ var _ = Describe("#Interface", func() {
 
 		ctrl = gomock.NewController(GinkgoT())
 		mockNow = mocktime.NewMockNow(ctrl)
+		now = time.Now()
 
 		s := runtime.NewScheme()
 		Expect(extensionsv1alpha1.AddToScheme(s)).To(Succeed())
@@ -202,7 +203,69 @@ var _ = Describe("#Interface", func() {
 			Expect(deployWaiter.Wait(ctx)).To(MatchError(ContainSubstring("error during reconciliation: Some error")))
 		})
 
+		It("should return error if we haven't observed the latest timestamp annotation", func() {
+			defer test.WithVars(
+				&infrastructure.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			values.AnnotateOperation = true
+			deployWaiter.SetSSHPublicKey(sshPublicKey)
+			Expect(deployWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(expected.DeepCopy())
+			expected.Status.LastError = nil
+			// remove operation annotation, add old timestamp annotation
+			expected.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+			}
+			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State: gardencorev1beta1.LastOperationStateSucceeded,
+			}
+			Expect(c.Patch(ctx, expected, patch)).To(Succeed(), "patching infrastructure succeeds")
+
+			By("wait")
+			Expect(deployWaiter.Wait(ctx)).NotTo(Succeed(), "infrastructure indicates error")
+		})
+
 		It("should return no error when is ready", func() {
+			defer test.WithVars(
+				&infrastructure.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			values.AnnotateOperation = true
+			deployWaiter.SetSSHPublicKey(sshPublicKey)
+			Expect(deployWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(expected.DeepCopy())
+			expected.Status.LastError = nil
+			// remove operation annotation, add up-to-date timestamp annotation
+			expected.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.UTC().String(),
+			}
+			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State: gardencorev1beta1.LastOperationStateSucceeded,
+			}
+			expected.Status.NodesCIDR = nodesCIDR
+			expected.Status.ProviderStatus = providerStatus
+			Expect(c.Patch(ctx, expected, patch)).To(Succeed(), "patching infrastructure succeeds")
+
+			By("wait")
+			Expect(deployWaiter.Wait(ctx)).To(Succeed(), "infrastructure is ready")
+
+			By("verify status")
+			Expect(deployWaiter.ProviderStatus()).To(Equal(providerStatus))
+			Expect(deployWaiter.NodesCIDR()).To(Equal(nodesCIDR))
+		})
+
+		It("should return no error when is ready (AnnotateOperation == false)", func() {
 			expected.Status.LastError = nil
 			expected.ObjectMeta.Annotations = map[string]string{}
 			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
