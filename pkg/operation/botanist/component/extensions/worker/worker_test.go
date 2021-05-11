@@ -21,6 +21,7 @@ import (
 
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/logger"
@@ -113,6 +114,7 @@ var _ = Describe("Worker", func() {
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
 		mockNow = mocktime.NewMockNow(ctrl)
+		now = time.Now()
 
 		s := runtime.NewScheme()
 		Expect(extensionsv1alpha1.AddToScheme(s)).NotTo(HaveOccurred())
@@ -203,6 +205,10 @@ var _ = Describe("Worker", func() {
 			},
 		}
 		w = empty.DeepCopy()
+		w.SetAnnotations(map[string]string{
+			v1beta1constants.GardenerOperation: v1beta1constants.GardenerOperationReconcile,
+			v1beta1constants.GardenerTimestamp: now.UTC().String(),
+		})
 
 		wSpec = extensionsv1alpha1.WorkerSpec{
 			DefaultSpec: extensionsv1alpha1.DefaultSpec{
@@ -331,15 +337,56 @@ var _ = Describe("Worker", func() {
 			Expect(defaultDepWaiter.Wait(ctx)).To(HaveOccurred(), "worker indicates error")
 		})
 
-		It("should return no error when it's ready", func() {
-			obj := w.DeepCopy()
-			obj.Annotations = nil
-			obj.Status.LastOperation = &gardencorev1beta1.LastOperation{
+		It("should return error if we haven't observed the latest timestamp annotation", func() {
+			defer test.WithVars(
+				&worker.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(w.DeepCopy())
+			w.Status.LastError = nil
+			// remove operation annotation, add old timestamp annotation
+			w.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+			}
+			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State: gardencorev1beta1.LastOperationStateSucceeded,
 			}
-			Expect(c.Create(ctx, obj)).To(Succeed(), "creating worker succeeds")
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
 
-			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "worker is ready, should not return an error")
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "worker indicates error")
+		})
+
+		It("should return no error when it's ready", func() {
+			defer test.WithVars(
+				&worker.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(w.DeepCopy())
+			w.Status.LastError = nil
+			// remove operation annotation, add up-to-date timestamp annotation
+			w.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.UTC().String(),
+			}
+			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State: gardencorev1beta1.LastOperationStateSucceeded,
+			}
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "worker is ready")
 		})
 	})
 
