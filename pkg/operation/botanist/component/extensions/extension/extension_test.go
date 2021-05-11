@@ -80,6 +80,7 @@ var _ = Describe("Extension", func() {
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
 		mockNow = mocktime.NewMockNow(ctrl)
+		now = time.Now()
 
 		ctx = context.TODO()
 		log = logger.NewNopLogger()
@@ -158,18 +159,60 @@ var _ = Describe("Extension", func() {
 			Expect(defaultDepWaiter.Wait(ctx)).To(MatchError(ContainSubstring("encountered error during reconciliation: "+errDescription)), "extensions indicates error")
 		})
 
-		It("should return no error when it's ready", func() {
+		It("should return error if we haven't observed the latest timestamp annotation", func() {
+			defer test.WithVars(
+				&extension.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
 			for i := range expected {
-				// remove operation annotation
-				expected[i].ObjectMeta.Annotations = map[string]string{}
+				patch := client.MergeFrom(expected[i].DeepCopy())
+				// remove operation annotation, add old timestamp annotation
+				expected[i].ObjectMeta.Annotations = map[string]string{
+					v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+				}
 				// set last operation
 				expected[i].Status.LastOperation = &gardencorev1beta1.LastOperation{
 					State: gardencorev1beta1.LastOperationStateSucceeded,
 				}
-				Expect(c.Create(ctx, expected[i])).To(Succeed(), "creating extensions succeeds")
+				Expect(c.Patch(ctx, expected[i], patch)).ToNot(HaveOccurred(), "patching extension succeeds")
 			}
 
-			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "extensions is ready, should not return an error")
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "extension indicates error")
+		})
+
+		It("should return no error when it's ready", func() {
+			defer test.WithVars(
+				&extension.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			for i := range expected {
+				patch := client.MergeFrom(expected[i].DeepCopy())
+				// remove operation annotation, add up-to-date timestamp annotation
+				expected[i].ObjectMeta.Annotations = map[string]string{
+					v1beta1constants.GardenerTimestamp: now.UTC().String(),
+				}
+				// set last operation
+				expected[i].Status.LastOperation = &gardencorev1beta1.LastOperation{
+					State: gardencorev1beta1.LastOperationStateSucceeded,
+				}
+				Expect(c.Patch(ctx, expected[i], patch)).ToNot(HaveOccurred(), "patching extension succeeds")
+			}
+
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "extension is ready")
 		})
 	})
 

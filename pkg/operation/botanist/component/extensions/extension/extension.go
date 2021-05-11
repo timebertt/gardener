@@ -77,6 +77,8 @@ type extension struct {
 	waitInterval        time.Duration
 	waitSevereThreshold time.Duration
 	waitTimeout         time.Duration
+
+	extensions map[string]*extensionsv1alpha1.Extension
 }
 
 // New creates a new instance of Extension deployer.
@@ -95,20 +97,22 @@ func New(
 		waitInterval:        waitInterval,
 		waitSevereThreshold: waitSevereThreshold,
 		waitTimeout:         waitTimeout,
+
+		extensions: make(map[string]*extensionsv1alpha1.Extension),
 	}
 }
 
 // Deploy uses the seed client to create or update the Extension resources.
 func (e *extension) Deploy(ctx context.Context) error {
 	fns := e.forEach(func(ctx context.Context, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension, _ time.Duration) error {
-		_, err := e.deploy(ctx, v1beta1constants.GardenerOperationReconcile, ext, extType, providerConfig)
+		_, err := e.deploy(ctx, ext, extType, providerConfig, v1beta1constants.GardenerOperationReconcile)
 		return err
 	})
 
 	return flow.Parallel(fns...)(ctx)
 }
 
-func (e *extension) deploy(ctx context.Context, operation string, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension) (extensionsv1alpha1.Object, error) {
+func (e *extension) deploy(ctx context.Context, ext *extensionsv1alpha1.Extension, extType string, providerConfig *runtime.RawExtension, operation string) (extensionsv1alpha1.Object, error) {
 	_, err := controllerutils.MergePatchOrCreate(ctx, e.client, ext, func() error {
 		metav1.SetMetaDataAnnotation(&ext.ObjectMeta, v1beta1constants.GardenerOperation, operation)
 		metav1.SetMetaDataAnnotation(&ext.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().String())
@@ -167,7 +171,7 @@ func (e *extension) Restore(ctx context.Context, shootState *gardencorev1alpha1.
 			shootState,
 			extensionsv1alpha1.ExtensionResource,
 			func(ctx context.Context, operationAnnotation string) (extensionsv1alpha1.Object, error) {
-				return e.deploy(ctx, operationAnnotation, ext, extType, providerConfig)
+				return e.deploy(ctx, ext, extType, providerConfig, operationAnnotation)
 			},
 		)
 	})
@@ -222,16 +226,22 @@ func (e *extension) forEach(fn func(ctx context.Context, ext *extensionsv1alpha1
 	fns := make([]flow.TaskFn, 0, len(e.values.Extensions))
 
 	for _, ext := range e.values.Extensions {
-		extension := ext
-		obj := &extensionsv1alpha1.Extension{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      extension.Name,
-				Namespace: e.values.Namespace,
-			},
+		extensionTemplate := ext
+
+		extensionObj, ok := e.extensions[extensionTemplate.Name]
+		if !ok {
+			extensionObj = &extensionsv1alpha1.Extension{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      extensionTemplate.Name,
+					Namespace: e.values.Namespace,
+				},
+			}
+			// store object for later usage (we want to pass a filled object to WaitUntil*)
+			e.extensions[extensionTemplate.Name] = extensionObj
 		}
 
 		fns = append(fns, func(ctx context.Context) error {
-			return fn(ctx, obj, extension.Spec.Type, extension.Spec.ProviderConfig, extension.Timeout)
+			return fn(ctx, extensionObj, extensionTemplate.Spec.Type, extensionTemplate.Spec.ProviderConfig, extensionTemplate.Timeout)
 		})
 	}
 
