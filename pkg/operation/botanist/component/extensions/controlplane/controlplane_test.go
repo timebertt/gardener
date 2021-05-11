@@ -21,6 +21,7 @@ import (
 
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/logger"
@@ -72,6 +73,7 @@ var _ = Describe("ControlPlane", func() {
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
 		mockNow = mocktime.NewMockNow(ctrl)
+		now = time.Now()
 
 		s := runtime.NewScheme()
 		Expect(extensionsv1alpha1.AddToScheme(s)).NotTo(HaveOccurred())
@@ -84,6 +86,10 @@ var _ = Describe("ControlPlane", func() {
 			},
 		}
 		cp = empty.DeepCopy()
+		cp.SetAnnotations(map[string]string{
+			v1beta1constants.GardenerOperation: v1beta1constants.GardenerOperationReconcile,
+			v1beta1constants.GardenerTimestamp: now.UTC().String(),
+		})
 
 		cpSpec = extensionsv1alpha1.ControlPlaneSpec{
 			DefaultSpec: extensionsv1alpha1.DefaultSpec{
@@ -192,30 +198,104 @@ var _ = Describe("ControlPlane", func() {
 			Expect(defaultDepWaiter.Wait(ctx)).To(HaveOccurred(), "controlplane indicates error")
 		})
 
-		It("should return no error when it's ready (purpose != exposure)", func() {
-			obj := cp.DeepCopy()
-			obj.Annotations = nil
-			obj.Status.LastOperation = &gardencorev1beta1.LastOperation{
+		It("should return error if we haven't observed the latest timestamp annotation (purpose != exposure)", func() {
+			defer test.WithVars(&controlplane.TimeNow, mockNow.Do)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(cp.DeepCopy())
+			// remove operation annotation, add old timestamp annotation
+			cp.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+			}
+			cp.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State: gardencorev1beta1.LastOperationStateSucceeded,
 			}
-			Expect(c.Create(ctx, obj)).To(Succeed(), "creating controlplane succeeds")
+			Expect(c.Patch(ctx, cp, patch)).To(Succeed(), "patching controlplane succeeds")
 
-			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "controlplane is ready, should not return an error")
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "controlplane indicates error")
+		})
+
+		It("should return no error when it's ready (purpose != exposure)", func() {
+			defer test.WithVars(&controlplane.TimeNow, mockNow.Do)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(cp.DeepCopy())
+			// remove operation annotation, add up-to-date timestamp annotation
+			cp.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.UTC().String(),
+			}
+			cp.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State: gardencorev1beta1.LastOperationStateSucceeded,
+			}
+			Expect(c.Patch(ctx, cp, patch)).To(Succeed(), "patching controlplane succeeds")
+
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "controlplane is ready")
+		})
+
+		It("should return error if we haven't observed the latest timestamp annotation (purpose == exposure)", func() {
+			defer test.WithVars(&controlplane.TimeNow, mockNow.Do)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			values.Purpose = extensionsv1alpha1.Exposure
+			defaultDepWaiter = controlplane.New(log, c, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
+			cp.Name += "-exposure"
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(cp.DeepCopy())
+			// remove operation annotation, add old timestamp annotation
+			cp.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+			}
+			cp.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State: gardencorev1beta1.LastOperationStateSucceeded,
+			}
+			Expect(c.Patch(ctx, cp, patch)).To(Succeed(), "patching controlplane succeeds")
+
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "controlplane indicates error")
 		})
 
 		It("should return no error when it's ready (purpose == exposure)", func() {
+			defer test.WithVars(&controlplane.TimeNow, mockNow.Do)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
 			values.Purpose = extensionsv1alpha1.Exposure
 			defaultDepWaiter = controlplane.New(log, c, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
+			cp.Name += "-exposure"
 
-			obj := cp.DeepCopy()
-			obj.Name += "-exposure"
-			obj.Annotations = nil
-			obj.Status.LastOperation = &gardencorev1beta1.LastOperation{
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(cp.DeepCopy())
+			// remove operation annotation, add up-to-date timestamp annotation
+			cp.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.UTC().String(),
+			}
+			cp.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State: gardencorev1beta1.LastOperationStateSucceeded,
 			}
-			Expect(c.Create(ctx, obj)).To(Succeed(), "creating controlplane succeeds")
+			Expect(c.Patch(ctx, cp, patch)).To(Succeed(), "patching controlplane succeeds")
 
-			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "controlplane is ready, should not return an error")
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "controlplane is ready")
 		})
 	})
 
