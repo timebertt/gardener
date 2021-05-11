@@ -147,6 +147,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 		BeforeEach(func() {
 			ctrl = gomock.NewController(GinkgoT())
 			mockNow = mocktime.NewMockNow(ctrl)
+			now = time.Now()
 
 			ctx = context.TODO()
 			log = logger.NewNopLogger()
@@ -277,7 +278,6 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 		Describe("#Deploy", func() {
 			It("should successfully deploy all extensions resources", func() {
-
 				defer test.WithVars(
 					&TimeNow, mockNow.Do,
 					&DownloaderConfigFn, downloaderConfigFn,
@@ -379,7 +379,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 			})
 		})
 
-		Describe("#Wait, #WorkerNameToOperatingSystemConfigsMap", func() {
+		Describe("#Wait", func() {
 			It("should return error when no resources are found", func() {
 				Expect(defaultDepWaiter.Wait(ctx)).To(MatchError(ContainSubstring("not found")))
 			})
@@ -411,7 +411,113 @@ var _ = Describe("OperatingSystemConfig", func() {
 				Expect(defaultDepWaiter.Wait(ctx)).To(MatchError(ContainSubstring("no cloud config information provided in status")))
 			})
 
+			It("should return error if we haven't observed the latest timestamp annotation", func() {
+				defer test.WithVars(
+					&TimeNow, mockNow.Do,
+					&DownloaderConfigFn, downloaderConfigFn,
+					&OriginalConfigFn, originalConfigFn,
+				)()
+				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+				By("deploy")
+				// Deploy should fill internal state with the added timestamp annotation
+				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+				By("patch object")
+				for i := range expected {
+					patch := client.MergeFrom(expected[i].DeepCopy())
+					// remove operation annotation, add old timestamp annotation
+					expected[i].ObjectMeta.Annotations = map[string]string{
+						v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+					}
+					// set last operation
+					expected[i].Status.LastOperation = &gardencorev1beta1.LastOperation{
+						State: gardencorev1beta1.LastOperationStateSucceeded,
+					}
+					// set cloud-config secret information
+					expected[i].Status.CloudConfig = &extensionsv1alpha1.CloudConfig{
+						SecretRef: corev1.SecretReference{
+							Name:      "cc-" + expected[i].Name,
+							Namespace: expected[i].Name,
+						},
+					}
+					// set other status fields
+					expected[i].Status.Command = pointer.StringPtr("foo-" + expected[i].Name)
+					expected[i].Status.Units = []string{"bar-" + expected[i].Name, "baz-" + expected[i].Name}
+					Expect(c.Patch(ctx, expected[i], patch)).ToNot(HaveOccurred(), "patching operatingsystemconfig succeeds")
+
+					// create cloud-config secret
+					ccSecret := &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "cc-" + expected[i].Name,
+							Namespace: expected[i].Name,
+						},
+						Data: map[string][]byte{
+							"cloud_config": []byte("foobar-" + expected[i].Name),
+						},
+					}
+					Expect(c.Create(ctx, ccSecret)).To(Succeed())
+				}
+
+				By("wait")
+				Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "operatingsystemconfig indicates error")
+			})
+
 			It("should return no error when it's ready", func() {
+				defer test.WithVars(
+					&TimeNow, mockNow.Do,
+					&DownloaderConfigFn, downloaderConfigFn,
+					&OriginalConfigFn, originalConfigFn,
+				)()
+				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+				By("deploy")
+				// Deploy should fill internal state with the added timestamp annotation
+				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+				By("patch object")
+				for i := range expected {
+					patch := client.MergeFrom(expected[i].DeepCopy())
+					// remove operation annotation, add up-to-date timestamp annotation
+					expected[i].ObjectMeta.Annotations = map[string]string{
+						v1beta1constants.GardenerTimestamp: now.UTC().String(),
+					}
+					// set last operation
+					expected[i].Status.LastOperation = &gardencorev1beta1.LastOperation{
+						State: gardencorev1beta1.LastOperationStateSucceeded,
+					}
+					// set cloud-config secret information
+					expected[i].Status.CloudConfig = &extensionsv1alpha1.CloudConfig{
+						SecretRef: corev1.SecretReference{
+							Name:      "cc-" + expected[i].Name,
+							Namespace: expected[i].Name,
+						},
+					}
+					// set other status fields
+					expected[i].Status.Command = pointer.StringPtr("foo-" + expected[i].Name)
+					expected[i].Status.Units = []string{"bar-" + expected[i].Name, "baz-" + expected[i].Name}
+					Expect(c.Patch(ctx, expected[i], patch)).ToNot(HaveOccurred(), "patching operatingsystemconfig succeeds")
+
+					// create cloud-config secret
+					ccSecret := &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "cc-" + expected[i].Name,
+							Namespace: expected[i].Name,
+						},
+						Data: map[string][]byte{
+							"cloud_config": []byte("foobar-" + expected[i].Name),
+						},
+					}
+					Expect(c.Create(ctx, ccSecret)).To(Succeed())
+				}
+
+				By("wait")
+				Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "operatingsystemconfig is ready")
+			})
+		})
+
+		Describe("WorkerNameToOperatingSystemConfigsMap", func() {
+			It("should return the correct result from the Wait operation", func() {
 				for i := range expected {
 					// remove operation annotation
 					expected[i].ObjectMeta.Annotations = map[string]string{}

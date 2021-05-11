@@ -143,6 +143,7 @@ func New(
 	for _, worker := range values.Workers {
 		osc.workerNameToOSCs[worker.Name] = &OperatingSystemConfigs{}
 	}
+	osc.oscs = make(map[string]*extensionsv1alpha1.OperatingSystemConfig, len(osc.workerNameToOSCs)*2)
 
 	return osc
 }
@@ -157,6 +158,7 @@ type operatingSystemConfig struct {
 
 	lock             sync.Mutex
 	workerNameToOSCs map[string]*OperatingSystemConfigs
+	oscs             map[string]*extensionsv1alpha1.OperatingSystemConfig
 }
 
 // OperatingSystemConfigs contains operating system configs for the downloader script as well as for the original cloud
@@ -325,11 +327,18 @@ func (o *operatingSystemConfig) forEachWorkerPoolAndPurpose(fn func(*extensionsv
 			extensionsv1alpha1.OperatingSystemConfigPurposeProvision,
 			extensionsv1alpha1.OperatingSystemConfigPurposeReconcile,
 		} {
-			osc := &extensionsv1alpha1.OperatingSystemConfig{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      Key(worker.Name, o.values.KubernetesVersion) + purposeToKeySuffix(purpose),
-					Namespace: o.values.Namespace,
-				},
+			oscName := Key(worker.Name, o.values.KubernetesVersion) + purposeToKeySuffix(purpose)
+
+			osc, ok := o.oscs[oscName]
+			if !ok {
+				osc = &extensionsv1alpha1.OperatingSystemConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      oscName,
+						Namespace: o.values.Namespace,
+					},
+				}
+				// store object for later usage (we want to pass a filled object to WaitUntil*)
+				o.oscs[oscName] = osc
 			}
 
 			if err := fn(osc, worker, purpose); err != nil {
