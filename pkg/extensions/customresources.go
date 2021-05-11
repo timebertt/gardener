@@ -48,7 +48,7 @@ var TimeNow = time.Now
 
 // WaitUntilExtensionObjectReady waits until the given extension object has become ready.
 // Passed objects are expected to be filled with the latest state the controller/component
-// observed/retrieved, but at least namespace and name.
+// applied/observed/retrieved, but at least namespace and name.
 func WaitUntilExtensionObjectReady(
 	ctx context.Context,
 	c client.Client,
@@ -60,14 +60,18 @@ func WaitUntilExtensionObjectReady(
 	timeout time.Duration,
 	postReadyFunc func() error,
 ) error {
-	healthFuncs := []health.Func{health.CheckExtensionObject}
+	var healthFuncs []health.Func
 
-	// if the extension object has been reconciled before, use status.lastOperation.lastUpdateTime to detect if it
-	// was actually reconciled again. This is to avoid exiting early (falsly) in case we read a stale object from the
-	// cache that was already reconciled successfully before we started the reconciliation operation.
-	if lastOp := obj.GetExtensionStatus().GetLastOperation(); lastOp != nil {
-		healthFuncs = append(healthFuncs, health.ExtensionOperationHasBeenUpdatedSince(lastOp.LastUpdateTime))
+	// If the extension object has been reconciled successfully before we triggered a new reconciliation and our cache
+	// is not updated fast enough with our reconciliation trigger (i.e. adding the reconcile annotation), we might
+	// falsy return early from waiting for the extension object to be ready (as the last state already was "ready").
+	// Use the timestamp annotation on the object as an ensurance, that once we see it in our cache, we are observing
+	// a version of the object that is fresh enough.
+	if expectedTimestamp, ok := obj.GetAnnotations()[v1beta1constants.GardenerTimestamp]; ok {
+		healthFuncs = append(healthFuncs, health.ObjectHasAnnotationWithValue(v1beta1constants.GardenerTimestamp, expectedTimestamp))
 	}
+
+	healthFuncs = append(healthFuncs, health.CheckExtensionObject)
 
 	return WaitUntilObjectReadyWithHealthFunction(
 		ctx,

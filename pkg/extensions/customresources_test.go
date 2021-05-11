@@ -136,29 +136,33 @@ var _ = Describe("extensions", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should return error if extension object's last operation has not been updated", func() {
+		It("should return error if client has not observed latest timestamp annotation", func() {
 			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State:          gardencorev1beta1.LastOperationStateSucceeded,
 				LastUpdateTime: metav1.Now(),
 			}
+			now = time.Now()
+			metav1.SetMetaDataAnnotation(&expected.ObjectMeta, v1beta1constants.GardenerTimestamp, now.UTC().String())
+			passedObj := expected.DeepCopy()
+			metav1.SetMetaDataAnnotation(&passedObj.ObjectMeta, v1beta1constants.GardenerTimestamp, now.Add(time.Millisecond).UTC().String())
 
 			Expect(c.Create(ctx, expected)).ToNot(HaveOccurred(), "creating worker succeeds")
 			err := WaitUntilExtensionObjectReady(
 				ctx, c, log,
-				expected, extensionsv1alpha1.WorkerResource,
+				passedObj, extensionsv1alpha1.WorkerResource,
 				defaultInterval, defaultThreshold, defaultTimeout, nil,
 			)
-			Expect(err).To(MatchError(ContainSubstring("operation has not been updated")), "worker readiness error")
+			Expect(err).To(MatchError(ContainSubstring("annotation is not")), "worker readiness error")
 		})
 
-		It("should return success if extension object got ready again", func() {
+		It("should return success if extension object got ready again and we observed latest timestamp annotation", func() {
 			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State:          gardencorev1beta1.LastOperationStateSucceeded,
 				LastUpdateTime: metav1.Now(),
 			}
+			now = time.Now()
+			metav1.SetMetaDataAnnotation(&expected.ObjectMeta, v1beta1constants.GardenerTimestamp, now.UTC().String())
 			passedObj := expected.DeepCopy()
-			updatedTime := expected.Status.LastOperation.LastUpdateTime.Add(time.Second)
-			expected.Status.LastOperation.LastUpdateTime = metav1.NewTime(updatedTime)
 
 			Expect(c.Create(ctx, expected)).ToNot(HaveOccurred(), "creating worker succeeds")
 			err := WaitUntilExtensionObjectReady(
