@@ -76,6 +76,7 @@ var _ = Describe("#Network", func() {
 		ctrl = gomock.NewController(GinkgoT())
 
 		mockNow = mocktime.NewMockNow(ctrl)
+		now = time.Now()
 
 		ctx = context.TODO()
 		log = logger.NewNopLogger()
@@ -167,17 +168,56 @@ var _ = Describe("#Network", func() {
 			Expect(defaultDepWaiter.Wait(ctx)).To(HaveOccurred(), "network indicates error")
 		})
 
-		It("should return no error when is ready", func() {
+		It("should return error if we haven't observed the latest timestamp annotation", func() {
+			defer test.WithVars(
+				&network.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(expected.DeepCopy())
 			expected.Status.LastError = nil
-			// remove operation annotation
-			expected.ObjectMeta.Annotations = map[string]string{}
-			// set last operation
+			// remove operation annotation, add old timestamp annotation
+			expected.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().String(),
+			}
 			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State: gardencorev1beta1.LastOperationStateSucceeded,
 			}
+			Expect(c.Patch(ctx, expected, patch)).To(Succeed(), "patching network succeeds")
 
-			Expect(c.Create(ctx, expected)).ToNot(HaveOccurred(), "creating network succeeds")
-			Expect(defaultDepWaiter.Wait(ctx)).ToNot(HaveOccurred(), "network is ready, should not return an error")
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "network indicates error")
+		})
+
+		It("should return no error when it's ready", func() {
+			defer test.WithVars(
+				&network.TimeNow, mockNow.Do,
+			)()
+			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+
+			By("deploy")
+			// Deploy should fill internal state with the added timestamp annotation
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			By("patch object")
+			patch := client.MergeFrom(expected.DeepCopy())
+			expected.Status.LastError = nil
+			// remove operation annotation, add up-to-date timestamp annotation
+			expected.ObjectMeta.Annotations = map[string]string{
+				v1beta1constants.GardenerTimestamp: now.UTC().String(),
+			}
+			expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State: gardencorev1beta1.LastOperationStateSucceeded,
+			}
+			Expect(c.Patch(ctx, expected, patch)).To(Succeed(), "patching network succeeds")
+
+			By("wait")
+			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "network is ready")
 		})
 	})
 
