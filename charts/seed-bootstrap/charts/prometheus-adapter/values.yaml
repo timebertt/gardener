@@ -1,4 +1,7 @@
-# Default values for k8s-prometheus-adapter..
+nameOverride: prometheus-adapter
+fullnameOverride: prometheus-adapter
+
+
 affinity: {}
 
 image:
@@ -6,9 +9,9 @@ image:
   tag: v0.8.4
   pullPolicy: IfNotPresent
 
-logLevel: 4
+logLevel: 2
 
-metricsRelistInterval: 1m
+metricsRelistInterval: 5m
 
 listenPort: 6443
 
@@ -19,8 +22,8 @@ priorityClassName: ""
 # Url to access prometheus
 prometheus:
   # Value is templated
-  url: http://prometheus.default.svc
-  port: 9090
+  url: http://aggregate-prometheus-web.garden.svc
+  port: 80
   path: ""
 
 replicas: 1
@@ -59,15 +62,24 @@ resources: {}
   #   memory: 128Mi
 
 rules:
-  default: true
-  custom: []
-# - seriesQuery: '{__name__=~"^some_metric_count$"}'
-#   resources:
-#     template: <<.Resource>>
-#   name:
-#     matches: ""
-#     as: "my_custom_metric"
-#   metricsQuery: sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+  default: false
+  custom:
+  - seriesQuery: 'apiserver_request_total{cluster!="",pod!=""}'
+    resources:
+      overrides:
+        cluster: {resource: "namespace"}
+        pod: {resource: "pod"}
+    name:
+      as: "requests_per_second"
+    metricsQuery: 'sum(rate(apiserver_request_total{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)'
+  - seriesQuery: 'apiserver_current_inflight_requests{cluster!="",pod!=""}'
+    resources:
+      overrides:
+        cluster: {resource: "namespace"}
+        pod: {resource: "pod"}
+    name:
+      as: "current_inflight_requests"
+    metricsQuery: 'sum(avg_over_time(apiserver_current_inflight_requests{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)'
   # Mounts a configMap with pre-generated rules for use. Overrides the
   # default, custom, external and resource entries
   existing:

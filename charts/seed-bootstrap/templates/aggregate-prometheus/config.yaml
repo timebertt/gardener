@@ -48,6 +48,7 @@ data:
         - '{__name__="prometheus_tsdb_storage_blocks_bytes"}'
         - '{__name__="kubeproxy_network_latency:quantile"}'
         - '{__name__="kubeproxy_sync_proxy:quantile"}'
+        - '{__name__=~"^apiserver_(request_total|current_inflight_requests)"}'
       kubernetes_sd_configs:
       - role: endpoints
       relabel_configs:
