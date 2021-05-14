@@ -4,11 +4,30 @@ kind: VerticalPodAutoscaler
 metadata:
   name: kube-apiserver-vpa
   namespace: {{ .Release.Namespace }}
+  labels:
+    gardener.cloud/role: controlplane
+    app: kubernetes
+    role: apiserver
 spec:
   targetRef:
     apiVersion: {{ include "deploymentversion" . }}
     kind: Deployment
     name: kube-apiserver
   updatePolicy:
-    updateMode: "Off"
+    updateMode: {{ .Values.vpa.updateMode }}
+  resourcePolicy:
+    containerPolicies:
+    - containerName: kube-apiserver
+      maxAllowed:
+        memory: 25G
+        cpu: "8"
+      minAllowed:
+        memory: 400M
+        cpu: 300m
+    {{- if .Values.sni.podMutatorEnabled }}
+    - containerName: apiserver-proxy-pod-mutator
+      mode: "Off"
+    {{- end }}
+    - containerName: vpn-seed
+      mode: "Off"
 {{ end }}

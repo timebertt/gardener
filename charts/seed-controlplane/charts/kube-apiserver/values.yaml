@@ -104,9 +104,23 @@ maxReplicas: 1
 minReplicas: 1
 
 hpa:
+  customMetrics:
+    enabled: false
+    metrics:
+    - type: Pods
+      pods:
+        metricName: requests_per_second
+        targetAverageValue: 100
+    - type: Pods
+      pods:
+        metricName: current_inflight_requests
+        targetAverageValue: 50
   targetAverageUtilizationCpu: 80
   memoryMetricForHpaEnabled: false
   targetAverageUtilizationMemory: 80
+
+vpa:
+  updateMode: "Off"
 
 auditConfig:
   auditPolicy: ""

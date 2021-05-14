@@ -71,7 +71,8 @@ rules:
         pod: {resource: "pod"}
     name:
       as: "requests_per_second"
-    metricsQuery: 'sum(rate(apiserver_request_total{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)'
+    ## TODO: use recording rule for this to minimize load on aggregate-prometheus
+    metricsQuery: 'round(sum(rate(apiserver_request_total{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>))'
   - seriesQuery: 'apiserver_current_inflight_requests{cluster!="",pod!=""}'
     resources:
       overrides:
@@ -79,7 +80,7 @@ rules:
         pod: {resource: "pod"}
     name:
       as: "current_inflight_requests"
-    metricsQuery: 'sum(avg_over_time(apiserver_current_inflight_requests{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)'
+    metricsQuery: 'round(sum(avg_over_time(apiserver_current_inflight_requests{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>))'
   # Mounts a configMap with pre-generated rules for use. Overrides the
   # default, custom, external and resource entries
   existing:

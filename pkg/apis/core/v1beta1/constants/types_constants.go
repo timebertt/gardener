@@ -212,6 +212,11 @@ const (
 	// Note that this annotation is alpha and can be removed anytime without further notice. Only use it if you know
 	// what you do.
 	ShootAlphaScalingAPIServerClass = "alpha.kube-apiserver.scaling.shoot.gardener.cloud/class"
+	// ShootAlphaScalingAPIServerCustomMetrics is a constant for an annotation on the shoot stating that the
+	// kube-apiserver should be horizontally scaled based on custom metrics.
+	// Note that this annotation is alpha and can be removed anytime without further notice. Only use it if you know
+	// what you do.
+	ShootAlphaScalingAPIServerCustomMetrics = "alpha.kube-apiserver.scaling.shoot.gardener.cloud/custom-metrics"
 	// ShootAlphaControlPlaneScaleDownDisabled is a constant for an annotation on the Shoot resource staiting that the
 	// automatic scale-down shall be disabled for the etcd, kube-apiserver, kube-controller-manager.
 	// Note that this annotation is alpha and can be removed anytime without further notice. Only use it if you know

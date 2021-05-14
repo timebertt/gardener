@@ -6,6 +6,10 @@ kind: HorizontalPodAutoscaler
 metadata:
   name: kube-apiserver
   namespace: {{ .Release.Namespace }}
+  labels:
+    gardener.cloud/role: controlplane
+    app: kubernetes
+    role: apiserver
 spec:
   minReplicas: {{ .Values.minReplicas }}
   maxReplicas: {{ .Values.maxReplicas }}
@@ -14,13 +18,18 @@ spec:
     kind: Deployment
     name: kube-apiserver
   metrics:
+  {{- if not .Values.hpa.customMetrics.enabled }}
   - type: Resource
     resource:
       name: cpu
+      type:
       targetAverageUtilization: {{ .Values.hpa.targetAverageUtilizationCpu }}
   - type: Resource
     resource:
       name: memory
       targetAverageUtilization: {{ .Values.hpa.targetAverageUtilizationMemory }}
+  {{- else }}
+  {{- .Values.hpa.customMetrics.metrics | toYaml | nindent 2 }}
+  {{- end }}
 {{- end }}
 {{ end }}

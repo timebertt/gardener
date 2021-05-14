@@ -432,6 +432,9 @@ func (b *Botanist) DeployKubeAPIServer(ctx context.Context) error {
 		mountHostCADirectories    = gardenletfeatures.FeatureGate.Enabled(features.MountHostCADirectories)
 		memoryMetricForHpaEnabled = false
 
+		customMetricsForHPAEnabled = false
+		vpaUpdateMode              = autoscalingv1beta2.UpdateModeOff
+
 		scaleDownUpdateMode       = hvpav1alpha1.UpdateModeAuto
 		minReplicas         int32 = 1
 		maxReplicas         int32 = 4
@@ -444,6 +447,12 @@ func (b *Botanist) DeployKubeAPIServer(ctx context.Context) error {
 	if metav1.HasAnnotation(b.Shoot.Info.ObjectMeta, v1beta1constants.ShootAlphaControlPlaneScaleDownDisabled) {
 		minReplicas = 4
 		scaleDownUpdateMode = hvpav1alpha1.UpdateModeOff
+	}
+
+	if metav1.HasAnnotation(b.Shoot.Info.ObjectMeta, v1beta1constants.ShootAlphaScalingAPIServerCustomMetrics) {
+		hvpaEnabled = false
+		customMetricsForHPAEnabled = true
+		vpaUpdateMode = autoscalingv1beta2.UpdateModeAuto
 	}
 
 	if b.ManagedSeed != nil {
@@ -496,7 +505,13 @@ func (b *Botanist) DeployKubeAPIServer(ctx context.Context) error {
 			},
 			"scaleDownUpdateMode": scaleDownUpdateMode,
 			"hpa": map[string]interface{}{
+				"customMetrics": map[string]interface{}{
+					"enabled": customMetricsForHPAEnabled,
+				},
 				"memoryMetricForHpaEnabled": memoryMetricForHpaEnabled,
+			},
+			"vpa": map[string]interface{}{
+				"updateMode": vpaUpdateMode,
 			},
 		}
 
