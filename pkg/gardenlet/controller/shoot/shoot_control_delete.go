@@ -556,10 +556,15 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			Fn:           flow.TaskFn(botanist.DeleteSeedNamespace).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			Dependencies: flow.NewTaskIDs(syncPoint, deleteDNSProviders, destroyReferencedResources),
 		})
-		_ = g.Add(flow.Task{
+		waitUntilNamespaceDeleted = g.Add(flow.Task{
 			Name:         "Waiting until shoot namespace in Seed has been deleted",
 			Fn:           botanist.WaitUntilSeedNamespaceDeleted,
 			Dependencies: flow.NewTaskIDs(deleteNamespace),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deleting Shoot State",
+			Fn:           botanist.DeleteShootState,
+			Dependencies: flow.NewTaskIDs(syncPoint, waitUntilNamespaceDeleted),
 		})
 		f = g.Compile()
 	)
