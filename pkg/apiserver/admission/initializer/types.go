@@ -19,6 +19,7 @@ import (
 	externalcoreclientset "github.com/gardener/gardener/pkg/client/core/clientset/versioned"
 	externalcoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	coreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
+	clientkubernetes "github.com/gardener/gardener/pkg/client/kubernetes"
 	seedmanagementclientset "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned"
 	seedmanagementinformers "github.com/gardener/gardener/pkg/client/seedmanagement/informers/externalversions"
 	settingsinformer "github.com/gardener/gardener/pkg/client/settings/informers/externalversions"
@@ -30,6 +31,12 @@ import (
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 )
+
+// WantsClientSet defines a function which sets kubenertes.Interface for admission plugins that need it.
+type WantsClientSet interface {
+	SetClientSet(clientkubernetes.Interface)
+	admission.InitializationValidator
+}
 
 // WantsInternalCoreInformerFactory defines a function which sets InformerFactory for admission plugins that need it.
 type WantsInternalCoreInformerFactory interface {
@@ -104,6 +111,8 @@ type WantsQuotaConfiguration interface {
 }
 
 type pluginInitializer struct {
+	clientSet clientkubernetes.Interface
+
 	coreInformers coreinformers.SharedInformerFactory
 	coreClient    coreclientset.Interface
 

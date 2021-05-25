@@ -23,10 +23,10 @@ import (
 	"sync"
 
 	"github.com/gardener/gardener/pkg/apis/core/v1alpha1"
-	externalcoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
-	corev1alpha1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1alpha1"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	"github.com/hashicorp/go-multierror"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apiserver/pkg/admission"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,18 +60,19 @@ func NewFactory(config io.Reader) (admission.Interface, error) {
 // DeletionConfirmation contains an admission handler and listers.
 type DeletionConfirmation struct {
 	*admission.Handler
+
+	clientSet                kubernetes.Interface
 	gardenCoreClient         internalversion.Interface
 	gardenExternalCoreClient versioned.Interface
 	shootLister              corelisters.ShootLister
-	shootStateLister         corev1alpha1listers.ShootStateLister
 	projectLister            corelisters.ProjectLister
 	readyFunc                admission.ReadyFunc
 }
 
 var (
+	_ = admissioninitializer.WantsClientSet(&DeletionConfirmation{})
 	_ = admissioninitializer.WantsInternalCoreInformerFactory(&DeletionConfirmation{})
 	_ = admissioninitializer.WantsInternalCoreClientset(&DeletionConfirmation{})
-	_ = admissioninitializer.WantsExternalCoreInformerFactory(&DeletionConfirmation{})
 	_ = admissioninitializer.WantsExternalCoreClientset(&DeletionConfirmation{})
 
 	readyFuncs = []admission.ReadyFunc{}
@@ -101,12 +102,8 @@ func (d *DeletionConfirmation) SetInternalCoreInformerFactory(f coreinformers.Sh
 	readyFuncs = append(readyFuncs, shootInformer.Informer().HasSynced, projectInformer.Informer().HasSynced)
 }
 
-// SetExternalCoreInformerFactory sets the external garden core informer factory.
-func (d *DeletionConfirmation) SetExternalCoreInformerFactory(f externalcoreinformers.SharedInformerFactory) {
-	shootStateInformer := f.Core().V1alpha1().ShootStates()
-	d.shootStateLister = shootStateInformer.Lister()
-
-	readyFuncs = append(readyFuncs, shootStateInformer.Informer().HasSynced)
+func (d *DeletionConfirmation) SetClientSet(clientSet kubernetes.Interface) {
+	d.clientSet = clientSet
 }
 
 // SetInternalCoreClientset gets the clientset from the Kubernetes client.
@@ -121,14 +118,14 @@ func (d *DeletionConfirmation) SetExternalCoreClientset(c versioned.Interface) {
 
 // ValidateInitialization checks whether the plugin was correctly initialized.
 func (d *DeletionConfirmation) ValidateInitialization() error {
+	if d.clientSet == nil {
+		return errors.New("missing clientSet")
+	}
 	if d.shootLister == nil {
 		return errors.New("missing shoot lister")
 	}
 	if d.projectLister == nil {
 		return errors.New("missing project lister")
-	}
-	if d.shootStateLister == nil {
-		return errors.New("missing shootState lister")
 	}
 	if d.gardenCoreClient == nil {
 		return errors.New("missing gardener internal core client")
@@ -213,7 +210,13 @@ func (d *DeletionConfirmation) Validate(ctx context.Context, a admission.Attribu
 			return d.shootStateLister.ShootStates(a.GetNamespace()).Get(a.GetName())
 		}
 		liveLookup = func() (client.Object, error) {
-			return d.gardenExternalCoreClient.CoreV1alpha1().ShootStates(a.GetNamespace()).Get(ctx, a.GetName(), kubernetes.DefaultGetOptions())
+			shootState := &metav1.PartialObjectMetadata{}
+			shootState.SetGroupVersionKind(gardencorev1alpha1.SchemeGroupVersion.WithKind("ShootState"))
+
+			if err := d.clientSet.APIReader().Get(ctx, client.ObjectKey{Namespace: a.GetNamespace(), Name: a.GetName()}, shootState); err != nil {
+				return nil, err
+			}
+			return shootState, nil
 		}
 		checkFunc = gutil.CheckIfDeletionIsConfirmed
 

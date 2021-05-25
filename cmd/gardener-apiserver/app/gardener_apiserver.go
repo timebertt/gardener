@@ -24,7 +24,7 @@ import (
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	operations "github.com/gardener/gardener/pkg/apis/operations"
+	"github.com/gardener/gardener/pkg/apis/operations"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	settingsv1alpha1 "github.com/gardener/gardener/pkg/apis/settings/v1alpha1"
@@ -176,6 +176,17 @@ func (o *Options) config(kubeAPIServerConfig *rest.Config, kubeClient *kubernete
 
 	// Initialize admission plugins
 	o.Recommended.ExtraAdmissionInitializers = func(c *genericapiserver.RecommendedConfig) ([]admission.PluginInitializer, error) {
+		clientSet, err := clientkubernetes.NewWithConfig(
+			clientkubernetes.WithRESTConfig(gardenerAPIServerConfig.LoopbackClientConfig),
+			clientkubernetes.WithClientOptions(client.Options{Scheme: clientkubernetes.GardenScheme}),
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO: start clientSet
+		// clientSet.Start(c.)
+
 		protobufLoopbackConfig := *gardenerAPIServerConfig.LoopbackClientConfig
 		if protobufLoopbackConfig.ContentType == "" {
 			protobufLoopbackConfig.ContentType = runtime.ContentTypeProtobuf
@@ -224,6 +235,7 @@ func (o *Options) config(kubeAPIServerConfig *rest.Config, kubeClient *kubernete
 
 		return []admission.PluginInitializer{
 			admissioninitializer.New(
+				clientSet,
 				o.CoreInformerFactory,
 				coreClient,
 				o.ExternalCoreInformerFactory,
