@@ -21,7 +21,6 @@ import (
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
 
@@ -132,28 +131,26 @@ func (i *infrastructure) deploy(ctx context.Context, operation string) (extensio
 		}
 	}
 
-	_, err := controllerutils.MergePatchOrCreate(ctx, i.client, i.infrastructure, func() error {
-		if i.values.AnnotateOperation {
-			metav1.SetMetaDataAnnotation(&i.infrastructure.ObjectMeta, v1beta1constants.GardenerOperation, operation)
-			metav1.SetMetaDataAnnotation(&i.infrastructure.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().String())
-		}
+	i.infrastructure.SetGroupVersionKind(extensionsv1alpha1.SchemeGroupVersion.WithKind("Infrastructure"))
 
-		i.infrastructure.Spec = extensionsv1alpha1.InfrastructureSpec{
-			DefaultSpec: extensionsv1alpha1.DefaultSpec{
-				Type:           i.values.Type,
-				ProviderConfig: providerConfig,
-			},
-			Region:       i.values.Region,
-			SSHPublicKey: i.values.SSHPublicKey,
-			SecretRef: corev1.SecretReference{
-				Name:      v1beta1constants.SecretNameCloudProvider,
-				Namespace: i.infrastructure.Namespace,
-			},
-		}
-		return nil
-	})
+	if i.values.AnnotateOperation {
+		metav1.SetMetaDataAnnotation(&i.infrastructure.ObjectMeta, v1beta1constants.GardenerOperation, operation)
+		metav1.SetMetaDataAnnotation(&i.infrastructure.ObjectMeta, v1beta1constants.GardenerTimestamp, TimeNow().UTC().String())
+	}
 
-	return i.infrastructure, err
+	i.infrastructure.Spec = extensionsv1alpha1.InfrastructureSpec{
+		DefaultSpec: extensionsv1alpha1.DefaultSpec{
+			Type:           i.values.Type,
+			ProviderConfig: providerConfig,
+		},
+		Region:       i.values.Region,
+		SSHPublicKey: i.values.SSHPublicKey,
+		SecretRef: corev1.SecretReference{
+			Name:      v1beta1constants.SecretNameCloudProvider,
+			Namespace: i.infrastructure.Namespace,
+		},
+	}
+	return i.infrastructure, i.client.Patch(ctx, i.infrastructure, client.Apply, client.FieldOwner("gardenlet"), client.ForceOwnership)
 }
 
 // Restore uses the seed client and the ShootState to create the Infrastructure resources and restore their state.
