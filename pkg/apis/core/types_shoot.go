@@ -425,6 +425,8 @@ type KubeAPIServerConfig struct {
 	EnableAnonymousAuthentication *bool
 	// EventTTL controls the amount of time to retain events.
 	EventTTL *metav1.Duration
+	// EncryptionConfig contains customizable encryption configuration of the API server.
+	EncryptionConfig *EncryptionConfig
 }
 
 // KubeAPIServerRequests contains configuration for request-specific settings for the kube-apiserver.
@@ -435,6 +437,15 @@ type KubeAPIServerRequests struct {
 	// MaxMutatingInflight is the maximum number of mutating requests in flight at a given time. When the server
 	// exceeds this, it rejects requests.
 	MaxMutatingInflight *int32
+}
+
+// EncryptionConfig contains customizable encryption configuration of the API server.
+type EncryptionConfig struct {
+	// Resources contains the list of resources that shall be encrypted in addition to secrets.
+	// Each item is a Kubernetes resource name (resource or resource.group) that should be encrypted.
+	// Only additional resources can be added, but no resources can be removed. If resources are added, users need to issue
+	// update requests for all existing objects (e.g. empty patches) to encrypt the data in etcd.
+	Resources []string
 }
 
 // ServiceAccountConfig is the kube-apiserver configuration for service accounts.

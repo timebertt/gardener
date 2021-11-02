@@ -179,6 +179,10 @@ spec:
   #       name: my-signing-key-secret
   #     extendTokenExpiration: true
   #     maxTokenExpiration: 1y
+  #   encryptionConfig: # See: https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/
+  #     resources: # secrets are always encrypted
+  #     - configmaps
+  #     - customresource.fancyoperator.io
   # kubeControllerManager:
   #   nodeCIDRMaskSize: 24
   #   podEvictionTimeout: 2m0s

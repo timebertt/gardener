@@ -77,6 +77,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.DNSProvider":                            schema_pkg_apis_core_v1alpha1_DNSProvider(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.DataVolume":                             schema_pkg_apis_core_v1alpha1_DataVolume(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.DeploymentRef":                          schema_pkg_apis_core_v1alpha1_DeploymentRef(ref),
+		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.EncryptionConfig":                       schema_pkg_apis_core_v1alpha1_EncryptionConfig(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.Endpoint":                               schema_pkg_apis_core_v1alpha1_Endpoint(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.ExpirableVersion":                       schema_pkg_apis_core_v1alpha1_ExpirableVersion(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1alpha1.ExposureClass":                          schema_pkg_apis_core_v1alpha1_ExposureClass(ref),
@@ -224,6 +225,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/gardener/gardener/pkg/apis/core/v1beta1.DNSProvider":                             schema_pkg_apis_core_v1beta1_DNSProvider(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1beta1.DataVolume":                              schema_pkg_apis_core_v1beta1_DataVolume(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1beta1.DeploymentRef":                           schema_pkg_apis_core_v1beta1_DeploymentRef(ref),
+		"github.com/gardener/gardener/pkg/apis/core/v1beta1.EncryptionConfig":                        schema_pkg_apis_core_v1beta1_EncryptionConfig(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1beta1.Endpoint":                                schema_pkg_apis_core_v1beta1_Endpoint(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1beta1.ExpirableVersion":                        schema_pkg_apis_core_v1beta1_ExpirableVersion(ref),
 		"github.com/gardener/gardener/pkg/apis/core/v1beta1.Extension":                               schema_pkg_apis_core_v1beta1_Extension(ref),
@@ -2569,6 +2571,34 @@ func schema_pkg_apis_core_v1alpha1_DeploymentRef(ref common.ReferenceCallback) c
 	}
 }
 
+func schema_pkg_apis_core_v1alpha1_EncryptionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EncryptionConfig contains customizable encryption configuration of the API server.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"resources": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Resources contains the list of resources that shall be encrypted in addition to secrets. Each item is a Kubernetes resource name (resource or resource.group) that should be encrypted. Only additional resources can be added, but no resources can be removed. If resources are added, users need to issue update requests for all existing objects (e.g. empty patches) to encrypt the data in etcd.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_core_v1alpha1_Endpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -3306,11 +3336,17 @@ func schema_pkg_apis_core_v1alpha1_KubeAPIServerConfig(ref common.ReferenceCallb
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
 						},
 					},
+					"encryptionConfig": {
+						SchemaProps: spec.SchemaProps{
+							Description: "EncryptionConfig contains customizable encryption configuration of the API server.",
+							Ref:         ref("github.com/gardener/gardener/pkg/apis/core/v1alpha1.EncryptionConfig"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/gardener/gardener/pkg/apis/core/v1alpha1.AdmissionPlugin", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.AuditConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.KubeAPIServerRequests", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.OIDCConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.ServiceAccountConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.WatchCacheSizes", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+			"github.com/gardener/gardener/pkg/apis/core/v1alpha1.AdmissionPlugin", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.AuditConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.EncryptionConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.KubeAPIServerRequests", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.OIDCConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.ServiceAccountConfig", "github.com/gardener/gardener/pkg/apis/core/v1alpha1.WatchCacheSizes", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
 	}
 }
 
@@ -9588,6 +9624,34 @@ func schema_pkg_apis_core_v1beta1_DeploymentRef(ref common.ReferenceCallback) co
 	}
 }
 
+func schema_pkg_apis_core_v1beta1_EncryptionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EncryptionConfig contains customizable encryption configuration of the API server.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"resources": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Resources contains the list of resources that shall be encrypted in addition to secrets. Each item is a Kubernetes resource name (resource or resource.group) that should be encrypted. Only additional resources can be added, but no resources can be removed. If resources are added, users need to issue update requests for all existing objects (e.g. empty patches) to encrypt the data in etcd.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_core_v1beta1_Endpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -10039,11 +10103,17 @@ func schema_pkg_apis_core_v1beta1_KubeAPIServerConfig(ref common.ReferenceCallba
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
 						},
 					},
+					"encryptionConfig": {
+						SchemaProps: spec.SchemaProps{
+							Description: "EncryptionConfig contains customizable encryption configuration of the API server.",
+							Ref:         ref("github.com/gardener/gardener/pkg/apis/core/v1beta1.EncryptionConfig"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/gardener/gardener/pkg/apis/core/v1beta1.AdmissionPlugin", "github.com/gardener/gardener/pkg/apis/core/v1beta1.AuditConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.KubeAPIServerRequests", "github.com/gardener/gardener/pkg/apis/core/v1beta1.OIDCConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.ServiceAccountConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.WatchCacheSizes", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+			"github.com/gardener/gardener/pkg/apis/core/v1beta1.AdmissionPlugin", "github.com/gardener/gardener/pkg/apis/core/v1beta1.AuditConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.EncryptionConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.KubeAPIServerRequests", "github.com/gardener/gardener/pkg/apis/core/v1beta1.OIDCConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.ServiceAccountConfig", "github.com/gardener/gardener/pkg/apis/core/v1beta1.WatchCacheSizes", "k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
 	}
 }
 

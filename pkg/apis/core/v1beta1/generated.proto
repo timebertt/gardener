@@ -611,6 +611,16 @@ message DeploymentRef {
   optional string name = 1;
 }
 
+// EncryptionConfig contains customizable encryption configuration of the API server.
+message EncryptionConfig {
+  // Resources contains the list of resources that shall be encrypted in addition to secrets.
+  // Each item is a Kubernetes resource name (resource or resource.group) that should be encrypted.
+  // Only additional resources can be added, but no resources can be removed. If resources are added, users need to issue
+  // update requests for all existing objects (e.g. empty patches) to encrypt the data in etcd.
+  // +optional
+  repeated string resources = 1;
+}
+
 // Endpoint is an endpoint for monitoring, logging and other services around the plant.
 message Endpoint {
   // Name is the name of the endpoint
@@ -798,6 +808,10 @@ message KubeAPIServerConfig {
   // Defaults to 1h.
   // +optional
   optional k8s.io.apimachinery.pkg.apis.meta.v1.Duration eventTTL = 12;
+
+  // EncryptionConfig contains customizable encryption configuration of the API server.
+  // +optional
+  optional EncryptionConfig encryptionConfig = 13;
 }
 
 // KubeAPIServerRequests contains configuration for request-specific settings for the kube-apiserver.

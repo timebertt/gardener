@@ -531,6 +531,9 @@ type KubeAPIServerConfig struct {
 	// Defaults to 1h.
 	// +optional
 	EventTTL *metav1.Duration `json:"eventTTL,omitempty" protobuf:"bytes,12,opt,name=eventTTL"`
+	// EncryptionConfig contains customizable encryption configuration of the API server.
+	// +optional
+	EncryptionConfig *EncryptionConfig `json:"encryptionConfig,omitempty" protobuf:"bytes,13,opt,name=encryptionConfig"`
 }
 
 // KubeAPIServerRequests contains configuration for request-specific settings for the kube-apiserver.
@@ -543,6 +546,16 @@ type KubeAPIServerRequests struct {
 	// exceeds this, it rejects requests.
 	// +optional
 	MaxMutatingInflight *int32 `json:"maxMutatingInflight,omitempty" protobuf:"bytes,2,name=maxMutatingInflight"`
+}
+
+// EncryptionConfig contains customizable encryption configuration of the API server.
+type EncryptionConfig struct {
+	// Resources contains the list of resources that shall be encrypted in addition to secrets.
+	// Each item is a Kubernetes resource name (resource or resource.group) that should be encrypted.
+	// Only additional resources can be added, but no resources can be removed. If resources are added, users need to issue
+	// update requests for all existing objects (e.g. empty patches) to encrypt the data in etcd.
+	// +optional
+	Resources []string `json:"resources,omitempty" protobuf:"bytes,1,rep,name=resources"`
 }
 
 // ServiceAccountConfig is the kube-apiserver configuration for service accounts.

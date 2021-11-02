@@ -3487,6 +3487,40 @@ string
 </tr>
 </tbody>
 </table>
+<h3 id="core.gardener.cloud/v1beta1.EncryptionConfig">EncryptionConfig
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#core.gardener.cloud/v1beta1.KubeAPIServerConfig">KubeAPIServerConfig</a>)
+</p>
+<p>
+<p>EncryptionConfig contains customizable encryption configuration of the API server.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>resources</code></br>
+<em>
+[]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Resources contains the list of resources that shall be encrypted in addition to secrets.
+Each item is a Kubernetes resource name (resource or resource.group) that should be encrypted.
+Only additional resources can be added, but no resources can be removed. If resources are added, users need to issue
+update requests for all existing objects (e.g. empty patches) to encrypt the data in etcd.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="core.gardener.cloud/v1beta1.Endpoint">Endpoint
 </h3>
 <p>
@@ -4194,6 +4228,20 @@ Kubernetes meta/v1.Duration
 <em>(Optional)</em>
 <p>EventTTL controls the amount of time to retain events.
 Defaults to 1h.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>encryptionConfig</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.EncryptionConfig">
+EncryptionConfig
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>EncryptionConfig contains customizable encryption configuration of the API server.</p>
 </td>
 </tr>
 </tbody>
