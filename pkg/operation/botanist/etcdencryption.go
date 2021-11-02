@@ -78,21 +78,29 @@ func (b *Botanist) ApplyEncryptionConfiguration(ctx context.Context) error {
 		conf   *apiserverconfigv1.EncryptionConfiguration
 	)
 	if b.Shoot.ETCDEncryption == nil {
-		return errors.New("Could not find etcd encryption configuration in ShootState")
+		return errors.New("could not find etcd encryption configuration in ShootState")
 	}
 
 	conf = etcdencryption.NewEncryptionConfiguration(b.Shoot.ETCDEncryption)
-	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.K8sSeedClient.Client(), secret, func() error {
+	// we need to calculate the checksum before adding the to-be-encrypted resources, otherwise the checksum might change
+	// if additional resources were added. A change in the checksum would result in unnecessarily rewriting all secrets.
+	// TODO: this should be refactored (make less tightly coupled to shootstate) and included in the kube-apiserver component
+	checksum, err := confChecksum(conf)
+	if err != nil {
+		return err
+	}
+
+	// add user-configured resources to encryption config
+	if apiServer := b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer; apiServer != nil && apiServer.EncryptionConfig != nil {
+		conf.Resources[0].Resources = append(conf.Resources[0].Resources, apiServer.EncryptionConfig.Resources...)
+	}
+
+	_, err = controllerutils.GetAndCreateOrMergePatch(ctx, b.K8sSeedClient.Client(), secret, func() error {
 		if b.Shoot.ETCDEncryption.ForcePlainTextResources {
 			kutil.SetMetaDataAnnotation(secret, common.EtcdEncryptionForcePlaintextAnnotationName, "true")
 		}
 		return etcdencryption.UpdateSecret(secret, conf)
 	})
-	if err != nil {
-		return err
-	}
-
-	checksum, err := confChecksum(conf)
 	if err != nil {
 		return err
 	}

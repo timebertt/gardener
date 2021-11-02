@@ -66,13 +66,11 @@ func NewEncryptionConfiguration(encryptionConfig *EncryptionConfig) *apiserverco
 		providerConfigs = append(providerConfigs, identityProviderConfiguration, aescbcProviderConfiguration)
 	}
 
-	resourceConfig := apiserverconfigv1.ResourceConfiguration{
-		Resources: []string{common.EtcdEncryptionEncryptedResourceSecrets},
-		Providers: providerConfigs,
-	}
-
 	return &apiserverconfigv1.EncryptionConfiguration{
-		Resources: []apiserverconfigv1.ResourceConfiguration{resourceConfig},
+		Resources: []apiserverconfigv1.ResourceConfiguration{{
+			Resources: []string{common.EtcdEncryptionEncryptedResourceSecrets},
+			Providers: providerConfigs,
+		}},
 	}
 }
 
