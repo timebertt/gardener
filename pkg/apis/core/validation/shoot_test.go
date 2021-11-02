@@ -1622,6 +1622,77 @@ var _ = Describe("Shoot Validation Tests", func() {
 				})
 			})
 
+			Context("encryption config", func() {
+				It("should allow specifying valid resources", func() {
+					shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig = &core.EncryptionConfig{
+						Resources: []string{"configmaps", "nonexistingresource", "postgres.fancyoperator.io"},
+					}
+					Expect(ValidateShoot(shoot)).To(BeEmpty())
+				})
+
+				It("should deny specifying duplicated resources", func() {
+					shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig = &core.EncryptionConfig{
+						Resources: []string{"configmaps", "configmaps"},
+					}
+					Expect(ValidateShoot(shoot)).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeDuplicate),
+						"Field": Equal("spec.kubernetes.kubeAPIServer.encryptionConfig.resources[1]"),
+					}))))
+				})
+
+				It("should deny specifying 'secrets' resource", func() {
+					shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig = &core.EncryptionConfig{
+						Resources: []string{"configmaps", "secrets", "secrets.core"},
+					}
+					Expect(ValidateShoot(shoot)).To(ConsistOf(
+						PointTo(MatchFields(IgnoreExtras, Fields{
+							"Type":  Equal(field.ErrorTypeForbidden),
+							"Field": Equal("spec.kubernetes.kubeAPIServer.encryptionConfig.resources[1]"),
+						})),
+						PointTo(MatchFields(IgnoreExtras, Fields{
+							"Type":  Equal(field.ErrorTypeForbidden),
+							"Field": Equal("spec.kubernetes.kubeAPIServer.encryptionConfig.resources[2]"),
+						})),
+					))
+				})
+
+				It("should allow adding resources", func() {
+					shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig = &core.EncryptionConfig{
+						Resources: []string{"configmaps"},
+					}
+					newShoot := prepareShootForUpdate(shoot)
+					newShoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig.Resources = append(newShoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig.Resources, "myfancystuff")
+
+					Expect(ValidateShootUpdate(newShoot, shoot)).To(BeEmpty())
+				})
+
+				It("should deny removing resources", func() {
+					shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig = &core.EncryptionConfig{
+						Resources: []string{"configmaps", "serviceaccounts"},
+					}
+					newShoot := prepareShootForUpdate(shoot)
+					newShoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig.Resources = []string{"configmaps"}
+
+					Expect(ValidateShootUpdate(newShoot, shoot)).To(ConsistOf(
+						PointTo(MatchFields(IgnoreExtras, Fields{
+							"Type":   Equal(field.ErrorTypeForbidden),
+							"Field":  Equal("spec.kubernetes.kubeAPIServer.encryptionConfig.resources"),
+							"Detail": Equal("existing items must not be removed"),
+						})),
+					))
+				})
+
+				It("should allow reordering resources", func() {
+					shoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig = &core.EncryptionConfig{
+						Resources: []string{"configmaps", "pods"},
+					}
+					newShoot := prepareShootForUpdate(shoot)
+					newShoot.Spec.Kubernetes.KubeAPIServer.EncryptionConfig.Resources = []string{"pods", "configmaps"}
+
+					Expect(ValidateShootUpdate(newShoot, shoot)).To(BeEmpty())
+				})
+			})
+
 			It("should not allow too specify a negative event ttl duration", func() {
 				shoot.Spec.Kubernetes.KubeAPIServer.EventTTL = &metav1.Duration{Duration: -1}
 

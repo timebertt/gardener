@@ -249,6 +249,7 @@ func ValidateShootSpecUpdate(newSpec, oldSpec *core.ShootSpec, newObjectMeta met
 	allErrs = append(allErrs, validateDNSUpdate(newSpec.DNS, oldSpec.DNS, seedGotAssigned, fldPath.Child("dns"))...)
 	allErrs = append(allErrs, validateKubernetesVersionUpdate(newSpec.Kubernetes.Version, oldSpec.Kubernetes.Version, fldPath.Child("kubernetes", "version"))...)
 	allErrs = append(allErrs, validateKubeProxyUpdate(newSpec.Kubernetes.KubeProxy, oldSpec.Kubernetes.KubeProxy, newSpec.Kubernetes.Version, fldPath.Child("kubernetes", "kubeProxy"))...)
+	allErrs = append(allErrs, validateKubeAPIServerUpdate(newSpec.Kubernetes.KubeAPIServer, oldSpec.Kubernetes.KubeAPIServer, fldPath.Child("kubernetes", "kubeAPIServer"))...)
 	allErrs = append(allErrs, validateKubeControllerManagerUpdate(newSpec.Kubernetes.KubeControllerManager, oldSpec.Kubernetes.KubeControllerManager, fldPath.Child("kubernetes", "kubeControllerManager"))...)
 	allErrs = append(allErrs, ValidateProviderUpdate(&newSpec.Provider, &oldSpec.Provider, fldPath.Child("provider"))...)
 
@@ -382,6 +383,26 @@ func ValidateNodeCIDRMaskWithMaxPod(maxPod int32, nodeCIDRMaskSize int32) field.
 
 	if ipAdressesAvailable < maxPod {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("spec").Child("kubernetes").Child("kubeControllerManager").Child("nodeCIDRMaskSize"), nodeCIDRMaskSize, fmt.Sprintf("kubelet or kube-controller configuration incorrect. Please adjust the NodeCIDRMaskSize of the kube-controller to support the highest maxPod on any worker pool. The NodeCIDRMaskSize of '%d (default: 24)' of the kube-controller only supports '%d' ip adresses. Highest maxPod setting on kubelet is '%d (default: 110)'. Please choose a NodeCIDRMaskSize that at least supports %d ip adresses", nodeCIDRMaskSize, ipAdressesAvailable, maxPod, maxPod)))
+	}
+
+	return allErrs
+}
+
+func validateKubeAPIServerUpdate(newConfig, oldConfig *core.KubeAPIServerConfig, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	oldEncryptedResources := sets.NewString()
+	if encryptionConfig := oldConfig.EncryptionConfig; encryptionConfig != nil {
+		oldEncryptedResources.Insert(encryptionConfig.Resources...)
+	}
+
+	newEncryptedResources := sets.NewString()
+	if encryptionConfig := newConfig.EncryptionConfig; encryptionConfig != nil {
+		newEncryptedResources.Insert(encryptionConfig.Resources...)
+	}
+
+	if !newEncryptedResources.IsSuperset(oldEncryptedResources) {
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("encryptionConfig", "resources"), "existing items must not be removed"))
 	}
 
 	return allErrs
@@ -751,6 +772,21 @@ func validateKubeAPIServer(kubeAPIServer *core.KubeAPIServerConfig, kubernetesVe
 		}
 		if kubeAPIServer.EventTTL.Duration > time.Hour*24*7 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("eventTTL"), *kubeAPIServer.EventTTL, "can not be longer than 7d"))
+		}
+	}
+
+	if encryptionConfig := kubeAPIServer.EncryptionConfig; encryptionConfig != nil {
+		seenResources := sets.NewString()
+		for i, res := range encryptionConfig.Resources {
+			idxPath := fldPath.Child("encryptionConfig", "resources").Index(i)
+			if seenResources.Has(res) {
+				allErrs = append(allErrs, field.Duplicate(idxPath, res))
+			}
+			// TODO: test secrets.core
+			if res == "secrets" || res == "secrets.core" {
+				allErrs = append(allErrs, field.Forbidden(idxPath, "secrets are always encrypted"))
+			}
+			seenResources.Insert(res)
 		}
 	}
 
