@@ -19,6 +19,9 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
@@ -27,6 +30,7 @@ import (
 	"github.com/gardener/gardener/pkg/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/operation/botanist"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/kubeapiserver"
 	"github.com/gardener/gardener/pkg/utils/errors"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -267,6 +271,14 @@ func (r *shootReconciler) runReconcileShootFlow(ctx context.Context, o *operatio
 			Name:         "Waiting until Kubernetes API server reports readiness",
 			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.KubeAPIServer.Wait).SkipIf(o.Shoot.HibernationEnabled),
 			Dependencies: flow.NewTaskIDs(deployKubeAPIServer),
+		})
+		// TODO: remove this in a future version
+		_ = g.Add(flow.Task{
+			Name: "Removing old Etcd Encryption Configuration Secret",
+			Fn: func(ctx context.Context) error {
+				return client.IgnoreNotFound(botanist.K8sSeedClient.Client().Delete(ctx, &corev1.Secret{ObjectMeta: kutil.ObjectMeta(botanist.Shoot.SeedNamespace, kubeapiserver.SecretNameEtcdEncryption)}))
+			},
+			Dependencies: flow.NewTaskIDs(waitUntilKubeAPIServerIsReady),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Deploying vpn-seed-server",

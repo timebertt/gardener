@@ -21,7 +21,6 @@ import (
 
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1alpha1helper "github.com/gardener/gardener/pkg/apis/core/v1alpha1/helper"
-	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/operation/botanist/component/kubeapiserver"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/operation/etcdencryption"
@@ -34,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/config/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -89,25 +89,23 @@ func (b *Botanist) ApplyEncryptionConfiguration(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	b.StoreCheckSum(kubeapiserver.SecretNameEtcdEncryption, checksum)
 
 	// add user-configured resources to encryption config
 	if apiServer := b.Shoot.GetInfo().Spec.Kubernetes.KubeAPIServer; apiServer != nil && apiServer.EncryptionConfig != nil {
 		conf.Resources[0].Resources = append(conf.Resources[0].Resources, apiServer.EncryptionConfig.Resources...)
 	}
 
-	_, err = controllerutils.GetAndCreateOrMergePatch(ctx, b.K8sSeedClient.Client(), secret, func() error {
-		if b.Shoot.ETCDEncryption.ForcePlainTextResources {
-			kutil.SetMetaDataAnnotation(secret, common.EtcdEncryptionForcePlaintextAnnotationName, "true")
-		}
-		return etcdencryption.UpdateSecret(secret, conf)
-	})
-	if err != nil {
+	if b.Shoot.ETCDEncryption.ForcePlainTextResources {
+		kutil.SetMetaDataAnnotation(secret, common.EtcdEncryptionForcePlaintextAnnotationName, "true")
+	}
+	if err := etcdencryption.UpdateSecret(secret, conf); err != nil {
 		return err
 	}
+	utilruntime.Must(kutil.MakeUnique(secret))
+	b.Shoot.Components.ControlPlane.KubeAPIServer.SetEtcdEncryptionConfigSecretName(secret.Name)
 
-	b.StoreCheckSum(kubeapiserver.SecretNameEtcdEncryption, checksum)
-
-	return nil
+	return kutil.IgnoreAlreadyExists(b.K8sSeedClient.Client().Create(ctx, secret))
 }
 
 func confChecksum(conf *apiserverconfigv1.EncryptionConfiguration) (string, error) {

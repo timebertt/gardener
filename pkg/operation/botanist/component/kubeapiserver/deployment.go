@@ -366,7 +366,7 @@ func (k *kubeAPIServer) reconcileDeployment(
 							Name: volumeNameEtcdEncryptionConfig,
 							VolumeSource: corev1.VolumeSource{
 								Secret: &corev1.SecretVolumeSource{
-									SecretName: k.secrets.EtcdEncryptionConfig.Name,
+									SecretName: k.secrets.etcdEncryptionConfigSecretName,
 								},
 							},
 						},

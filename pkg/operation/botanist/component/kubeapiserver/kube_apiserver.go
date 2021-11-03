@@ -55,6 +55,8 @@ type Interface interface {
 	GetValues() Values
 	// SetSecrets sets the secrets.
 	SetSecrets(Secrets)
+	// SetEtcdEncryptionConfigSecret sets the name of the secret containing the etcd encryption configuration.
+	SetEtcdEncryptionConfigSecretName(string)
 	// SetAutoscalingAPIServerResources sets the APIServerResources field in the AutoscalingConfig of the Values of the
 	// deployer.
 	SetAutoscalingAPIServerResources(corev1.ResourceRequirements)
@@ -200,7 +202,7 @@ type kubeAPIServer struct {
 	client    kubernetes.Interface
 	namespace string
 	values    Values
-	secrets   Secrets
+	secrets   allSecrets
 }
 
 func (k *kubeAPIServer) Deploy(ctx context.Context) error {
@@ -406,7 +408,11 @@ func (k *kubeAPIServer) SetAutoscalingReplicas(replicas *int32) {
 }
 
 func (k *kubeAPIServer) SetSecrets(secrets Secrets) {
-	k.secrets = secrets
+	k.secrets.Secrets = secrets
+}
+
+func (k *kubeAPIServer) SetEtcdEncryptionConfigSecretName(secretName string) {
+	k.secrets.etcdEncryptionConfigSecretName = secretName
 }
 
 func (k *kubeAPIServer) SetServiceAccountConfig(config ServiceAccountConfig) {
@@ -439,6 +445,11 @@ func getLabels() map[string]string {
 	}
 }
 
+type allSecrets struct {
+	Secrets
+	etcdEncryptionConfigSecretName string
+}
+
 // Secrets is collection of secrets for the kube-apiserver.
 type Secrets struct {
 	// BasicAuthentication contains the basic authentication credentials.
@@ -452,8 +463,6 @@ type Secrets struct {
 	CAFrontProxy component.Secret
 	// Etcd is the client certificate for the kube-apiserver to talk to etcd.
 	Etcd component.Secret
-	// EtcdEncryptionConfig is the configuration containing information how to encrypt the etcd data.
-	EtcdEncryptionConfig component.Secret
 	// HTTPProxy is the client certificate for the http proxy to talk to the kube-apiserver..
 	// Only relevant if VPNConfig.ReversedVPNEnabled is true.
 	HTTPProxy *component.Secret
@@ -490,7 +499,6 @@ func (s *Secrets) all() map[string]secret {
 		"CAEtcd":                 {Secret: &s.CAEtcd},
 		"CAFrontProxy":           {Secret: &s.CAFrontProxy},
 		"Etcd":                   {Secret: &s.Etcd},
-		"EtcdEncryptionConfig":   {Secret: &s.EtcdEncryptionConfig},
 		"HTTPProxy":              {Secret: s.HTTPProxy, isRequired: func(v Values) bool { return v.VPN.ReversedVPNEnabled }},
 		"KubeAggregator":         {Secret: &s.KubeAggregator},
 		"KubeAPIServerToKubelet": {Secret: &s.KubeAPIServerToKubelet},
@@ -503,7 +511,7 @@ func (s *Secrets) all() map[string]secret {
 	}
 }
 
-func (s *Secrets) verify(values Values) error {
+func (s *allSecrets) verify(values Values) error {
 	for name, secret := range s.all() {
 		if secret.isRequired != nil && !secret.isRequired(values) {
 			continue
@@ -512,6 +520,10 @@ func (s *Secrets) verify(values Values) error {
 		if secret.Secret == nil || secret.Name == "" || secret.Checksum == "" {
 			return fmt.Errorf("missing information for required secret %s", name)
 		}
+	}
+
+	if s.etcdEncryptionConfigSecretName == "" {
+		return fmt.Errorf("missing information for required secret EtcdEncryptionConfig")
 	}
 
 	return nil
