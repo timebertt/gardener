@@ -31,6 +31,12 @@ $(cat "$(dirname $0)/LICENSE_BOILERPLATE.txt" | sed "s/YEAR/$(date +%Y)/g")
 
 package charts
 
+import _ \"embed\"
+
+// ImagesYAML contains the content of the images.yaml file
+//go:embed images.yaml
+var ImagesYAML string
+
 const ("
 
 for image_name in $(yaml2json < "$PATH_CHARTS/images.yaml" | jq -r '[.images[].name] | unique | .[]'); do

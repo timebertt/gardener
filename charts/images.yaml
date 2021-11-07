@@ -303,3 +303,17 @@ images:
   sourceRepository: github.com/gardener/apiserver-proxy
   repository: eu.gcr.io/gardener-project/gardener/apiserver-proxy-pod-webhook
   tag: "v0.2.0"
+
+# Local Provider Extension
+- name: machine-controller-manager
+  sourceRepository: github.com/gardener/machine-controller-manager
+  repository: eu.gcr.io/gardener-project/gardener/machine-controller-manager
+  tag: "v0.41.0"
+- name: machine-controller-manager-provider-local
+  sourceRepository: github.com/rfranzke/machine-controller-manager-provider-local
+  repository: rfranzke/machine-controller-manager-provider-local
+  tag: 0.0.2
+- name: kindnet
+  sourceRepository: ""
+  repository: docker.io/kindest/kindnetd
+  tag: v20210326-1e038dc5
