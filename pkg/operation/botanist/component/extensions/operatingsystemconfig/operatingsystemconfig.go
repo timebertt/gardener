@@ -603,7 +603,13 @@ func (d *deployer) deploy(ctx context.Context, operation string) (extensionsv1al
 		}
 
 		if ccdUnitContent != nil {
-			files = append(files, downloaderFiles...)
+			for _, file := range downloaderFiles {
+				if file.Path != downloader.PathBootstrapToken {
+					files = append(files, file)
+
+				}
+			}
+
 			files = append(files, extensionsv1alpha1.File{
 				Path:        "/etc/systemd/system/" + downloader.UnitName,
 				Permissions: pointer.Int32(0644),

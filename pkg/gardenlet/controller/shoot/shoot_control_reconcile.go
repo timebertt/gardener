@@ -162,7 +162,7 @@ func (r *shootReconciler) runReconcileShootFlow(ctx context.Context, o *operatio
 		})
 		deployOwnerDomainDNSRecord = g.Add(flow.Task{
 			Name:         "Deploying owner domain DNS record",
-			Fn:           botanist.DeployOwnerDNSResources,
+			Fn:           flow.TaskFn(botanist.DeployOwnerDNSResources).SkipIf(true),
 			Dependencies: flow.NewTaskIDs(ensureShootStateExists, deployReferencedResources),
 		})
 		deployInternalDomainDNSRecord = g.Add(flow.Task{

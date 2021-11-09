@@ -79,6 +79,11 @@ fi
 
 echo "Checking whether we need to preload a new hyperkube image..."
 if [[ "$LAST_DOWNLOADED_HYPERKUBE_IMAGE" != "{{ .hyperkubeImage }}" ]]; then
+  if ! {{ .pathDockerBinary }} info &> /dev/null ; then
+    echo "docker daemon is not available, cannot preload hyperkube image"
+    exit 1
+  fi
+
   echo "Preloading hyperkube image ({{ .hyperkubeImage }}) because last downloaded image ($LAST_DOWNLOADED_HYPERKUBE_IMAGE) is outdated"
   {{ .pathDockerBinary }} pull "{{ .hyperkubeImage }}"
 

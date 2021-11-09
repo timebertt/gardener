@@ -465,7 +465,7 @@ func (r *shootReconciler) runDeleteShootFlow(ctx context.Context, o *operation.O
 
 				<-ctx.Done()
 				return nil
-			}).DoIf(cleanupShootResources),
+			}).DoIf(cleanupShootResources).SkipIf(true),
 			Dependencies: flow.NewTaskIDs(deleteManagedResources),
 		})
 
