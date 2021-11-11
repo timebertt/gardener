@@ -23,19 +23,6 @@ import (
 	"github.com/gardener/gardener/pkg/utils"
 )
 
-// AddWorkerForName adds a valid worker to the shoot for the given machine image name. Returns an error if the machine image cannot be found in the CloudProfile.
-func AddWorkerForName(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1beta1.CloudProfile, machineImageName *string, workerZone string) error {
-	found, image, err := helper.DetermineMachineImageForName(cloudProfile, *machineImageName)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("could not find machine image '%s' in CloudProfile '%s'", *machineImageName, cloudProfile.Name)
-	}
-
-	return AddWorker(shoot, cloudProfile, image, workerZone)
-}
-
 // setShootWorkerSettings sets the Shoot's worker settings from the given config
 func setShootWorkerSettings(shoot *gardencorev1beta1.Shoot, cfg *ShootCreationConfig, cloudProfile *gardencorev1beta1.CloudProfile) error {
 	if StringSet(cfg.workersConfig) {
@@ -45,7 +32,7 @@ func setShootWorkerSettings(shoot *gardencorev1beta1.Shoot, cfg *ShootCreationCo
 		}
 		shoot.Spec.Provider.Workers = workers
 	} else {
-		if err := SetupShootWorker(shoot, cloudProfile, cfg.workerZone); err != nil {
+		if err := SetupShootWorker(shoot, cloudProfile, cfg.workerZone, int32(*cfg.workerMinimum), int32(*cfg.workerMaximum)); err != nil {
 			return err
 		}
 	}
@@ -72,7 +59,7 @@ func setShootWorkerSettings(shoot *gardencorev1beta1.Shoot, cfg *ShootCreationCo
 }
 
 // SetupShootWorker prepares the Shoot with one worker with provider specific volume. Clears the currently configured workers.
-func SetupShootWorker(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1beta1.CloudProfile, workerZone string) error {
+func SetupShootWorker(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1beta1.CloudProfile, workerZone string, workerMinimum, workerMaximum int32) error {
 	if len(cloudProfile.Spec.MachineImages) < 1 {
 		return fmt.Errorf("at least one different machine image has to be defined in the CloudProfile")
 	}
@@ -80,11 +67,11 @@ func SetupShootWorker(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1
 	// clear current workers
 	shoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{}
 
-	return AddWorker(shoot, cloudProfile, cloudProfile.Spec.MachineImages[0], workerZone)
+	return AddWorker(shoot, cloudProfile, cloudProfile.Spec.MachineImages[0], workerZone, workerMinimum, workerMaximum)
 }
 
 // AddWorker adds a valid default worker to the shoot for the given machineImage and CloudProfile.
-func AddWorker(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1beta1.CloudProfile, machineImage gardencorev1beta1.MachineImage, workerZone string) error {
+func AddWorker(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1beta1.CloudProfile, machineImage gardencorev1beta1.MachineImage, workerZone string, workerMinimum, workerMaximum int32) error {
 	if len(cloudProfile.Spec.MachineTypes) == 0 {
 		return fmt.Errorf("no MachineTypes configured in the Cloudprofile '%s'", cloudProfile.Name)
 	}
@@ -106,18 +93,15 @@ func AddWorker(shoot *gardencorev1beta1.Shoot, cloudProfile *gardencorev1beta1.C
 
 	shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, gardencorev1beta1.Worker{
 		Name:    workerName,
-		Maximum: 2,
-		Minimum: 2,
+		Minimum: workerMinimum,
+		Maximum: workerMaximum,
 		Machine: gardencorev1beta1.Machine{
 			Type:  machineType.Name,
 			Image: shootMachineImage,
 		},
 	})
 
-	if machineType.Storage == nil {
-		if len(cloudProfile.Spec.VolumeTypes) == 0 {
-			return fmt.Errorf("no VolumeTypes configured in the Cloudprofile '%s'", cloudProfile.Name)
-		}
+	if machineType.Storage == nil && len(cloudProfile.Spec.VolumeTypes) > 0 {
 		shoot.Spec.Provider.Workers[0].Volume = &gardencorev1beta1.Volume{
 			Type:       &cloudProfile.Spec.VolumeTypes[0].Name,
 			VolumeSize: "35Gi",

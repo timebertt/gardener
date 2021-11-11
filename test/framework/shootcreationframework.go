@@ -25,6 +25,7 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 
 	"github.com/onsi/ginkgo"
+	"k8s.io/utils/pointer"
 )
 
 var shootCreationCfg *ShootCreationConfig
@@ -47,7 +48,10 @@ type ShootCreationConfig struct {
 	shootProviderType             string
 	shootK8sVersion               string
 	externalDomain                string
+	workerMinimum                 *int
+	workerMaximum                 *int
 	workerZone                    string
+	networkingType                string
 	networkingPods                string
 	networkingServices            string
 	networkingNodes               string
@@ -151,12 +155,10 @@ func validateShootCreationConfig(cfg *ShootCreationConfig) {
 		cfg.allowPrivilegedContainers = &parsedBool
 	}
 
-	if !StringSet(cfg.infrastructureProviderConfig) {
-		ginkgo.Fail(fmt.Sprintf("you need to specify the filepath to the infrastructureProviderConfig for the provider '%s'", cfg.shootProviderType))
-	}
-
-	if !FileExists(cfg.infrastructureProviderConfig) {
-		ginkgo.Fail(fmt.Sprintf("path to the infrastructureProviderConfig of the Shoot is invalid: %s", cfg.infrastructureProviderConfig))
+	if StringSet(cfg.infrastructureProviderConfig) {
+		if !FileExists(cfg.infrastructureProviderConfig) {
+			ginkgo.Fail(fmt.Sprintf("you need to specify the filepath to the infrastructureProviderConfig for the provider '%s'", cfg.shootProviderType))
+		}
 	}
 
 	if StringSet(cfg.controlPlaneProviderConfig) {
@@ -250,8 +252,20 @@ func mergeShootCreationConfig(base, overwrite *ShootCreationConfig) *ShootCreati
 		base.externalDomain = overwrite.externalDomain
 	}
 
+	if overwrite.workerMinimum != nil {
+		base.workerMinimum = overwrite.workerMinimum
+	}
+
+	if overwrite.workerMaximum != nil {
+		base.workerMaximum = overwrite.workerMaximum
+	}
+
 	if StringSet(overwrite.workerZone) {
 		base.workerZone = overwrite.workerZone
+	}
+
+	if StringSet(overwrite.networkingType) {
+		base.networkingType = overwrite.networkingType
 	}
 
 	if StringSet(overwrite.networkingPods) {
@@ -309,7 +323,10 @@ func mergeShootCreationConfig(base, overwrite *ShootCreationConfig) *ShootCreati
 func RegisterShootCreationFrameworkFlags() *ShootCreationConfig {
 	_ = RegisterGardenerFrameworkFlags()
 
-	newCfg := &ShootCreationConfig{}
+	newCfg := &ShootCreationConfig{
+		workerMinimum: pointer.Int(2),
+		workerMaximum: pointer.Int(2),
+	}
 
 	flag.StringVar(&newCfg.shootKubeconfigPath, "shoot-kubecfg-path", "", "the path to where the Kubeconfig of the Shoot cluster will be downloaded to.")
 	flag.StringVar(&newCfg.seedKubeconfigPath, "seed-kubecfg-path", "", "the path to where the Kubeconfig of the Seed cluster will be downloaded to.")
@@ -326,7 +343,10 @@ func RegisterShootCreationFrameworkFlags() *ShootCreationConfig {
 	flag.StringVar(&newCfg.shootProviderType, "provider-type", "", "the type of the cloud provider where the shoot is deployed to. e.g gcp, aws,azure,alicloud.")
 	flag.StringVar(&newCfg.shootK8sVersion, "k8s-version", "", "kubernetes version to use for the shoot.")
 	flag.StringVar(&newCfg.externalDomain, "external-domain", "", "external domain to use for the shoot. If not set, will use the default domain.")
+	flag.IntVar(newCfg.workerMinimum, "worker-minimum", *newCfg.workerMinimum, "minimum number of worker nodes of the shoot.")
+	flag.IntVar(newCfg.workerMaximum, "worker-maximum", *newCfg.workerMaximum, "maximum number of worker nodes of the shoot.")
 	flag.StringVar(&newCfg.workerZone, "worker-zone", "", "zone to use for every worker of the shoot.")
+	flag.StringVar(&newCfg.networkingType, "networking-type", "calico", "the spec.networking.type to use for this shoot. Optional. Defaults to calico.")
 	flag.StringVar(&newCfg.networkingPods, "networking-pods", "", "the spec.networking.pods to use for this shoot. Optional.")
 	flag.StringVar(&newCfg.networkingServices, "networking-services", "", "the spec.networking.services to use for this shoot. Optional.")
 	flag.StringVar(&newCfg.networkingNodes, "networking-nodes", "", "the spec.networking.nodes to use for this shoot. Optional.")
@@ -403,8 +423,12 @@ func (f *ShootCreationFramework) CreateShoot(ctx context.Context, initializeShoo
 func (f *ShootCreationFramework) InitializeShootWithFlags(ctx context.Context) error {
 	// if running in test machinery, test will be executed from root of the project
 	if !FileExists(fmt.Sprintf(".%s", f.Config.shootYamlPath)) {
-		// locally, we need find the example shoot
-		f.Config.shootYamlPath = filepath.Join(f.TemplatesDir, f.Config.shootYamlPath)
+		path := f.Config.shootYamlPath
+		if !filepath.IsAbs(f.Config.shootYamlPath) {
+			// locally, we need find the example shoot
+			path = filepath.Join(f.TemplatesDir, f.Config.shootYamlPath)
+		}
+		f.Config.shootYamlPath = path
 		if !FileExists(f.Config.shootYamlPath) {
 			return fmt.Errorf("shoot template should exist")
 		}
