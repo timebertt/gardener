@@ -67,8 +67,10 @@ ld_flags="$("$(dirname $0)"/../get-build-ld-flags.sh)"
 case $(k8s_env) in
     $KIND)
         echo "Found kind ..."
-        kubectl -n garden port-forward service/etcd 32379:2379 > /dev/null &
-        trap "kill -9 $! > /dev/null" EXIT
+        if ! nc -z -w 1 localhost 32379 &>/dev/null ; then
+          kubectl -n garden port-forward service/etcd 32379:2379 > /dev/null &
+          trap "kill -9 $! > /dev/null" EXIT
+        fi
         GO111MODULE=on go run \
           -mod=vendor \
           -ldflags "$ld_flags" \
