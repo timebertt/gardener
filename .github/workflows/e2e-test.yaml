@@ -1,0 +1,78 @@
+name: 'E2E Test'
+on:
+  push:
+    branches:
+    - master
+    - release-*
+
+jobs:
+  e2e-test-kind:
+    name: E2E Test kind
+    runs-on: ubuntu-latest
+    env:
+      KUBECONFIG: ./example/gardener-extension-provider-local/base/kubeconfig
+    steps:
+    - name: checkout
+      uses: actions/checkout@v2
+    - name: setup go
+      uses: actions/setup-go@v2
+      with:
+        go-version: '1.17.2'
+    - run: go version
+    - name: setup kubectl
+      uses: azure/setup-kubectl@v1
+      with:
+        version: v1.21.0
+    - name: install jq
+      run: |
+        curl -L -o /usr/local/bin/jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+        chmod +x /usr/local/bin/jq
+    - name: install openvpn
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openvpn
+    - name: install local dependencies
+      run: |
+        if ! which kind &>/dev/null; then
+          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.11.1/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+        fi
+
+        if ! which ip &>/dev/null; then
+          sudo apt-get install -y iproute2
+        fi
+    - name: create kind cluster
+      run: |
+        make kind-up
+        make dev-setup
+    - name: start gardener-apiserver
+      run: |
+        make start-apiserver &
+    - name: wait until gardener-apiserver is ready
+      timeout-minutes: 5
+      run: |
+        until [[ $(kubectl get apiservice v1beta1.core.gardener.cloud -ojsonpath='{.status.conditions[?(@.type=="Available")].status}') == True ]] ; do
+          echo "waiting until APIService v1beta1.core.gardener.cloud is available"
+          sleep 2
+        done
+        echo "APIService v1beta1.core.gardener.cloud is now available"
+    - name: start gardener-controller-manager
+      run: |
+        make start-controller-manager &
+        sleep 10
+    - name: register local environment
+      run: |
+        make register-local-env
+    - name: start gardenlet
+      run: |
+        make start-gardenlet SEED_NAME=local &
+        sleep 60
+    - name: start extension-provider-local
+      run: |
+        make start-extension-provider-local &
+        sleep 30
+    - name: e2e test local
+      timeout-minutes: 15
+      run: |
+        export KUBECONFIG=$PWD/$KUBECONFIG
+        ./hack/test/e2e-local.sh

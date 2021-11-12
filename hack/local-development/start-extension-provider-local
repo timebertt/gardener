@@ -15,17 +15,26 @@
 # limitations under the License.
 
 source $(dirname "${0}")/common/helpers
+REPO_ROOT=$(dirname "${0}")/../..
 
 mktemp_kubeconfig
 kubeconfig="$__tmp_kubeconfig"
 trap cleanup_kubeconfig EXIT
 
+export LEADER_ELECTION_NAMESPACE=garden
+export GO111MODULE=on
+export GARDENER_SHOOT_CLIENT=external
+
 # sudo is required for now, as we need to manipulate /etc/hosts for making the shoot API server reachable on the host machine
-sudo LEADER_ELECTION_NAMESPACE=garden GO111MODULE=on GARDENER_SHOOT_CLIENT=external \
-    go run \
+SUDO=
+if [ "$USER" != root ]; then
+  SUDO=sudo
+fi
+
+$SUDO go run \
 		  -mod=vendor \
 		  -ldflags "$("$(dirname $0)"/../get-build-ld-flags.sh)" \
-		  "$(dirname $0)"/../../cmd/gardener-extension-provider-local \
+      "$REPO_ROOT/cmd/gardener-extension-provider-local/main.go" \
 		  --kubeconfig="${KUBECONFIG:-$kubeconfig}" \
 		  --leader-election=false \
 		  --webhook-config-mode=url \
