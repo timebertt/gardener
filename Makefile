@@ -239,3 +239,24 @@ verify: check format test test-integration test-prometheus
 
 .PHONY: verify-extended
 verify-extended: check-generate check format test-cov test-cov-clean test-integration test-prometheus
+
+#####################################################################
+# provider-local												    #
+#####################################################################
+
+kind-up:
+	kind create cluster --kubeconfig example/gardener-extension-provider-local/base/kubeconfig --name gardener-local --config example/gardener-extension-provider-local/kind-cluster.yaml
+
+kind-down:
+	kind delete cluster --name gardener-local
+
+register-local-env:
+	kubectl apply -k example/gardener-extension-provider-local/local
+
+tear-down-local-env:
+	kubectl annotate project local confirmation.gardener.cloud/deletion=true
+	kubectl delete -k example/gardener-extension-provider-local/local
+
+#local-dev-setup:
+#	KUBECONFIG=example/gardener-extension-provider-local/base/kubeconfig ./hack/local-development/dev-setup
+

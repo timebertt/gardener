@@ -1,0 +1,16 @@
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerDeployment
+metadata:
+  name: provider-local
+type: helm
+providerConfig:
+  values:
+    replicaCount: 0
+---
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerRegistration
+metadata:
+  name: provider-local
+spec:
+  deployment:
+    policy: Always
