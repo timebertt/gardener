@@ -170,7 +170,10 @@ func (e *ExtensionValidator) Validate(ctx context.Context, a admission.Attribute
 		if !ok {
 			return apierrors.NewBadRequest("could not convert resource into Seed object")
 		}
-		validationError = e.validateSeed(kindToTypesMap, seed.Spec)
+
+		if seed.DeletionTimestamp == nil {
+			validationError = e.validateSeed(kindToTypesMap, seed.Spec)
+		}
 
 	case core.Kind("Shoot"):
 		shoot, ok := a.GetObject().(*core.Shoot)
