@@ -15,6 +15,8 @@ spec:
     workers:
     - machine:
         type: local
+      cri:
+        name: containerd
       name: local
       maximum: 1
       minimum: 1
