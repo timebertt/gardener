@@ -21,7 +21,7 @@ kubectl apply -f example/gardener-extension-provider-local/local
 ```
 
 ```shell
-./hack/test/e2e-local.sh
+make test-e2e-local
 ```
 
 ```shell

@@ -75,4 +75,4 @@ jobs:
       timeout-minutes: 15
       run: |
         export KUBECONFIG=$PWD/$KUBECONFIG
-        ./hack/test/e2e-local.sh
+        make test-e2e-local

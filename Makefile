@@ -257,6 +257,9 @@ tear-down-local-env:
 	kubectl annotate project local confirmation.gardener.cloud/deletion=true
 	kubectl delete -k example/gardener-extension-provider-local/local
 
+test-e2e-local:
+	./hack/test-e2e-local.sh
+
 #local-dev-setup:
 #	KUBECONFIG=example/gardener-extension-provider-local/base/kubeconfig ./hack/local-development/dev-setup
 
