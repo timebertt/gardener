@@ -1,9 +1,9 @@
 name: 'E2E Test'
 on:
-  push:
-    branches:
-    - master
-    - release-*
+#  push:
+#    branches:
+#    - master
+#    - release-*
 
 jobs:
   e2e-test-kind:
