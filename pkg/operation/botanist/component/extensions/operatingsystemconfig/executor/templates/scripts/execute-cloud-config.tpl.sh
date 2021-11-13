@@ -96,10 +96,11 @@ if [[ "$LAST_DOWNLOADED_HYPERKUBE_IMAGE" != "{{ .hyperkubeImage }}" ]]; then
   {{ .pathDockerBinary }} run --rm -v "$PATH_HYPERKUBE_DOWNLOADS":"$PATH_HYPERKUBE_DOWNLOADS":rw --entrypoint /bin/sh "{{ .hyperkubeImage }}" -c "cp /usr/local/bin/kubelet $PATH_HYPERKUBE_DOWNLOADS"
   {{ .pathDockerBinary }} run --rm -v "$PATH_HYPERKUBE_DOWNLOADS":"$PATH_HYPERKUBE_DOWNLOADS":rw --entrypoint /bin/sh "{{ .hyperkubeImage }}" -c "cp /usr/local/bin/kubectl $PATH_HYPERKUBE_DOWNLOADS"
 {{- else }}
-  HYPERKUBE_CONTAINER_ID="$({{ .pathDockerBinary }} run --rm -d -v "$PATH_HYPERKUBE_DOWNLOADS":"$PATH_HYPERKUBE_DOWNLOADS":rw "{{ .hyperkubeImage }}")"
+  HYPERKUBE_CONTAINER_ID="$({{ .pathDockerBinary }} run -d -v "$PATH_HYPERKUBE_DOWNLOADS":"$PATH_HYPERKUBE_DOWNLOADS":rw "{{ .hyperkubeImage }}")"
   {{ .pathDockerBinary }} cp   "$HYPERKUBE_CONTAINER_ID":/kubelet "$PATH_HYPERKUBE_DOWNLOADS"
   {{ .pathDockerBinary }} cp   "$HYPERKUBE_CONTAINER_ID":/kubectl "$PATH_HYPERKUBE_DOWNLOADS"
   {{ .pathDockerBinary }} stop "$HYPERKUBE_CONTAINER_ID"
+  {{ .pathDockerBinary }} rm "$HYPERKUBE_CONTAINER_ID"
 {{- end }}
   chmod +x "$PATH_HYPERKUBE_DOWNLOADS/kubelet"
   chmod +x "$PATH_HYPERKUBE_DOWNLOADS/kubectl"
