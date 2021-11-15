@@ -23,7 +23,7 @@ spec:
     metadata:
       annotations:
         {{- if .Values.imageVectorOverwrite }}
-        checksum/configmap-local-imagevector-overwrite: {{ include (print $.Template.BasePath "/configmap-imagevector-overwrite.yaml") . | sha256sum }}
+        checksum/configmap-imagevector-overwrite: {{ include (print $.Template.BasePath "/configmap-imagevector-overwrite.yaml") . | sha256sum }}
         {{- end }}
         {{- if and .Values.metrics.enableScraping }}
         prometheus.io/scrape: "true"
