@@ -12,13 +12,27 @@ rules:
   - clusters
   - controlplanes
   - controlplanes/status
-  - infrastructures
   - dnsrecords
+  - dnsrecords/status
+  - infrastructures
   - infrastructures/status
+  - networks
+  - networks/status
   - operatingsystemconfigs
   - operatingsystemconfigs/status
   - workers
   - workers/status
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+- apiGroups:
+  - dns.gardener.cloud
+  resources:
+  - dnsproviders
+  - dnsproviders/status
   verbs:
   - get
   - list
