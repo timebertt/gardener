@@ -1,0 +1,25 @@
+apiVersion: skaffold/v2beta25
+kind: Config
+build:
+  artifacts:
+  - image: eu.gcr.io/gardener-project/gardener/extensions/provider-local
+    docker:
+      dockerfile: Dockerfile
+      target: gardener-extension-provider-local
+    sync:
+      infer:
+      - charts/gardener/provider-local
+  local:
+    useBuildkit: true
+deploy:
+  helm:
+    releases:
+    - name: gardener-extension-provider-local
+      chartPath: charts/gardener/provider-local/extension
+      namespace: extension-provider-local
+      createNamespace: true
+      wait: true
+      artifactOverrides:
+        image: eu.gcr.io/gardener-project/gardener/extensions/provider-local
+      imageStrategy:
+        helm: {}

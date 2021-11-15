@@ -94,8 +94,35 @@ WORKDIR /
 ENTRYPOINT ["/landscaper-gardenlet"]
 
 ############# gardener-extension-provider-local #############
+FROM golang:1.17.2 AS builder-provider-local
+
+WORKDIR /go/src/github.com/gardener/gardener
+
+# manually copy the packages we need to keep the build context slim
+COPY charts charts
+COPY cmd cmd
+COPY extensions extensions
+COPY pkg pkg
+COPY third_party third_party
+COPY vendor vendor
+
+COPY go.mod go.sum ./
+
+# `skaffold debug` sets SKAFFOLD_GO_GCFLAGS to disable compiler optimizations
+ARG SKAFFOLD_GO_GCFLAGS
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -mod=vendor -gcflags="${SKAFFOLD_GO_GCFLAGS}" \
+    -o /gardener-extension-provider-local ./cmd/gardener-extension-provider-local
+
 FROM base AS gardener-extension-provider-local
 
+# Define GOTRACEBACK to mark this container as using the Go language runtime
+# for `skaffold debug` (https://skaffold.dev/docs/workflows/debug/).
+ENV GOTRACEBACK=single
+
 COPY charts/gardener/provider-local /charts/gardener/provider-local
-COPY --from=builder /go/bin/gardener-extension-provider-local /gardener-extension-provider-local
+COPY --from=builder-provider-local /gardener-extension-provider-local /gardener-extension-provider-local
 ENTRYPOINT ["/gardener-extension-provider-local"]

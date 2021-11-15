@@ -1,0 +1,16 @@
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerDeployment
+metadata:
+  name: provider-local
+type: helm
+providerConfig:
+  # empty chart -> don't deploy anything but make ControllerInstallation appear ready
+  chart: H4sIAAAAAAAAA+1X3Y/aOBDfZ/6K0T610pIAy4eOe8qytI2uYleEdtVHkwzB2mD7bIeU//7GIWzZtlukdtVr7/wTUmJ7vmc8E3KmMxSo2/jRojBcirbScssz2mKVCc+eAR3CaDCon4TPn/V797Lf7Q16w6Hb7w5Go/4ZDJ5D+SmUxjINcKaltN+iO3X+myI/kf/Jmmkb7Nim+H4dLsHDfv/J/Pfo7HH+R6Ne9ww6z+fm0/if558p/h61y/sYtt0WU+poGVx2gk47w20rQ5Nqrmx9EMEbLDaQutKAldRg1wivm0KC6C6B26aE4KGqWoJtcAwnyq21/ZryfztG/2Wcuv+ZTINc/piOE/e/1x0OP7//NC/8/f8ZCEOYSLXTPF9beJG+hF6n+wck0S0kU6CrzUS9YKsVLzizCKncKCZ2AURFATWbAY0G9RazABZrboBIEehZ8JRKCjMohesFrktEiqX0SOTKVkwjvN2TXMA2gB51ixSVBWZASEt8klh0xQ1JEzX723gynZFhTkMrDOl3kPAVJQ+ym44GvaADLxzBeXN0/vJPJ2InS9iwnVMKJSmzD040BpF25zYFQKQIFbfrvTV7KYGT8aGRIZeWETkjBkWr1TEhMNsYXWNtrRqHYVVVAastDqTOwyZoJmx8bZPVDdc7UaBx0f675Jo8Xu6A+jUxsCXZWrCqTliukc6sdFZXmlsu8gswTcCdmIwbq/mytI+CdrCRXD8moLBRCZxHCcTJOVxFSZxcOCF38eLNzbsF3EXzeTRbxNMEbuYwuZldx4v4ZkarVxDNPsBf8ez6ApC7TFI4lXYekJnchZMqxslKEB+ZcBgpRmHKVzwl10ReshwhlzQgBHkECvWGG5dWQwZmTkzBN9wyW2994VfQIpJcjnPX7FwdB0FIvy2KTOowJ/vKZUBJDg8N8dPLmqX34YGvnUphtSwK6o8acxepWmVg1nDcOCFoNLyfzhMKSLPCj4wcx/ApKe5DC65IYamuyvQe7djJ2m9MiWXXrE09id37ZC/plmKE9cb1LJljKnXmVm0tKY2DS4jFShOXLlNb6j3hndT3qN2riw3ckhIX4/1YR+GKysBxyEyplGxGfrPpUuGiTPo0phY++QWP/GqpY+l+ov8yODX/t6wo0fzYH4BT3/9f/P+jGdT389/Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw+O78A+pHw7GACgAAA==
+---
+apiVersion: core.gardener.cloud/v1beta1
+kind: ControllerRegistration
+metadata:
+  name: provider-local
+spec:
+  deployment:
+    policy: Always

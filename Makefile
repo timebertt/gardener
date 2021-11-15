@@ -253,6 +253,9 @@ kind-down:
 register-local-env:
 	kubectl apply -k example/provider-local/overlays/local
 
+register-local-env-skaffold:
+	kubectl apply -k example/provider-local/overlays/skaffold
+
 tear-down-local-env:
 	kubectl annotate project local confirmation.gardener.cloud/deletion=true
 	kubectl delete -k example/provider-local/overlays/local
