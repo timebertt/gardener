@@ -251,11 +251,11 @@ kind-down:
 	kind delete cluster --name gardener-local
 
 register-local-env:
-	kubectl apply -k example/gardener-extension-provider-local/local
+	kubectl apply -k example/gardener-extension-provider-local/overlays/local
 
 tear-down-local-env:
 	kubectl annotate project local confirmation.gardener.cloud/deletion=true
-	kubectl delete -k example/gardener-extension-provider-local/local
+	kubectl delete -k example/gardener-extension-provider-local/overlays/local
 
 test-e2e-local:
 	./hack/test-e2e-local.sh
