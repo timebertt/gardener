@@ -3,6 +3,8 @@ kind: Shoot
 metadata:
   name: local
   namespace: garden-local
+  annotations:
+    shoot.gardener.cloud/cleanup-infrastructure-resources-grace-period-seconds: "0"
 spec:
   seedName: local
   cloudProfileName: local
@@ -13,11 +15,11 @@ spec:
   provider:
     type: local
     workers:
-    - machine:
+    - name: local
+      machine:
         type: local
       cri:
         name: containerd
-      name: local
       maximum: 1
       minimum: 1
       maxSurge: 1
