@@ -37,7 +37,7 @@ type ensurer struct {
 	logger logr.Logger
 }
 
-func (e *ensurer) EnsureKubeletConfiguration(_ context.Context, _ gcontext.GardenContext, new, _ *kubeletconfigv1beta1.KubeletConfiguration) error {
-	new.FailSwapOn = pointer.Bool(false)
+func (e *ensurer) EnsureKubeletConfiguration(_ context.Context, _ gcontext.GardenContext, newObj, _ *kubeletconfigv1beta1.KubeletConfiguration) error {
+	newObj.FailSwapOn = pointer.Bool(false)
 	return nil
 }

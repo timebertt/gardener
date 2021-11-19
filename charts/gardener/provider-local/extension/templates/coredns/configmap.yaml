@@ -27,4 +27,4 @@ data:
         reload
         loadbalance
     }
-  {{- end -}}
+{{- end -}}

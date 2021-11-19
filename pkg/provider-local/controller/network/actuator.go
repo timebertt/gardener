@@ -59,10 +59,13 @@ func (a *actuator) Reconcile(ctx context.Context, network *extensionsv1alpha1.Ne
 	}
 
 	var (
-		labels         = map[string]string{"app": "kindnet"}
-		fileOrCreate   = corev1.HostPathFileOrCreate
-		maxSurge       = intstr.FromInt(0)
-		maxUnavailable = intstr.FromInt(1)
+		labels                = map[string]string{"app": "kindnet"}
+		fileOrCreate          = corev1.HostPathFileOrCreate
+		maxSurge              = intstr.FromInt(0)
+		maxUnavailable        = intstr.FromInt(1)
+		volumeNameCNIConfig   = "cni-cfg"
+		volumeNameXtablesLock = "xtables-lock"
+		volumeNameLibModules  = "lib-modules"
 
 		registry = managedresources.NewRegistry(kubernetes.ShootScheme, kubernetes.ShootCodec, kubernetes.ShootSerializer)
 
@@ -168,15 +171,15 @@ func (a *actuator) Reconcile(ctx context.Context, network *extensionsv1alpha1.Ne
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "cni-cfg",
+									Name:      volumeNameCNIConfig,
 									MountPath: "/etc/cni/net.d",
 								},
 								{
-									Name:      "xtables-lock",
+									Name:      volumeNameXtablesLock,
 									MountPath: "/run/xtables.lock",
 								},
 								{
-									Name:      "lib-modules",
+									Name:      volumeNameLibModules,
 									MountPath: "/lib/modules",
 									ReadOnly:  true,
 								},
@@ -187,7 +190,7 @@ func (a *actuator) Reconcile(ctx context.Context, network *extensionsv1alpha1.Ne
 						Tolerations:        []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
 						Volumes: []corev1.Volume{
 							{
-								Name: "cni-cfg",
+								Name: volumeNameCNIConfig,
 								VolumeSource: corev1.VolumeSource{
 									HostPath: &corev1.HostPathVolumeSource{
 										Path: "/etc/cni/net.d",
@@ -195,7 +198,7 @@ func (a *actuator) Reconcile(ctx context.Context, network *extensionsv1alpha1.Ne
 								},
 							},
 							{
-								Name: "xtables-lock",
+								Name: volumeNameXtablesLock,
 								VolumeSource: corev1.VolumeSource{
 									HostPath: &corev1.HostPathVolumeSource{
 										Path: "/run/xtables.lock",
@@ -204,7 +207,7 @@ func (a *actuator) Reconcile(ctx context.Context, network *extensionsv1alpha1.Ne
 								},
 							},
 							{
-								Name: "lib-modules",
+								Name: volumeNameLibModules,
 								VolumeSource: corev1.VolumeSource{
 									HostPath: &corev1.HostPathVolumeSource{
 										Path: "/lib/modules",

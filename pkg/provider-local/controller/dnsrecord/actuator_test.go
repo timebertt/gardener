@@ -30,21 +30,18 @@ func init() {
 }
 
 var _ = Describe("Actuator", func() {
-	Describe("#CreateOrUpdateValuesInEtcHostsFile", func() {
-		var (
-			hostname  = "foo.bar.com"
-			value1    = "1.2.3.4"
-			value2    = "5.6.7.8"
-			dnsRecord = &extensionsv1alpha1.DNSRecord{
-				Spec: extensionsv1alpha1.DNSRecordSpec{
-					Name:   hostname,
-					Values: []string{value1, value2},
-				},
-			}
-		)
+	var (
+		hostname  = "foo.bar.com"
+		value1    = "1.2.3.4"
+		value2    = "5.6.7.8"
+		dnsRecord = &extensionsv1alpha1.DNSRecord{
+			Spec: extensionsv1alpha1.DNSRecordSpec{
+				Name:   hostname,
+				Values: []string{value1, value2},
+			},
+		}
 
-		Context("section does not exist", func() {
-			existingEtcHostsContent := `##
+		etcdHostsContentWithoutSection = []byte(`##
 # Host Database
 #
 # localhost is used to configure the loopback interface
@@ -57,60 +54,88 @@ var _ = Describe("Actuator", func() {
 # To allow the same kube context to work on the host and the container:
 127.0.0.1 kubernetes.docker.internal
 # End of section
-`
+`)
 
-			It("should add the provided values", func() {
-				Expect(CreateOrUpdateValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(fmt.Sprintf(`%s
+		etcdHostsContentWithEmptySection = []byte(`##
+# Host Database
+#
+# localhost is used to configure the loopback interface
+# when the system is booting.  Do not change this entry.
+##
+127.0.0.1	localhost
+255.255.255.255	broadcasthost
+::1             localhost
+# Begin of gardener-extension-provider-local section
+# End of gardener-extension-provider-local section
+# Added by Docker Desktop
+# To allow the same kube context to work on the host and the container:
+127.0.0.1 kubernetes.docker.internal
+# End of section
+`)
+
+		etcdHostsContentWithUpToDateSection = []byte(fmt.Sprintf(`##
+# Host Database
+#
+# localhost is used to configure the loopback interface
+# when the system is booting.  Do not change this entry.
+##
+127.0.0.1	localhost
+255.255.255.255	broadcasthost
+::1             localhost
 # Begin of gardener-extension-provider-local section
 %s %s
 %s %s
 # End of gardener-extension-provider-local section
-`, existingEtcHostsContent, value1, hostname, value2, hostname)))
+# Added by Docker Desktop
+# To allow the same kube context to work on the host and the container:
+127.0.0.1 kubernetes.docker.internal
+# End of section
+`, value1, hostname, value2, hostname))
+
+		etcdHostsContentWithUpToDateSectionAtFileEnd = []byte(fmt.Sprintf(`%s# Begin of gardener-extension-provider-local section
+%s %s
+%s %s
+# End of gardener-extension-provider-local section
+`, etcdHostsContentWithoutSection, value1, hostname, value2, hostname))
+
+		etcdHostsContentWithUpToDateSectionAndAdditionalValues = []byte(fmt.Sprintf(`##
+# Host Database
+#
+# localhost is used to configure the loopback interface
+# when the system is booting.  Do not change this entry.
+##
+127.0.0.1	localhost
+255.255.255.255	broadcasthost
+::1             localhost
+# Begin of gardener-extension-provider-local section
+%s %s
+%s %s
+bar baz
+baz foo
+foo bar
+# End of gardener-extension-provider-local section
+# Added by Docker Desktop
+# To allow the same kube context to work on the host and the container:
+127.0.0.1 kubernetes.docker.internal
+# End of section
+`, value1, hostname, value2, hostname))
+	)
+
+	Describe("#CreateOrUpdateValuesInEtcHostsFile", func() {
+		Context("section does not exist", func() {
+			It("should add the provided values", func() {
+				Expect(CreateOrUpdateValuesInEtcHostsFile(etcdHostsContentWithoutSection, dnsRecord)).To(Equal(etcdHostsContentWithUpToDateSectionAtFileEnd))
 			})
 		})
 
 		Context("section exists but empty", func() {
-			existingEtcHostsContent := `##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Begin of gardener-extension-provider-local section
-# End of gardener-extension-provider-local section
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`
-
 			It("should add the provided values", func() {
-				Expect(CreateOrUpdateValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(fmt.Sprintf(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Begin of gardener-extension-provider-local section
-%s %s
-%s %s
-# End of gardener-extension-provider-local section
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`, value1, hostname, value2, hostname)))
+				Expect(CreateOrUpdateValuesInEtcHostsFile(etcdHostsContentWithEmptySection, dnsRecord)).To(Equal(etcdHostsContentWithUpToDateSection))
 			})
 		})
 
 		Context("section exists with different hostnames", func() {
-			existingEtcHostsContent := `##
+			etcdHostsContent := []byte(`##
 # Host Database
 #
 # localhost is used to configure the loopback interface
@@ -128,35 +153,15 @@ bar baz
 # To allow the same kube context to work on the host and the container:
 127.0.0.1 kubernetes.docker.internal
 # End of section
-`
+`)
 
 			It("should add the provided values", func() {
-				Expect(CreateOrUpdateValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(fmt.Sprintf(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Begin of gardener-extension-provider-local section
-%s %s
-%s %s
-bar baz
-baz foo
-foo bar
-# End of gardener-extension-provider-local section
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`, value1, hostname, value2, hostname)))
+				Expect(CreateOrUpdateValuesInEtcHostsFile(etcdHostsContent, dnsRecord)).To(Equal(etcdHostsContentWithUpToDateSectionAndAdditionalValues))
 			})
 		})
 
 		Context("section exists with same hostnames", func() {
-			existingEtcHostsContent := `##
+			etcdHostsContent := []byte(`##
 # Host Database
 #
 # localhost is used to configure the loopback interface
@@ -175,106 +180,29 @@ oldvalue ` + hostname + `
 # To allow the same kube context to work on the host and the container:
 127.0.0.1 kubernetes.docker.internal
 # End of section
-`
+`)
 
 			It("should add the provided values", func() {
-				Expect(CreateOrUpdateValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(fmt.Sprintf(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Begin of gardener-extension-provider-local section
-%s %s
-%s %s
-bar baz
-baz foo
-foo bar
-# End of gardener-extension-provider-local section
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`, value1, hostname, value2, hostname)))
+				Expect(CreateOrUpdateValuesInEtcHostsFile(etcdHostsContent, dnsRecord)).To(Equal(etcdHostsContentWithUpToDateSectionAndAdditionalValues))
 			})
 		})
 	})
 
 	Describe("#DeleteValuesInEtcHostsFile", func() {
-		var (
-			hostname  = "foo.bar.com"
-			value1    = "1.2.3.4"
-			value2    = "5.6.7.8"
-			dnsRecord = &extensionsv1alpha1.DNSRecord{
-				Spec: extensionsv1alpha1.DNSRecordSpec{
-					Name:   hostname,
-					Values: []string{value1, value2},
-				},
-			}
-		)
-
 		Context("section does not exist", func() {
-			existingEtcHostsContent := `##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`
-
 			It("should do nothing", func() {
-				Expect(DeleteValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(existingEtcHostsContent))
+				Expect(DeleteValuesInEtcHostsFile(etcdHostsContentWithoutSection, dnsRecord)).To(Equal(etcdHostsContentWithoutSection))
 			})
 		})
 
 		Context("section exists but empty", func() {
-			existingEtcHostsContent := `##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Begin of gardener-extension-provider-local section
-# End of gardener-extension-provider-local section
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`
-
 			It("should drop the section", func() {
-				Expect(DeleteValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`))
+				Expect(DeleteValuesInEtcHostsFile(etcdHostsContentWithEmptySection, dnsRecord)).To(Equal(etcdHostsContentWithoutSection))
 			})
 		})
 
 		Context("section exists with different hostnames", func() {
-			existingEtcHostsContent := `##
+			etcdHostsContent := []byte(`##
 # Host Database
 #
 # localhost is used to configure the loopback interface
@@ -292,15 +220,15 @@ bar baz
 baz foo
 foo bar
 # End of gardener-extension-provider-local section
-`
+`)
 
 			It("should do nothing", func() {
-				Expect(DeleteValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(existingEtcHostsContent))
+				Expect(DeleteValuesInEtcHostsFile(etcdHostsContent, dnsRecord)).To(Equal(etcdHostsContent))
 			})
 		})
 
 		Context("section exists with same hostnames", func() {
-			existingEtcHostsContent := fmt.Sprintf(`##
+			etcdHostsContent := []byte(fmt.Sprintf(`##
 # Host Database
 #
 # localhost is used to configure the loopback interface
@@ -320,10 +248,10 @@ foo bar
 # To allow the same kube context to work on the host and the container:
 127.0.0.1 kubernetes.docker.internal
 # End of section
-`, value1, hostname, hostname)
+`, value1, hostname, hostname))
 
 			It("should delete the provided values", func() {
-				Expect(DeleteValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(`##
+				Expect(DeleteValuesInEtcHostsFile(etcdHostsContent, dnsRecord)).To(Equal([]byte(`##
 # Host Database
 #
 # localhost is used to configure the loopback interface
@@ -341,83 +269,19 @@ foo bar
 # To allow the same kube context to work on the host and the container:
 127.0.0.1 kubernetes.docker.internal
 # End of section
-`))
+`)))
 			})
 		})
 
 		Context("section exists with only hostnames and ips", func() {
-			existingEtcHostsContent := fmt.Sprintf(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Begin of gardener-extension-provider-local section
-%s %s
-%s %s
-# End of gardener-extension-provider-local section
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`, value1, hostname, value2, hostname)
-
 			It("should delete the provided values", func() {
-				Expect(DeleteValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`))
+				Expect(DeleteValuesInEtcHostsFile(etcdHostsContentWithUpToDateSection, dnsRecord)).To(Equal(etcdHostsContentWithoutSection))
 			})
 		})
 
 		Context("section exists with only hostnames and ips at the end of the file", func() {
-			existingEtcHostsContent := fmt.Sprintf(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-# Begin of gardener-extension-provider-local section
-%s %s
-%s %s
-# End of gardener-extension-provider-local section
-`, value1, hostname, value2, hostname)
-
 			It("should delete the provided values", func() {
-				Expect(DeleteValuesInEtcHostsFile(existingEtcHostsContent, dnsRecord)).To(Equal(`##
-# Host Database
-#
-# localhost is used to configure the loopback interface
-# when the system is booting.  Do not change this entry.
-##
-127.0.0.1	localhost
-255.255.255.255	broadcasthost
-::1             localhost
-# Added by Docker Desktop
-# To allow the same kube context to work on the host and the container:
-127.0.0.1 kubernetes.docker.internal
-# End of section
-`))
+				Expect(DeleteValuesInEtcHostsFile(etcdHostsContentWithUpToDateSectionAtFileEnd, dnsRecord)).To(Equal(etcdHostsContentWithoutSection))
 			})
 		})
 	})

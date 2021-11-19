@@ -33,12 +33,13 @@ var logger = log.Log.WithName("local-controlplane-webhook")
 // AddToManager creates a webhook and adds it to the manager.
 func AddToManager(mgr manager.Manager) (*extensionswebhook.Webhook, error) {
 	logger.Info("Adding webhook to manager")
+
 	fciCodec := oscutils.NewFileContentInlineCodec()
+
 	return controlplane.New(mgr, controlplane.Args{
 		Kind:     controlplane.KindShoot,
 		Provider: local.Type,
 		Types:    []client.Object{&extensionsv1alpha1.OperatingSystemConfig{}},
-		Mutator: genericmutator.NewMutator(NewEnsurer(logger), oscutils.NewUnitSerializer(),
-			kubelet.NewConfigCodec(fciCodec), fciCodec, logger),
+		Mutator:  genericmutator.NewMutator(NewEnsurer(logger), oscutils.NewUnitSerializer(), kubelet.NewConfigCodec(fciCodec), fciCodec, logger),
 	})
 }

@@ -26,16 +26,19 @@ import (
 var (
 	//go:embed templates/cloud-init.template
 	cloudInitTemplateString string
-
-	cmd                = "/usr/bin/env bash %s"
-	cloudInitGenerator *ostemplate.CloudInitGenerator
+	cloudInitGenerator      *ostemplate.CloudInitGenerator
 )
 
 func init() {
 	cloudInitTemplate, err := ostemplate.NewTemplate("cloud-init").Parse(cloudInitTemplateString)
 	runtime.Must(err)
 
-	cloudInitGenerator = ostemplate.NewCloudInitGenerator(cloudInitTemplate, ostemplate.DefaultUnitsPath, cmd, func(*extensionsv1alpha1.OperatingSystemConfig) (map[string]interface{}, error) {
-		return nil, nil
-	})
+	cloudInitGenerator = ostemplate.NewCloudInitGenerator(
+		cloudInitTemplate,
+		ostemplate.DefaultUnitsPath,
+		"/usr/bin/env bash %s",
+		func(*extensionsv1alpha1.OperatingSystemConfig) (map[string]interface{}, error) {
+			return nil, nil
+		},
+	)
 }

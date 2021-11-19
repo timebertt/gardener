@@ -37,6 +37,7 @@ type AddOptions struct{}
 // AddToManagerWithOptions creates a webhook with the given options and adds it to the manager.
 func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) (*extensionswebhook.Webhook, error) {
 	logger.Info("Adding webhook to manager")
+
 	return shoot.New(mgr, shoot.Args{
 		Types:   []client.Object{&corev1.ConfigMap{}, &corev1.Service{}},
 		Mutator: NewMutator(),

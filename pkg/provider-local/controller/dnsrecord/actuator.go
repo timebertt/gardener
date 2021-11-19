@@ -55,7 +55,7 @@ func (a *actuator) Delete(_ context.Context, dnsrecord *extensionsv1alpha1.DNSRe
 	return a.reconcile(dnsrecord, DeleteValuesInEtcHostsFile)
 }
 
-func (a *actuator) reconcile(dnsRecord *extensionsv1alpha1.DNSRecord, mutateEtcHosts func(string, *extensionsv1alpha1.DNSRecord) string) error {
+func (a *actuator) reconcile(dnsRecord *extensionsv1alpha1.DNSRecord, mutateEtcHosts func([]byte, *extensionsv1alpha1.DNSRecord) []byte) error {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
@@ -84,9 +84,7 @@ func (a *actuator) reconcile(dnsRecord *extensionsv1alpha1.DNSRecord, mutateEtcH
 		return err
 	}
 
-	newEtcHostsContent := mutateEtcHosts(string(content), dnsRecord)
-
-	_, err = file.WriteAt([]byte(newEtcHostsContent), 0)
+	_, err = file.WriteAt(mutateEtcHosts(content, dnsRecord), 0)
 	return err
 }
 
@@ -105,27 +103,30 @@ const (
 
 // CreateOrUpdateValuesInEtcHostsFile creates or updates the values of the provided DNSRecord object in the /etc/hosts
 // file.
-func CreateOrUpdateValuesInEtcHostsFile(etcHostsContent string, dnsrecord *extensionsv1alpha1.DNSRecord) string {
+func CreateOrUpdateValuesInEtcHostsFile(etcHostsContent []byte, dnsrecord *extensionsv1alpha1.DNSRecord) []byte {
 	return reconcileEtcHostsFile(etcHostsContent, dnsrecord.Spec.Name, dnsrecord.Spec.Values, false)
 }
 
 // DeleteValuesInEtcHostsFile deletes the values of the provided DNSRecord object in the /etc/hosts file.
-func DeleteValuesInEtcHostsFile(etcHostsContent string, dnsrecord *extensionsv1alpha1.DNSRecord) string {
+func DeleteValuesInEtcHostsFile(etcHostsContent []byte, dnsrecord *extensionsv1alpha1.DNSRecord) []byte {
 	return reconcileEtcHostsFile(etcHostsContent, dnsrecord.Spec.Name, dnsrecord.Spec.Values, true)
 }
 
-func reconcileEtcHostsFile(etcHostsContent string, name string, values []string, remove bool) string {
-	var newContent string
+func reconcileEtcHostsFile(etcHostsContent []byte, name string, values []string, removeEntries bool) []byte {
+	var (
+		oldContent = string(etcHostsContent)
+		newContent = string(oldContent)
 
-	beginIndex := strings.Index(etcHostsContent, beginOfSection)
-	endIndex := strings.Index(etcHostsContent, endOfSection)
-	hostnameToIPs := make(map[string][]string)
+		hostnameToIPs = make(map[string][]string)
 
-	sectionExists := beginIndex >= 0 && endIndex >= 0
+		sectionBeginIndex = strings.Index(oldContent, beginOfSection)
+		sectionEndIndex   = strings.Index(oldContent, endOfSection)
+		sectionExists     = sectionBeginIndex >= 0 && sectionEndIndex >= 0
+	)
+
 	if sectionExists {
-		newContent = etcHostsContent[0 : beginIndex-1]
-
-		existingSection := etcHostsContent[beginIndex : endIndex-1]
+		newContent = oldContent[0 : sectionBeginIndex-1]
+		existingSection := oldContent[sectionBeginIndex : sectionEndIndex-1]
 
 		for _, line := range strings.Split(existingSection, "\n") {
 			split := strings.Split(line, " ")
@@ -133,43 +134,40 @@ func reconcileEtcHostsFile(etcHostsContent string, name string, values []string,
 				continue
 			}
 
-			ip := split[0]
-			hostname := split[1]
+			ip, hostname := split[0], split[1]
 			hostnameToIPs[hostname] = append(hostnameToIPs[hostname], ip)
 		}
-	} else {
-		newContent = etcHostsContent
 	}
 
 	newContent = strings.TrimSuffix(newContent, "\n")
 
-	if remove {
+	if removeEntries {
 		delete(hostnameToIPs, name)
 	} else {
 		hostnameToIPs[name] = values
 	}
 
-	var sliceOfNewContent []string
+	var newEntries []string
 	for hostname, ips := range hostnameToIPs {
 		for _, ip := range ips {
-			sliceOfNewContent = append(sliceOfNewContent, fmt.Sprintf("%s %s", ip, hostname))
+			newEntries = append(newEntries, fmt.Sprintf("%s %s", ip, hostname))
 		}
 	}
 
-	if len(sliceOfNewContent) > 0 {
+	if len(newEntries) > 0 {
 		newContent += fmt.Sprintf("\n%s\n", beginOfSection)
-		sort.Strings(sliceOfNewContent)
-		newContent += strings.Join(sliceOfNewContent, "\n")
+		sort.Strings(newEntries)
+		newContent += strings.Join(newEntries, "\n")
 		newContent += fmt.Sprintf("\n%s", endOfSection)
 	}
 
 	if sectionExists {
-		newContent += etcHostsContent[endIndex+len(endOfSection):]
+		newContent += oldContent[sectionEndIndex+len(endOfSection):]
 	}
 
 	if !strings.HasSuffix(newContent, "\n") {
 		newContent += "\n"
 	}
 
-	return newContent
+	return []byte(newContent)
 }

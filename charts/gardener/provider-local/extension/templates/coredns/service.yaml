@@ -19,4 +19,4 @@ spec:
     port: 53
     protocol: UDP
     targetPort: 9053
-  {{- end -}}
+{{- end -}}

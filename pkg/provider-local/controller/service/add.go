@@ -52,7 +52,36 @@ func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) error {
 		return err
 	}
 
-	matchExpressions := []metav1.LabelSelectorRequirement{
+	selectorPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{MatchExpressions: matchExpressions(opts.APIServerSNIEnabled)})
+	if err != nil {
+		return err
+	}
+
+	return ctrl.Watch(&source.Kind{Type: &corev1.Service{}}, &handler.EnqueueRequestForObject{}, selectorPredicate)
+}
+
+// AddToManager adds a controller with the default Options.
+func AddToManager(mgr manager.Manager) error {
+	return AddToManagerWithOptions(mgr, DefaultAddOptions)
+}
+
+func matchExpressions(apiServerSNIEnabled bool) []metav1.LabelSelectorRequirement {
+	if apiServerSNIEnabled {
+		return []metav1.LabelSelectorRequirement{
+			{
+				Key:      "app",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{"istio-ingressgateway"},
+			},
+			{
+				Key:      "istio",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{"ingressgateway"},
+			},
+		}
+	}
+
+	return []metav1.LabelSelectorRequirement{
 		{
 			Key:      v1beta1constants.LabelApp,
 			Operator: metav1.LabelSelectorOpIn,
@@ -69,30 +98,4 @@ func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) error {
 			Values:   []string{v1beta1constants.LabelAPIServerExposureGardenerManaged},
 		},
 	}
-	if opts.APIServerSNIEnabled {
-		matchExpressions = []metav1.LabelSelectorRequirement{
-			{
-				Key:      "app",
-				Operator: metav1.LabelSelectorOpIn,
-				Values:   []string{"istio-ingressgateway"},
-			},
-			{
-				Key:      "istio",
-				Operator: metav1.LabelSelectorOpIn,
-				Values:   []string{"ingressgateway"},
-			},
-		}
-	}
-
-	selectorPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{MatchExpressions: matchExpressions})
-	if err != nil {
-		return err
-	}
-
-	return ctrl.Watch(&source.Kind{Type: &corev1.Service{}}, &handler.EnqueueRequestForObject{}, selectorPredicate)
-}
-
-// AddToManager adds a controller with the default Options.
-func AddToManager(mgr manager.Manager) error {
-	return AddToManagerWithOptions(mgr, DefaultAddOptions)
 }

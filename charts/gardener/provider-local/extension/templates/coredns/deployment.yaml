@@ -88,4 +88,4 @@ spec:
             path: Corefile
           name: coredns
         name: config-volume
-  {{- end -}}
+{{- end -}}

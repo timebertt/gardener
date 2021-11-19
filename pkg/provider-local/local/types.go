@@ -18,13 +18,13 @@ import (
 	"path/filepath"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 )
 
 const (
 	// Name is the name of the local provider.
 	Name = "provider-local"
+	// Type is the type of resources managed by the local actuators.
+	Type = "local"
 
 	// FieldOwner is a constant for the owner name in `.metadata.managedFields`.
 	FieldOwner = client.FieldOwner("gardener-extension-provider-local")
@@ -38,11 +38,6 @@ const (
 )
 
 var (
-	// ChartsPath is the path to the charts
-	ChartsPath = filepath.Join("charts", "gardener", "provider-local")
 	// InternalChartsPath is the path to the internal charts
-	InternalChartsPath = filepath.Join(ChartsPath, "internal")
-
-	// UsernamePrefix is a constant for the username prefix of components deployed by the local extension.
-	UsernamePrefix = extensionsv1alpha1.SchemeGroupVersion.Group + ":" + Name + ":"
+	InternalChartsPath = filepath.Join("charts", "gardener", "provider-local", "internal")
 )

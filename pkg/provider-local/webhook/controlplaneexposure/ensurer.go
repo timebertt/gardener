@@ -36,14 +36,14 @@ type ensurer struct {
 	logger logr.Logger
 }
 
-func (e *ensurer) EnsureKubeAPIServerService(_ context.Context, _ gcontext.GardenContext, new, _ *corev1.Service) error {
-	if v1beta1helper.IsAPIServerExposureManaged(new) {
+func (e *ensurer) EnsureKubeAPIServerService(_ context.Context, _ gcontext.GardenContext, newObj, _ *corev1.Service) error {
+	if v1beta1helper.IsAPIServerExposureManaged(newObj) {
 		return nil
 	}
 
-	for i, servicePort := range new.Spec.Ports {
+	for i, servicePort := range newObj.Spec.Ports {
 		if servicePort.Name == "kube-apiserver" {
-			new.Spec.Ports[i].NodePort = 30443
+			newObj.Spec.Ports[i].NodePort = 30443
 			break
 		}
 	}
