@@ -51,7 +51,7 @@ func (a *actuator) Reconcile(ctx context.Context, infrastructure *extensionsv1al
 	networkPolicy.Spec = networkingv1.NetworkPolicySpec{
 		Egress: []networkingv1.NetworkPolicyEgressRule{{
 			To: []networkingv1.NetworkPolicyPeer{{
-				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"type": "worker"}},
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "machine"}},
 			}},
 		}},
 		PodSelector: metav1.LabelSelector{
@@ -67,7 +67,7 @@ func (a *actuator) Reconcile(ctx context.Context, infrastructure *extensionsv1al
 	service := emptyVPNShootService(infrastructure.Namespace)
 	service.Spec = corev1.ServiceSpec{
 		Type:     corev1.ServiceTypeClusterIP,
-		Selector: map[string]string{"type": "worker"},
+		Selector: map[string]string{"app": "machine"},
 		Ports: []corev1.ServicePort{{
 			Name:       "vpn",
 			Port:       4314,

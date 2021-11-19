@@ -78,7 +78,7 @@ func (w *workerDelegate) generateMachineConfig() error {
 		}
 
 		machineClassSpec := map[string]interface{}{
-			"image": "ghcr.io/timebertt/gardener-extension-provider-kind/node:sha-14b3580", // TODO: Implement properly with pool.MachineImage.Name and pool.MachineImage.Version
+			"image": "ghcr.io/rfranzke/machine-controller-manager-provider-local/node:sha-02d1e4e", // TODO: Implement properly with pool.MachineImage.Name and pool.MachineImage.Version
 			"secret": map[string]interface{}{
 				"cloudConfig": string(pool.UserData),
 				"labels":      map[string]interface{}{v1beta1constants.GardenerPurpose: genericworkeractuator.GardenPurposeMachineClass},

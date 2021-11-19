@@ -73,7 +73,7 @@ func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) (*extensionsw
 			{Key: v1beta1constants.LabelShootProvider, Operator: metav1.LabelSelectorOpIn, Values: []string{provider}},
 		}},
 		ObjectSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-			{Key: "type", Operator: metav1.LabelSelectorOpIn, Values: []string{"worker"}},
+			{Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{"machine"}},
 		}},
 	}, nil
 }

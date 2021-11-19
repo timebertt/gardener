@@ -310,10 +310,10 @@ images:
   repository: eu.gcr.io/gardener-project/gardener/machine-controller-manager
   tag: "v0.41.0"
 - name: machine-controller-manager-provider-local
-  sourceRepository: github.com/rfranzke/machine-controller-manager-provider-local
-  repository: rfranzke/machine-controller-manager-provider-local
-  tag: 0.0.2
+  sourceRepository: github.com/gardener/machine-controller-manager-provider-local
+  repository: ghcr.io/rfranzke/machine-controller-manager-provider-local
+  tag: sha-02d1e4e
 - name: kindnet
-  sourceRepository: ""
+  sourceRepository: github.com/kubernetes-sigs/kind
   repository: docker.io/kindest/kindnetd
   tag: v20210326-1e038dc5
