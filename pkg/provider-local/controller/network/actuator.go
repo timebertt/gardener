@@ -17,7 +17,6 @@ package network
 import (
 	"context"
 
-	"github.com/gardener/gardener/charts"
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	"github.com/gardener/gardener/extensions/pkg/controller/common"
 	"github.com/gardener/gardener/extensions/pkg/controller/network"
@@ -54,7 +53,7 @@ func NewActuator() network.Actuator {
 }
 
 func (a *actuator) Reconcile(ctx context.Context, network *extensionsv1alpha1.Network, cluster *extensionscontroller.Cluster) error {
-	image, err := localimagevector.ImageVector().FindImage(charts.ImageNameKindnet, imagevector.TargetVersion(cluster.Shoot.Spec.Kubernetes.Version))
+	image, err := localimagevector.ImageVector().FindImage(localimagevector.ImageNameKindnet, imagevector.TargetVersion(cluster.Shoot.Spec.Kubernetes.Version))
 	if err != nil {
 		return err
 	}

@@ -18,12 +18,6 @@ limitations under the License.
 
 package charts
 
-import _ "embed"
-
-// ImagesYAML contains the content of the images.yaml file
-//go:embed images.yaml
-var ImagesYAML string
-
 const (
 	// ImageNameAlertmanager is a constant for an image in the image vector with name 'alertmanager'.
 	ImageNameAlertmanager = "alertmanager"
@@ -73,8 +67,6 @@ const (
 	ImageNameIstioIstiod = "istio-istiod"
 	// ImageNameIstioProxy is a constant for an image in the image vector with name 'istio-proxy'.
 	ImageNameIstioProxy = "istio-proxy"
-	// ImageNameKindnet is a constant for an image in the image vector with name 'kindnet'.
-	ImageNameKindnet = "kindnet"
 	// ImageNameKubeApiserver is a constant for an image in the image vector with name 'kube-apiserver'.
 	ImageNameKubeApiserver = "kube-apiserver"
 	// ImageNameKubeControllerManager is a constant for an image in the image vector with name 'kube-controller-manager'.
@@ -95,10 +87,6 @@ const (
 	ImageNameLoki = "loki"
 	// ImageNameLokiCurator is a constant for an image in the image vector with name 'loki-curator'.
 	ImageNameLokiCurator = "loki-curator"
-	// ImageNameMachineControllerManager is a constant for an image in the image vector with name 'machine-controller-manager'.
-	ImageNameMachineControllerManager = "machine-controller-manager"
-	// ImageNameMachineControllerManagerProviderLocal is a constant for an image in the image vector with name 'machine-controller-manager-provider-local'.
-	ImageNameMachineControllerManagerProviderLocal = "machine-controller-manager-provider-local"
 	// ImageNameMetricsServer is a constant for an image in the image vector with name 'metrics-server'.
 	ImageNameMetricsServer = "metrics-server"
 	// ImageNameNginxIngressController is a constant for an image in the image vector with name 'nginx-ingress-controller'.

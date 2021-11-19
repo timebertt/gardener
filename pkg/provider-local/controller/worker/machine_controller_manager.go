@@ -21,6 +21,7 @@ import (
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	localimagevector "github.com/gardener/gardener/pkg/provider-local/imagevector"
 	"github.com/gardener/gardener/pkg/provider-local/local"
 	"github.com/gardener/gardener/pkg/utils/chart"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -34,7 +35,7 @@ var (
 	mcmChart = &chart.Chart{
 		Name:   local.MachineControllerManagerName,
 		Path:   filepath.Join(local.InternalChartsPath, local.MachineControllerManagerName, "seed"),
-		Images: []string{local.MachineControllerManagerImageName, local.MachineControllerManagerProviderLocalImageName},
+		Images: []string{localimagevector.ImageNameMachineControllerManager, localimagevector.ImageNameMachineControllerManagerProviderLocal},
 		Objects: []*chart.Object{
 			{Type: &appsv1.Deployment{}, Name: local.MachineControllerManagerName},
 			{Type: &corev1.Service{}, Name: local.MachineControllerManagerName},

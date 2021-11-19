@@ -29,11 +29,6 @@ const (
 	// FieldOwner is a constant for the owner name in `.metadata.managedFields`.
 	FieldOwner = client.FieldOwner("gardener-extension-provider-local")
 
-	// MachineControllerManagerImageName is the name of the MachineControllerManager image.
-	MachineControllerManagerImageName = "machine-controller-manager"
-	// MachineControllerManagerProviderLocalImageName is the name of the MachineController local image.
-	MachineControllerManagerProviderLocalImageName = "machine-controller-manager-provider-local"
-
 	// MachineControllerManagerName is a constant for the name of the machine-controller-manager.
 	MachineControllerManagerName = "machine-controller-manager"
 	// MachineControllerManagerVpaName is the name of the VerticalPodAutoscaler of the machine-controller-manager deployment.
