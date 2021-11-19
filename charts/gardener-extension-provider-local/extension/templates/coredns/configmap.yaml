@@ -1,3 +1,4 @@
+{{- if .Values.coredns.enabled -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,11 +12,11 @@ data:
            lameduck 5s
         }
         ready
-        {{- if .Values.controllers.service.apiServerSNIEnabled }}
+    {{- if .Values.controllers.service.apiServerSNIEnabled }}
         rewrite name regex api\.(.*)\.(.*)\.(.*)\.local\.gardener\.cloud istio-ingressgateway.istio-ingress.svc.cluster.local
-        {{- else }}
+    {{- else }}
         rewrite name regex api\.(.*)\.(.*)\.(.*)\.local\.gardener\.cloud kube-apiserver.shoot--{2}--{1}.svc.cluster.local
-        {{- end }}
+    {{- end }}
         prometheus :9153
         forward . /etc/resolv.conf {
            max_concurrent 1000
@@ -26,3 +27,4 @@ data:
         reload
         loadbalance
     }
+  {{- end -}}

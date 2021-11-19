@@ -72,6 +72,9 @@ metrics:
   ##
   enableScraping: true
 
+coredns:
+  enabled: true
+
 gardener:
   seed:
     provider: local
