@@ -245,21 +245,21 @@ verify-extended: check-generate check format test-cov test-cov-clean test-integr
 #####################################################################
 
 kind-up:
-	kind create cluster --kubeconfig example/gardener-extension-provider-local/base/kubeconfig --name gardener-local --config example/gardener-extension-provider-local/kind-cluster.yaml
+	kind create cluster --kubeconfig example/provider-local/base/kubeconfig --name gardener-local --config example/provider-local/kind-cluster.yaml
 
 kind-down:
 	kind delete cluster --name gardener-local
 
 register-local-env:
-	kubectl apply -k example/gardener-extension-provider-local/overlays/local
+	kubectl apply -k example/provider-local/overlays/local
 
 tear-down-local-env:
 	kubectl annotate project local confirmation.gardener.cloud/deletion=true
-	kubectl delete -k example/gardener-extension-provider-local/overlays/local
+	kubectl delete -k example/provider-local/overlays/local
 
 test-e2e-local:
 	./hack/test-e2e-local.sh
 
 #local-dev-setup:
-#	KUBECONFIG=example/gardener-extension-provider-local/base/kubeconfig ./hack/local-development/dev-setup
+#	KUBECONFIG=example/provider-local/base/kubeconfig ./hack/local-development/dev-setup
 

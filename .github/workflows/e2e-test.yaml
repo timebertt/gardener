@@ -10,7 +10,7 @@ jobs:
     name: E2E Test kind
     runs-on: ubuntu-latest
     env:
-      KUBECONFIG: ./example/gardener-extension-provider-local/base/kubeconfig
+      KUBECONFIG: ./example/provider-local/base/kubeconfig
     steps:
     - name: checkout
       uses: actions/checkout@v2
