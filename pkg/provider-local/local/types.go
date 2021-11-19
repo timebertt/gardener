@@ -39,7 +39,7 @@ const (
 
 var (
 	// ChartsPath is the path to the charts
-	ChartsPath = filepath.Join("charts", "gardener-extension-provider-local")
+	ChartsPath = filepath.Join("charts", "gardener", "provider-local")
 	// InternalChartsPath is the path to the internal charts
 	InternalChartsPath = filepath.Join(ChartsPath, "internal")
 

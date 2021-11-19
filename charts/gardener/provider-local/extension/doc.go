@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate ../../../hack/generate-controller-registration.sh provider-local . ../../../VERSION ../../../example/provider-local/base/controller-registration.yaml ControlPlane:local Infrastructure:local Worker:local OperatingSystemConfig:local Network:local DNSRecord:local DNSProvider:local
+//go:generate ../../../../hack/generate-controller-registration.sh provider-local . ../../../../VERSION ../../../../example/provider-local/base/controller-registration.yaml ControlPlane:local Infrastructure:local Worker:local OperatingSystemConfig:local Network:local DNSRecord:local DNSProvider:local
 
 // Package chart enables go:generate support for generating the correct controller registration.
 package chart

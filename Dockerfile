@@ -96,6 +96,6 @@ ENTRYPOINT ["/landscaper-gardenlet"]
 ############# gardener-extension-provider-local #############
 FROM base AS gardener-extension-provider-local
 
-COPY charts/gardener-extension-provider-local /charts/gardener-extension-provider-local
+COPY charts/gardener/provider-local /charts/gardener/provider-local
 COPY --from=builder /go/bin/gardener-extension-provider-local /gardener-extension-provider-local
 ENTRYPOINT ["/gardener-extension-provider-local"]
