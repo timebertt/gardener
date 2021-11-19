@@ -26,17 +26,15 @@ import (
 	"github.com/gardener/gardener/extensions/pkg/controller/operatingsystemconfig/oscommon"
 	"github.com/gardener/gardener/extensions/pkg/controller/worker"
 	webhookcmd "github.com/gardener/gardener/extensions/pkg/webhook/cmd"
-	localcmd "github.com/gardener/gardener/pkg/extensions/provider-local/cmd"
-	localcontrolplane "github.com/gardener/gardener/pkg/extensions/provider-local/controller/controlplane"
-	localdnsprovider "github.com/gardener/gardener/pkg/extensions/provider-local/controller/dnsprovider"
-	localdnsrecord "github.com/gardener/gardener/pkg/extensions/provider-local/controller/dnsrecord"
-	"github.com/gardener/gardener/pkg/extensions/provider-local/controller/healthcheck"
-	localinfrastructure "github.com/gardener/gardener/pkg/extensions/provider-local/controller/infrastructure"
-	localnetwork "github.com/gardener/gardener/pkg/extensions/provider-local/controller/network"
-	localservice "github.com/gardener/gardener/pkg/extensions/provider-local/controller/service"
-	servicecontroller "github.com/gardener/gardener/pkg/extensions/provider-local/controller/service"
-	localworker "github.com/gardener/gardener/pkg/extensions/provider-local/controller/worker"
-	"github.com/gardener/gardener/pkg/extensions/provider-local/local"
+	localcontrolplane "github.com/gardener/gardener/pkg/provider-local/controller/controlplane"
+	localdnsprovider "github.com/gardener/gardener/pkg/provider-local/controller/dnsprovider"
+	localdnsrecord "github.com/gardener/gardener/pkg/provider-local/controller/dnsrecord"
+	localhealthcheck "github.com/gardener/gardener/pkg/provider-local/controller/healthcheck"
+	localinfrastructure "github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
+	localnetwork "github.com/gardener/gardener/pkg/provider-local/controller/network"
+	localservice "github.com/gardener/gardener/pkg/provider-local/controller/service"
+	localworker "github.com/gardener/gardener/pkg/provider-local/controller/worker"
+	"github.com/gardener/gardener/pkg/provider-local/local"
 
 	dnsv1alpha1 "github.com/gardener/external-dns-management/pkg/apis/dns/v1alpha1"
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
@@ -99,7 +97,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 		}
 
 		// options for the service controller
-		serviceCtrlOpts = &servicecontroller.ControllerOptions{
+		serviceCtrlOpts = &localservice.ControllerOptions{
 			MaxConcurrentReconciles: 5,
 			HostIP:                  hostIP,
 			APIServerSNIEnabled:     true,
@@ -135,8 +133,8 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			Namespace: os.Getenv("WEBHOOK_CONFIG_NAMESPACE"),
 		}
 
-		controllerSwitches = localcmd.ControllerSwitchOptions()
-		webhookSwitches    = localcmd.WebhookSwitchOptions()
+		controllerSwitches = ControllerSwitchOptions()
+		webhookSwitches    = WebhookSwitchOptions()
 		webhookOptions     = webhookcmd.NewAddToManagerOptions(local.Name, webhookServerOptions, webhookSwitches)
 
 		aggOption = controllercmd.NewOptionAggregator(
@@ -192,7 +190,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			// add common meta types to schema for controller-runtime to use v1.ListOptions
 			metav1.AddToGroupVersion(scheme, machinev1alpha1.SchemeGroupVersion)
 
-			healthCheckCtrlOpts.Completed().Apply(&healthcheck.DefaultAddOptions.Controller)
+			healthCheckCtrlOpts.Completed().Apply(&localhealthcheck.DefaultAddOptions.Controller)
 			controlPlaneCtrlOpts.Completed().Apply(&localcontrolplane.DefaultAddOptions.Controller)
 			dnsProviderCtrlOpts.Completed().Apply(&localdnsprovider.DefaultAddOptions.Controller)
 			dnsRecordCtrlOpts.Completed().Apply(&localdnsrecord.DefaultAddOptions.Controller)
