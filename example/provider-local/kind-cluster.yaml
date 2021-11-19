@@ -8,6 +8,15 @@ nodes:
     hostPort: 443
   - containerPort: 32379
     hostPort: 32379
+  - containerPort: 30353
+    hostPort: 30353
+    protocol: udp
+  - containerPort: 30353
+    hostPort: 30353
+    protocol: tcp
+  extraMounts:
+  - hostPath: /etc/hosts
+    containerPath: /var/host/etc/hosts
 networking:
   podSubnet: 10.1.0.0/16
   serviceSubnet: 10.2.0.0/16

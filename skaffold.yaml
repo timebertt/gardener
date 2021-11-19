@@ -23,3 +23,11 @@ deploy:
         image: eu.gcr.io/gardener-project/gardener/extensions/provider-local
       imageStrategy:
         helm: {}
+      overrides:
+        controllers:
+          service:
+            hostIP: 192.168.0.102
+        coredns:
+          service:
+            type: NodePort
+            nodePort: 30353

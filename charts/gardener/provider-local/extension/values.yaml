@@ -74,6 +74,9 @@ metrics:
 
 coredns:
   enabled: true
+  service:
+    type: ClusterIP
+    # nodePort: 30353
 
 gardener:
   seed:

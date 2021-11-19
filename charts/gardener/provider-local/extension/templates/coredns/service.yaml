@@ -7,7 +7,7 @@ metadata:
   name: coredns
   namespace: gardener-extension-provider-local-coredns
 spec:
-  type: ClusterIP
+  type: {{ .Values.coredns.service.type }}
   selector:
     app: coredns
   ports:
@@ -15,8 +15,14 @@ spec:
     port: 53
     protocol: TCP
     targetPort: 9053
+    {{- if and (eq .Values.coredns.service.type "NodePort") .Values.coredns.service.nodePort }}
+    nodePort: {{ .Values.coredns.service.nodePort }}
+    {{- end }}
   - name: udp
     port: 53
     protocol: UDP
     targetPort: 9053
+    {{- if and (eq .Values.coredns.service.type "NodePort") .Values.coredns.service.nodePort }}
+    nodePort: {{ .Values.coredns.service.nodePort }}
+    {{- end }}
 {{- end -}}
