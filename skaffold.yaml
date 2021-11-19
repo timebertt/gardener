@@ -24,7 +24,20 @@ deploy:
       imageStrategy:
         helm: {}
       overrides:
+        strategy:
+          type: Recreate # needed for mounting host's /etc/hosts file
+          rollingUpdate: null
+        extraVolumes:
+        - name: hosts
+          hostPath:
+            path: /host/etc/hosts
+            type: FileOrCreate
+        extraVolumeMounts:
+        - name: hosts
+          mountPath: /host/etc/hosts
         controllers:
+          dnsrecord:
+            hostsFile: /host/etc/hosts
           service:
             hostIP: 192.168.0.102
         coredns:

@@ -31,6 +31,8 @@ var (
 type AddOptions struct {
 	// Controller are the controller.Options.
 	Controller controller.Options
+	// HostsFile points to the hosts file to manipulate.
+	HostsFile string
 	// IgnoreOperationAnnotation specifies whether to ignore the operation annotation or not.
 	IgnoreOperationAnnotation bool
 }
@@ -39,7 +41,7 @@ type AddOptions struct {
 // The opts.Reconciler is being set with a newly instantiated actuator.
 func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) error {
 	return dnsrecord.Add(mgr, dnsrecord.AddArgs{
-		Actuator:          NewActuator(),
+		Actuator:          NewActuator(opts.HostsFile),
 		ControllerOptions: opts.Controller,
 		Predicates:        dnsrecord.DefaultPredicates(opts.IgnoreOperationAnnotation),
 		Type:              local.Type,

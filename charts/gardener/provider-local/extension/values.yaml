@@ -4,8 +4,13 @@ image:
   pullPolicy: IfNotPresent
 
 replicaCount: 1
-maxUnavailable: 1
-maxSurge: 50%
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 50%
+  # recreate
 
 resources: {}
 vpa:
@@ -24,6 +29,7 @@ controllers:
     concurrentSyncs: 1
   dnsrecord:
     concurrentSyncs: 5
+    hostsFile: "/etc/hosts"
   infrastructure:
     concurrentSyncs: 5
   worker:
@@ -57,6 +63,9 @@ ignoreResources: false
 #     tag: "3.1"
 #     version: ">= 1.12"
 #   ...
+
+extraVolumes: []
+extraVolumeMounts: []
 
 webhookConfig:
   servicePort: 443

@@ -24,7 +24,6 @@ import (
 	"sync"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
-	"github.com/gardener/gardener/extensions/pkg/controller/common"
 	"github.com/gardener/gardener/extensions/pkg/controller/dnsrecord"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 
@@ -32,18 +31,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const pathEtcHosts = "/etc/hosts"
-
 type actuator struct {
-	logger logr.Logger
-	lock   sync.Mutex
-	common.RESTConfigContext
+	logger    logr.Logger
+	lock      sync.Mutex
+	hostsFile string
 }
 
 // NewActuator creates a new Actuator that updates the status of the handled DNSRecord resources.
-func NewActuator() dnsrecord.Actuator {
+func NewActuator(hostsFile string) dnsrecord.Actuator {
 	return &actuator{
-		logger: log.Log.WithName("dnsrecord-actuator"),
+		logger:    log.Log.WithName("dnsrecord-actuator"),
+		hostsFile: hostsFile,
 	}
 }
 
@@ -59,12 +57,14 @@ func (a *actuator) reconcile(dnsRecord *extensionsv1alpha1.DNSRecord, mutateEtcH
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	fileInfo, err := os.Stat(pathEtcHosts)
+	log := a.logger.WithValues("name", dnsRecord.Name, "namespace", dnsRecord.Namespace)
+	log.Info("reading from hosts file", "file", a.hostsFile)
+	fileInfo, err := os.Stat(a.hostsFile)
 	if err != nil {
 		return err
 	}
 
-	file, err := os.OpenFile(pathEtcHosts, os.O_RDWR, fileInfo.Mode())
+	file, err := os.OpenFile(a.hostsFile, os.O_RDWR, fileInfo.Mode())
 	if err != nil {
 		return err
 	}
@@ -80,6 +80,7 @@ func (a *actuator) reconcile(dnsRecord *extensionsv1alpha1.DNSRecord, mutateEtcH
 		return err
 	}
 
+	log.Info("writing to hosts file", "file", a.hostsFile)
 	if err := file.Truncate(0); err != nil {
 		return err
 	}

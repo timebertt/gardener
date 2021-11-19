@@ -93,8 +93,9 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 		}
 
 		// options for the dnsrecord controller
-		dnsRecordCtrlOpts = &controllercmd.ControllerOptions{
+		dnsRecordCtrlOpts = &localdnsrecord.ControllerOptions{
 			MaxConcurrentReconciles: 1,
+			HostsFile:               "/etc/hosts",
 		}
 
 		// options for the service controller
@@ -196,7 +197,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 
 			controlPlaneCtrlOpts.Completed().Apply(&localcontrolplane.DefaultAddOptions.Controller)
 			dnsProviderCtrlOpts.Completed().Apply(&localdnsprovider.DefaultAddOptions.Controller)
-			dnsRecordCtrlOpts.Completed().Apply(&localdnsrecord.DefaultAddOptions.Controller)
+			dnsRecordCtrlOpts.Completed().Apply(&localdnsrecord.DefaultAddOptions)
 			healthCheckCtrlOpts.Completed().Apply(&localhealthcheck.DefaultAddOptions.Controller)
 			infraCtrlOpts.Completed().Apply(&localinfrastructure.DefaultAddOptions.Controller)
 			networkCtrlOpts.Completed().Apply(&localnetwork.DefaultAddOptions.Controller)
