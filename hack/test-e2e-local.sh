@@ -21,6 +21,7 @@ go test -mod=vendor -timeout=10m ./test/system/shoot_creation \
   -kubecfg=$KUBECONFIG \
   -project-namespace=garden-local \
   -shoot-name=e2e-local \
+  -annotations=shoot.gardener.cloud/cleanup-infrastructure-resources-grace-period-seconds=0 \
   -k8s-version=1.21.0 \
   -cloud-profile=local \
   -seed=local \
