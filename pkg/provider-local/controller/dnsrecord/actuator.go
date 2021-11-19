@@ -164,7 +164,7 @@ func reconcileEtcHostsFile(etcHostsContent string, name string, values []string,
 	}
 
 	if sectionExists {
-		newContent += fmt.Sprintf("%s", etcHostsContent[endIndex+len(endOfSection):])
+		newContent += etcHostsContent[endIndex+len(endOfSection):]
 	}
 
 	if !strings.HasSuffix(newContent, "\n") {

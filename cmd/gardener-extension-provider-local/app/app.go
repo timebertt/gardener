@@ -26,6 +26,7 @@ import (
 	"github.com/gardener/gardener/extensions/pkg/controller/operatingsystemconfig/oscommon"
 	"github.com/gardener/gardener/extensions/pkg/controller/worker"
 	webhookcmd "github.com/gardener/gardener/extensions/pkg/webhook/cmd"
+	localinstall "github.com/gardener/gardener/pkg/provider-local/apis/local/install"
 	localcontrolplane "github.com/gardener/gardener/pkg/provider-local/controller/controlplane"
 	localdnsprovider "github.com/gardener/gardener/pkg/provider-local/controller/dnsprovider"
 	localdnsrecord "github.com/gardener/gardener/pkg/provider-local/controller/dnsrecord"
@@ -176,6 +177,9 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 
 			scheme := mgr.GetScheme()
 			if err := controller.AddToScheme(scheme); err != nil {
+				controllercmd.LogErrAndExit(err, "Could not update manager scheme")
+			}
+			if err := localinstall.AddToScheme(scheme); err != nil {
 				controllercmd.LogErrAndExit(err, "Could not update manager scheme")
 			}
 			if err := autoscalingv1beta2.AddToScheme(scheme); err != nil {

@@ -23,6 +23,7 @@ import (
 	genericworkeractuator "github.com/gardener/gardener/extensions/pkg/controller/worker/genericactuator"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
 	"github.com/gardener/gardener/pkg/provider-local/local"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
@@ -69,6 +70,7 @@ func (w *workerDelegate) generateMachineConfig() error {
 	var (
 		machineDeployments = worker.MachineDeployments{}
 		machineClasses     []map[string]interface{}
+		machineImages      []api.MachineImage
 	)
 
 	for _, pool := range w.worker.Spec.Pools {
@@ -77,8 +79,18 @@ func (w *workerDelegate) generateMachineConfig() error {
 			return err
 		}
 
+		image, err := w.findMachineImage(pool.MachineImage.Name, pool.MachineImage.Version)
+		if err != nil {
+			return err
+		}
+		machineImages = appendMachineImage(machineImages, api.MachineImage{
+			Name:    pool.MachineImage.Name,
+			Version: pool.MachineImage.Version,
+			Image:   image,
+		})
+
 		machineClassSpec := map[string]interface{}{
-			"image": "ghcr.io/rfranzke/machine-controller-manager-provider-local/node:sha-02d1e4e", // TODO: Implement properly with pool.MachineImage.Name and pool.MachineImage.Version
+			"image": image,
 			"secret": map[string]interface{}{
 				"cloudConfig": string(pool.UserData),
 				"labels":      map[string]interface{}{v1beta1constants.GardenerPurpose: genericworkeractuator.GardenPurposeMachineClass},
@@ -115,11 +127,10 @@ func (w *workerDelegate) generateMachineConfig() error {
 
 	w.machineDeployments = machineDeployments
 	w.machineClasses = machineClasses
+	w.machineImages = machineImages
 
 	return nil
 }
-
-func (w *workerDelegate) UpdateMachineImagesStatus(_ context.Context) error { return nil }
 
 func (w *workerDelegate) DeployMachineDependencies(_ context.Context) error { return nil }
 
