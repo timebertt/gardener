@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package webhook
+package certificates
 
 import (
 	"net"
@@ -30,35 +30,35 @@ var _ = Describe("Certificates", func() {
 
 	var emptyStringArray []string
 
-	Describe("#generateNewCAAndServerCert", func() {
+	Describe("#GenerateUnmanagedCertificates", func() {
 		It("should return an valid certificate for '127.0.1.1'", func() {
-			_, serverCert, err := generateNewCAAndServerCert(modeUrl, namespace, name, "127.0.1.1")
+			_, serverCert, err := GenerateUnmanagedCertificates(modeUrl, namespace, name, "127.0.1.1")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(serverCert.Certificate.IPAddresses).To(Equal([]net.IP{net.ParseIP("127.0.1.1")}))
 			Expect(serverCert.Certificate.DNSNames).To(Equal(emptyStringArray))
 		})
 		It("should return an valid certificate for '::1'", func() {
-			_, serverCert, err := generateNewCAAndServerCert(modeUrl, namespace, name, "::1")
+			_, serverCert, err := GenerateUnmanagedCertificates(modeUrl, namespace, name, "::1")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(serverCert.Certificate.IPAddresses).To(Equal([]net.IP{net.ParseIP("::1")}))
 			Expect(serverCert.Certificate.DNSNames).To(Equal(emptyStringArray))
 		})
 		It("should return an valid certificate for 'test.invalid'", func() {
-			_, serverCert, err := generateNewCAAndServerCert(modeUrl, namespace, name, "test.invalid")
+			_, serverCert, err := GenerateUnmanagedCertificates(modeUrl, namespace, name, "test.invalid")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(serverCert.Certificate.DNSNames).To(Equal([]string{"test.invalid"}))
 		})
 		It("should return an valid certificate for 'test.invalid:8443'", func() {
-			_, serverCert, err := generateNewCAAndServerCert(modeUrl, namespace, name, "test.invalid:8443")
+			_, serverCert, err := GenerateUnmanagedCertificates(modeUrl, namespace, name, "test.invalid:8443")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(serverCert.Certificate.DNSNames).To(Equal([]string{"test.invalid"}))
 		})
 		It("should return the original url value for an invalid formatted value of 'test.invalid:8443:invalid'", func() {
-			_, serverCert, err := generateNewCAAndServerCert(modeUrl, namespace, name, "test.invalid:8443:invalid")
+			_, serverCert, err := GenerateUnmanagedCertificates(modeUrl, namespace, name, "test.invalid:8443:invalid")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(serverCert.Certificate.DNSNames).To(Equal([]string{"test.invalid:8443:invalid"}))

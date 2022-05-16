@@ -41,8 +41,8 @@ type AddOptions struct {
 	Controller controller.Options
 	// IgnoreOperationAnnotation specifies whether to ignore the operation annotation or not.
 	IgnoreOperationAnnotation bool
-	// ShootWebhooks specifies the list of desired Shoot MutatingWebhooks.
-	ShootWebhooks []admissionregistrationv1.MutatingWebhook
+	// ShootWebhookConfig specifies the desired Shoot MutatingWebhooksConfiguration.
+	ShootWebhookConfig *admissionregistrationv1.MutatingWebhookConfiguration
 }
 
 // AddToManagerWithOptions adds a controller with the given Options to the given manager.
@@ -51,7 +51,7 @@ func AddToManagerWithOptions(mgr manager.Manager, opts AddOptions) error {
 	return controlplane.Add(mgr, controlplane.AddArgs{
 		Actuator: genericactuator.NewActuator(local.Name, getSecretConfigs, nil, nil, nil, nil, nil, nil,
 			nil, nil, nil, NewValuesProvider(), extensionscontroller.ChartRendererFactoryFunc(util.NewChartRendererForShoot),
-			imagevector.ImageVector(), "", opts.ShootWebhooks, mgr.GetWebhookServer().Port, logger),
+			imagevector.ImageVector(), "", opts.ShootWebhookConfig, mgr.GetWebhookServer().Port, logger),
 		ControllerOptions: opts.Controller,
 		Predicates:        controlplane.DefaultPredicates(opts.IgnoreOperationAnnotation),
 		Type:              local.Type,

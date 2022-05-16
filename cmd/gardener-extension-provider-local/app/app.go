@@ -19,6 +19,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
+
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 
 	"github.com/gardener/gardener/extensions/pkg/controller"
 	controllercmd "github.com/gardener/gardener/extensions/pkg/controller/cmd"
@@ -40,11 +43,11 @@ import (
 	localservice "github.com/gardener/gardener/pkg/provider-local/controller/service"
 	localworker "github.com/gardener/gardener/pkg/provider-local/controller/worker"
 	"github.com/gardener/gardener/pkg/provider-local/local"
+	"github.com/gardener/gardener/pkg/utils/flow"
 
 	dnsv1alpha1 "github.com/gardener/external-dns-management/pkg/apis/dns/v1alpha1"
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/spf13/cobra"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -155,7 +158,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 
 		controllerSwitches = ControllerSwitchOptions()
 		webhookSwitches    = WebhookSwitchOptions()
-		webhookOptions     = webhookcmd.NewAddToManagerOptions(local.Name, webhookServerOptions, webhookSwitches)
+		webhookOptions     = webhookcmd.NewAddToManagerOptions(local.Name, local.Type, webhookServerOptions, webhookSwitches)
 
 		aggOption = controllercmd.NewOptionAggregator(
 			restOpts,
@@ -243,17 +246,18 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 				return fmt.Errorf("could not add readycheck of webhook to manager: %w", err)
 			}
 
-			_, shootWebhooks, err := webhookOptions.Completed().AddToManager(ctx, mgr)
+			_, shootWebhookConfig, err := webhookOptions.Completed().AddToManager(ctx, mgr)
 			if err != nil {
 				return fmt.Errorf("could not add webhooks to manager: %w", err)
 			}
-			localcontrolplane.DefaultAddOptions.ShootWebhooks = shootWebhooks
+			localcontrolplane.DefaultAddOptions.ShootWebhookConfig = shootWebhookConfig
 
 			// Update shoot webhook configuration in case the webhook server port has changed.
+			// TODO: clean this up
 			if err := mgr.Add(&shootWebhookReconciler{
-				client:            mgr.GetClient(),
-				webhookServerPort: mgr.GetWebhookServer().Port,
-				shootWebhooks:     shootWebhooks,
+				client:             mgr.GetClient(),
+				webhookServerPort:  mgr.GetWebhookServer().Port,
+				shootWebhookConfig: shootWebhookConfig,
 			}); err != nil {
 				return fmt.Errorf("error adding runnable for reconciling shoot webhooks in all namespaces: %w", err)
 			}
@@ -291,11 +295,19 @@ func (w *webhookTriggerer) NeedLeaderElection() bool {
 }
 
 func (w *webhookTriggerer) Start(ctx context.Context) error {
-	if err := w.trigger(ctx, w.client, w.client.Status(), &corev1.NodeList{}, client.MatchingLabels{"kubernetes.io/hostname": "gardener-local-control-plane"}); err != nil {
-		return err
-	}
-
-	return w.trigger(ctx, w.client, w.client, &appsv1.DeploymentList{}, client.MatchingLabels{"app": "dependency-watchdog-probe"})
+	var (
+		// retry for a bit to give webhook CA reconciler a chance to publish the CA bundle
+		interval = time.Second
+		timeout  = 10 * time.Second
+	)
+	return flow.Parallel(
+		flow.TaskFn(func(ctx context.Context) error {
+			return w.trigger(ctx, w.client, w.client.Status(), &corev1.NodeList{}, client.MatchingLabels{"kubernetes.io/hostname": "gardener-local-control-plane"})
+		}).RetryUntilTimeout(interval, timeout),
+		flow.TaskFn(func(ctx context.Context) error {
+			return w.trigger(ctx, w.client, w.client, &appsv1.DeploymentList{}, client.MatchingLabels{"app": "dependency-watchdog-probe"})
+		}).RetryUntilTimeout(interval, timeout),
+	)(ctx)
 }
 
 func (w *webhookTriggerer) trigger(ctx context.Context, reader client.Reader, writer client.StatusWriter, objectList client.ObjectList, labelSelector client.MatchingLabels) error {
@@ -310,9 +322,9 @@ func (w *webhookTriggerer) trigger(ctx context.Context, reader client.Reader, wr
 }
 
 type shootWebhookReconciler struct {
-	client            client.Client
-	webhookServerPort int
-	shootWebhooks     []admissionregistrationv1.MutatingWebhook
+	client             client.Client
+	webhookServerPort  int
+	shootWebhookConfig *admissionregistrationv1.MutatingWebhookConfiguration
 }
 
 func (s *shootWebhookReconciler) NeedLeaderElection() bool {
@@ -320,5 +332,5 @@ func (s *shootWebhookReconciler) NeedLeaderElection() bool {
 }
 
 func (s *shootWebhookReconciler) Start(ctx context.Context) error {
-	return genericcontrolplaneactuator.ReconcileShootWebhooksForAllNamespaces(ctx, s.client, local.Name, local.Type, s.webhookServerPort, s.shootWebhooks)
+	return genericcontrolplaneactuator.ReconcileShootWebhooksForAllNamespaces(ctx, s.client, local.Name, local.Type, s.webhookServerPort, s.shootWebhookConfig)
 }
