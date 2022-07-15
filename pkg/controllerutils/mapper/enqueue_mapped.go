@@ -15,29 +15,38 @@
 package mapper
 
 import (
+	"context"
+
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
+
+	ctxutils "github.com/gardener/gardener/pkg/utils/context"
 )
 
 // Mapper maps an object to a collection of keys to be enqueued
 type Mapper interface {
 	// Map maps an object
-	Map(obj client.Object) []reconcile.Request
+	Map(ctx context.Context, log logr.Logger, reader client.Reader, obj client.Object) []reconcile.Request
 }
 
 var _ Mapper = MapFunc(nil)
 
 // MapFunc is the signature required for enqueueing requests from a generic function.
 // This type is usually used with EnqueueRequestsFromMapFunc when registering an event mapper.
-type MapFunc func(client.Object) []reconcile.Request
+type MapFunc func(ctx context.Context, log logr.Logger, reader client.Reader, obj client.Object) []reconcile.Request
 
 // Map implements Mapper.
-func (f MapFunc) Map(obj client.Object) []reconcile.Request {
-	return f(obj)
+func (f MapFunc) Map(ctx context.Context, log logr.Logger, reader client.Reader, obj client.Object) []reconcile.Request {
+	return f(ctx, log, reader, obj)
 }
 
 // EnqueueRequestsFrom is similar to controller-runtime's mapper.EnqueueRequestsFromMapFunc.
@@ -45,10 +54,11 @@ func (f MapFunc) Map(obj client.Object) []reconcile.Request {
 // behaviour on UpdateEvents.
 // For UpdateEvents, the given UpdateBehaviour decides if only the old, only the new or both objects should be mapped
 // and enqueued.
-func EnqueueRequestsFrom(m Mapper, updateBehavior UpdateBehavior) handler.EventHandler {
+func EnqueueRequestsFrom(m Mapper, updateBehavior UpdateBehavior, log logr.Logger) handler.EventHandler {
 	return &enqueueRequestsFromMapFunc{
 		mapper:         m,
 		updateBehavior: updateBehavior,
+		log:            log,
 	}
 }
 
@@ -57,6 +67,20 @@ type enqueueRequestsFromMapFunc struct {
 	mapper Mapper
 	// updateBehaviour decides which object(s) to map and enqueue on updates
 	updateBehavior UpdateBehavior
+
+	ctx    context.Context
+	reader client.Reader
+	log    logr.Logger
+}
+
+func (e *enqueueRequestsFromMapFunc) InjectCache(c cache.Cache) error {
+	e.reader = c
+	return nil
+}
+
+func (e *enqueueRequestsFromMapFunc) InjectStopChannel(stopCh <-chan struct{}) error {
+	e.ctx = ctxutils.FromStopChannel(stopCh)
+	return nil
 }
 
 func (e *enqueueRequestsFromMapFunc) Create(evt event.CreateEvent, q workqueue.RateLimitingInterface) {
@@ -84,7 +108,7 @@ func (e *enqueueRequestsFromMapFunc) Generic(evt event.GenericEvent, q workqueue
 }
 
 func (e *enqueueRequestsFromMapFunc) mapAndEnqueue(q workqueue.RateLimitingInterface, object client.Object) {
-	for _, req := range e.mapper.Map(object) {
+	for _, req := range e.mapper.Map(e.ctx, e.log, e.reader, object) {
 		q.Add(req)
 	}
 }
@@ -107,3 +131,19 @@ const (
 	// UpdateWithNew considers only the new object in case of an update.
 	UpdateWithNew
 )
+
+func ObjectListToRequests(list client.ObjectList) []reconcile.Request {
+	var requests []reconcile.Request
+	_ = meta.EachListItem(list, func(object runtime.Object) error {
+		if acc, err := meta.Accessor(object); err == nil {
+			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{
+				Name:      acc.GetName(),
+				Namespace: acc.GetNamespace(),
+			}})
+		}
+
+		return nil
+	})
+
+	return requests
+}
