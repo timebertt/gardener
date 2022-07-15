@@ -27,11 +27,18 @@ import (
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/apis/config"
+	"github.com/gardener/gardener/pkg/controllermanager/controller/bastion"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/cloudprofile"
 )
 
 // AddControllersToManager adds all controller-manager controllers to the given manager.
 func AddControllersToManager(mgr manager.Manager, cfg *config.ControllerManagerConfiguration) error {
+	if err := (&bastion.Reconciler{
+		Config: cfg.Controllers.Bastion,
+	}).AddToManager(mgr); err != nil {
+		return fmt.Errorf("failed adding Bastion controller: %w", err)
+	}
+
 	if err := (&cloudprofile.Reconciler{
 		Config: cfg.Controllers.CloudProfile,
 	}).AddToManager(mgr); err != nil {
@@ -45,6 +52,7 @@ func AddControllersToManager(mgr manager.Manager, cfg *config.ControllerManagerC
 // field indexes have to be added before the cache is started (i.e. before the manager is started)
 func AddAllFieldIndexes(ctx context.Context, i client.FieldIndexer) error {
 	for _, fn := range []func(context.Context, client.FieldIndexer) error{
+		// TODO: transform the other indexers into such func as well
 		indexer.AddBastionShootName,
 	} {
 		if err := fn(ctx, i); err != nil {
