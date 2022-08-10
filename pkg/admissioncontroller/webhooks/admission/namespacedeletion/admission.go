@@ -20,64 +20,65 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	acadmission "github.com/gardener/gardener/pkg/admissioncontroller/webhooks/admission"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	"github.com/gardener/gardener/pkg/logger"
 	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
-const (
-	// HandlerName is the name of this admission webhook handler.
-	HandlerName = "namespace_validator"
-	// WebhookPath is the HTTP handler path for this admission webhook handler.
-	WebhookPath = "/webhooks/validate-namespace-deletion"
-)
+// WebhookPath is the HTTP handler path for this admission webhook handler.
+const WebhookPath = "/webhooks/validate-namespace-deletion"
 
 var namespaceGVK = metav1.GroupVersionKind{Group: "", Kind: "Namespace", Version: "v1"}
 
-// New creates a new handler for validating namespace deletions.
-func New(ctx context.Context, logger logr.Logger, cache cache.Cache) (*handler, error) {
+// Handler is a webhook handler for validating namespace deletions.
+type Handler struct {
+	Cache     cache.Cache
+	APIReader client.Reader
+}
+
+func (h *Handler) AddToManager(ctx context.Context, mgr manager.Manager) error {
+	if h.Cache == nil {
+		h.Cache = mgr.GetCache()
+	}
+	if h.APIReader == nil {
+		h.APIReader = mgr.GetAPIReader()
+	}
+
 	// Initialize caches here to ensure the readyz informer check will only succeed once informers required for this
 	// handler have synced so that http requests can be served quicker with pre-syncronized caches.
-	if _, err := cache.GetInformer(ctx, &corev1.Namespace{}); err != nil {
-		return nil, err
+	if _, err := h.Cache.GetInformer(ctx, &corev1.Namespace{}); err != nil {
+		return err
 	}
-	if _, err := cache.GetInformer(ctx, &gardencorev1beta1.Project{}); err != nil {
-		return nil, err
+	if _, err := h.Cache.GetInformer(ctx, &gardencorev1beta1.Project{}); err != nil {
+		return err
 	}
 
-	return &handler{
-		cacheReader: cache,
-		logger:      logger,
-	}, nil
+	mgr.GetWebhookServer().Register(WebhookPath, &webhook.Admission{Handler: h})
+	return nil
 }
-
-type handler struct {
-	cacheReader client.Reader
-	apiReader   client.Reader
-	logger      logr.Logger
-}
-
-var _ admission.Handler = &handler{}
 
 // InjectAPIReader injects a reader into the handler.
-func (h *handler) InjectAPIReader(reader client.Reader) error {
-	h.apiReader = reader
+func (h *Handler) InjectAPIReader(reader client.Reader) error {
+	h.APIReader = reader
 	return nil
 }
 
 // Handle implements the webhook handler for namespace deletion validation.
-func (h *handler) Handle(ctx context.Context, request admission.Request) admission.Response {
+func (h *Handler) Handle(ctx context.Context, request admission.Request) admission.Response {
+	log := logf.FromContext(ctx)
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -92,23 +93,21 @@ func (h *handler) Handle(ctx context.Context, request admission.Request) admissi
 		return acadmission.Allowed("subresources on namespaces are not handled")
 	}
 
-	requestLogger := logger.NewIDLogger(h.logger)
-
 	// Now that all checks have been passed we can actually validate the admission request.
 	reviewResponse := h.admitNamespace(ctx, request)
 	if !reviewResponse.Allowed && reviewResponse.Result != nil {
-		requestLogger.Info("Rejected namespace deletion", "user", request.UserInfo.Username, "message", reviewResponse.Result.Message)
+		log.Info("Rejected namespace deletion", "message", reviewResponse.Result.Message)
 	}
 	return reviewResponse
 }
 
 // admitNamespace does only allow the request if no Shoots exist in this specific namespace anymore.
-func (h *handler) admitNamespace(ctx context.Context, request admission.Request) admission.Response {
+func (h *Handler) admitNamespace(ctx context.Context, request admission.Request) admission.Response {
 	// Determine project for given namespace.
 	// TODO: we should use a direct lookup here, as we might falsely allow the request, if our cache is
 	// out of sync and doesn't know about the project. We should use a field selector for looking up the project
 	// belonging to a given namespace.
-	project, namespace, err := gutil.ProjectAndNamespaceFromReader(ctx, h.cacheReader, request.Name)
+	project, namespace, err := gutil.ProjectAndNamespaceFromReader(ctx, h.Cache, request.Name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if namespace == nil {
@@ -128,7 +127,7 @@ func (h *handler) admitNamespace(ctx context.Context, request admission.Request)
 		return acadmission.Allowed("namespace is already marked for deletion")
 	case project.DeletionTimestamp != nil:
 		// if project is marked for deletion we need to wait until all shoots in the namespace are gone
-		namespaceInUse, err := kutil.IsNamespaceInUse(ctx, h.apiReader, namespace.Name, gardencorev1beta1.SchemeGroupVersion.WithKind("ShootList"))
+		namespaceInUse, err := kutil.IsNamespaceInUse(ctx, h.APIReader, namespace.Name, gardencorev1beta1.SchemeGroupVersion.WithKind("ShootList"))
 		if err != nil {
 			return admission.Errored(http.StatusInternalServerError, err)
 		}

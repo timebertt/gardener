@@ -33,11 +33,11 @@ type handler struct {
 }
 
 // NewDebugHandler creates a new HTTP handler for debugging the resource dependency graph.
-func NewDebugHandler(graph *graph) http.HandlerFunc {
-	return (&handler{graph.graph}).Handle
+func NewDebugHandler(g Interface) http.Handler {
+	return &handler{g.(*graph).graph}
 }
 
-func (h *handler) Handle(w http.ResponseWriter, r *http.Request) {
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var (
 		out string
 

@@ -24,17 +24,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/gardener/gardener/pkg/admissioncontroller/metrics"
 	acadmission "github.com/gardener/gardener/pkg/admissioncontroller/webhooks/admission"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	"github.com/gardener/gardener/pkg/logger"
 )
 
 const (
-	// HandlerName is the name of this admission webhook handler.
-	HandlerName = "kubeconfig_validator"
 	// WebhookPath is the HTTP handler path for this admission webhook handler.
 	WebhookPath = "/webhooks/validate-kubeconfig-secrets"
 
@@ -47,25 +47,35 @@ const (
 
 var secretGVK = metav1.GroupVersionKind{Group: "", Kind: "Secret", Version: "v1"}
 
-// New creates a new webhook handler validating CREATE and UPDATE requests on secrets. It checks, if the secrets
+// Handler is a webhook handler validating CREATE and UPDATE requests on secrets. It checks, if the secrets
 // contains a kubeconfig and denies kubeconfigs with invalid fields (e.g. tokenFile or exec).
-func New(logger logr.Logger) *handler {
-	return &handler{logger: logger}
-}
-
-type handler struct {
-	logger  logr.Logger
+type Handler struct {
 	decoder *admission.Decoder
 }
 
-var _ admission.Handler = &handler{}
-
-func (h *handler) InjectDecoder(d *admission.Decoder) error {
+func (h *Handler) InjectDecoder(d *admission.Decoder) error {
 	h.decoder = d
 	return nil
 }
 
-func (h *handler) Handle(_ context.Context, request admission.Request) admission.Response {
+func (h *Handler) AddToManager(mgr manager.Manager) error {
+	mgr.GetWebhookServer().Register(WebhookPath, &webhook.Admission{
+		Handler: h,
+		LogConstructor: func(base logr.Logger, req *admission.Request) logr.Logger {
+			log := admission.DefaultLogConstructor(base, req)
+			if req != nil {
+				return log.WithValues("operation", req.Operation)
+			}
+			return log
+		},
+	})
+
+	return nil
+}
+
+func (h *Handler) Handle(ctx context.Context, request admission.Request) admission.Response {
+	log := logf.FromContext(ctx)
+
 	// If the request does not indicate the correct operations (CREATE, UPDATE) we allow the review without further doing.
 	if request.Operation != admissionv1.Create && request.Operation != admissionv1.Update {
 		return acadmission.Allowed("operation is neither CREATE nor UPDATE")
@@ -77,8 +87,6 @@ func (h *handler) Handle(_ context.Context, request admission.Request) admission
 		return acadmission.Allowed("subresources on secrets are not handled")
 	}
 
-	requestLogger := logger.NewIDLogger(h.logger)
-
 	secret := &corev1.Secret{}
 	if err := h.decoder.Decode(request, secret); err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
@@ -88,9 +96,7 @@ func (h *handler) Handle(_ context.Context, request admission.Request) admission
 	if !response.Allowed && response.Result != nil {
 		response.Result.Reason = statusReasonInvalidKubeconfig
 
-		requestLogger.Info("Rejected secret", "reason", response.Result.Reason,
-			"message", response.Result.Message, "operation", request.Operation,
-			"namespace", request.Namespace, "name", request.Name, "username", request.UserInfo.Username)
+		log.Info("Rejected secret", "reason", response.Result.Reason, "message", response.Result.Message)
 
 		metrics.RejectedResources.WithLabelValues(
 			string(request.Operation),

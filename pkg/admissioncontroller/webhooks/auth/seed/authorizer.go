@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"strings"
 
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+
 	"github.com/gardener/gardener/pkg/admissioncontroller/seedidentity"
 	"github.com/gardener/gardener/pkg/admissioncontroller/webhooks/auth/seed/graph"
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
@@ -45,20 +47,38 @@ import (
 // AuthorizerName is the name of this authorizer.
 const AuthorizerName = "seedauthorizer"
 
-// NewAuthorizer returns a new authorizer for requests from gardenlets. It never has an opinion on the request.
-func NewAuthorizer(logger logr.Logger, graph graph.Interface) *authorizer {
-	return &authorizer{
-		logger: logger,
-		graph:  graph,
+// Authorizer is a new authorizer for requests from gardenlets. It never has an opinion on the request.
+type Authorizer struct {
+	Logger logr.Logger
+	Graph  graph.Interface
+
+	EnableDebugHandlers bool
+}
+
+func (a *Authorizer) AddToManager(ctx context.Context, mgr manager.Manager) error {
+	if a.Logger.GetSink() == nil {
+		a.Logger = mgr.GetLogger().WithName(AuthorizerName)
 	}
-}
+	if a.Graph == nil {
+		a.Logger.Info("Setting up graph for seed authorization handler")
+		g := graph.New(a.Logger, mgr.GetClient())
+		if err := g.Setup(ctx, mgr.GetCache()); err != nil {
+			return err
+		}
+	}
 
-type authorizer struct {
-	logger logr.Logger
-	graph  graph.Interface
-}
+	mgr.GetWebhookServer().Register(WebhookPath, &handler{
+		logger:     a.Logger,
+		authorizer: a,
+	})
 
-var _ = auth.Authorizer(&authorizer{})
+	if a.EnableDebugHandlers {
+		a.Logger.Info("Registering debug handlers")
+		mgr.GetWebhookServer().Register(graph.DebugHandlerPath, graph.NewDebugHandler(a.Graph))
+	}
+
+	return nil
+}
 
 var (
 	// Only take v1beta1 for the core.gardener.cloud API group because the Authorize function only checks the resource
@@ -92,13 +112,13 @@ var (
 // because older Gardenlet versions might not be compatible at the time this authorization plugin is enabled.
 // With `DecisionNoOpinion`, RBAC will be respected in the authorization chain afterwards.
 
-func (a *authorizer) Authorize(_ context.Context, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) Authorize(ctx context.Context, attrs auth.Attributes) (auth.Decision, string, error) {
 	seedName, isSeed := seedidentity.FromUserInfoInterface(attrs.GetUser())
 	if !isSeed {
 		return auth.DecisionNoOpinion, "", nil
 	}
 
-	requestLog := a.logger.WithValues("seedName", seedName, "attributes", fmt.Sprintf("%#v", attrs))
+	requestLog := a.Logger.WithValues("seedName", seedName, "attributes", fmt.Sprintf("%#v", attrs))
 
 	if attrs.IsResourceRequest() {
 		requestResource := schema.GroupResource{Group: attrs.GetAPIGroup(), Resource: attrs.GetResource()}
@@ -188,7 +208,7 @@ func (a *authorizer) Authorize(_ context.Context, attrs auth.Attributes) (auth.D
 		case exposureClassResource:
 			return a.authorizeRead(requestLog, seedName, graph.VertexTypeExposureClass, attrs)
 		default:
-			a.logger.Info(
+			a.Logger.Info(
 				"Unhandled resource request",
 				"seed", seedName,
 				"group", attrs.GetAPIGroup(),
@@ -202,7 +222,7 @@ func (a *authorizer) Authorize(_ context.Context, attrs auth.Attributes) (auth.D
 	return auth.DecisionNoOpinion, "", nil
 }
 
-func (a *authorizer) authorizeClusterRoleBinding(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeClusterRoleBinding(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	// Allow gardenlet to delete its cluster role binding after bootstrapping (in this case, there is no `Seed` resource
 	// in the system yet, so we can't rely on the graph).
 	if attrs.GetVerb() == "delete" &&
@@ -221,7 +241,7 @@ func (a *authorizer) authorizeClusterRoleBinding(log logr.Logger, seedName strin
 	)
 }
 
-func (a *authorizer) authorizeConfigMap(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeConfigMap(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	if attrs.GetVerb() == "get" &&
 		attrs.GetNamespace() == metav1.NamespaceSystem &&
 		attrs.GetName() == v1beta1constants.ClusterIdentity {
@@ -232,7 +252,7 @@ func (a *authorizer) authorizeConfigMap(log logr.Logger, seedName string, attrs 
 	return a.authorizeRead(log, seedName, graph.VertexTypeConfigMap, attrs)
 }
 
-func (a *authorizer) authorizeEvent(log logr.Logger, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeEvent(log logr.Logger, attrs auth.Attributes) (auth.Decision, string, error) {
 	if ok, reason := a.checkVerb(log, attrs, "create", "patch"); !ok {
 		return auth.DecisionNoOpinion, reason, nil
 	}
@@ -244,7 +264,7 @@ func (a *authorizer) authorizeEvent(log logr.Logger, attrs auth.Attributes) (aut
 	return auth.DecisionAllow, "", nil
 }
 
-func (a *authorizer) authorizeLease(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeLease(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	if attrs.GetName() == "gardenlet-leader-election" &&
 		utils.ValueExists(attrs.GetVerb(), []string{"create", "get", "watch", "update"}) {
 
@@ -258,7 +278,7 @@ func (a *authorizer) authorizeLease(log logr.Logger, seedName string, attrs auth
 	)
 }
 
-func (a *authorizer) authorizeNamespace(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeNamespace(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	// TODO: Remove this once the gardenlet's `ControllerInstallation` controller does no longer populate the already
 	// deprecated `gardener.garden.identity` value when rendering the Helm charts.
 	if attrs.GetName() == v1beta1constants.GardenNamespace &&
@@ -270,7 +290,7 @@ func (a *authorizer) authorizeNamespace(log logr.Logger, seedName string, attrs 
 	return a.authorizeRead(log, seedName, graph.VertexTypeNamespace, attrs)
 }
 
-func (a *authorizer) authorizeSecret(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeSecret(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	// Allow gardenlets to get/list/watch secrets in their seed-<name> namespaces.
 	if utils.ValueExists(attrs.GetVerb(), []string{"get", "list", "watch"}) && attrs.GetNamespace() == gutil.ComputeGardenNamespace(seedName) {
 		return auth.DecisionAllow, "", nil
@@ -293,7 +313,7 @@ func (a *authorizer) authorizeSecret(log logr.Logger, seedName string, attrs aut
 	)
 }
 
-func (a *authorizer) authorizeServiceAccount(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeServiceAccount(log logr.Logger, seedName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	// Allow gardenlet to delete its service account after bootstrapping (in this case, there is no `Seed` resource in
 	// the system yet, so we can't rely on the graph).
 	if attrs.GetVerb() == "delete" &&
@@ -311,7 +331,7 @@ func (a *authorizer) authorizeServiceAccount(log logr.Logger, seedName string, a
 	)
 }
 
-func (a *authorizer) authorizeRead(log logr.Logger, seedName string, fromType graph.VertexType, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) authorizeRead(log logr.Logger, seedName string, fromType graph.VertexType, attrs auth.Attributes) (auth.Decision, string, error) {
 	return a.authorize(log, seedName, fromType, attrs,
 		[]string{"get"},
 		nil,
@@ -319,7 +339,7 @@ func (a *authorizer) authorizeRead(log logr.Logger, seedName string, fromType gr
 	)
 }
 
-func (a *authorizer) authorize(
+func (a *Authorizer) authorize(
 	log logr.Logger,
 	seedName string,
 	fromType graph.VertexType,
@@ -350,7 +370,7 @@ func (a *authorizer) authorize(
 	return a.hasPathFrom(log, seedName, fromType, attrs)
 }
 
-func (a *authorizer) hasPathFrom(log logr.Logger, seedName string, fromType graph.VertexType, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *Authorizer) hasPathFrom(log logr.Logger, seedName string, fromType graph.VertexType, attrs auth.Attributes) (auth.Decision, string, error) {
 	if len(attrs.GetName()) == 0 {
 		log.Info("Denying authorization because attributes are missing object name")
 		return auth.DecisionNoOpinion, "No Object name found", nil
@@ -365,11 +385,11 @@ func (a *authorizer) hasPathFrom(log logr.Logger, seedName string, fromType grap
 
 	// If the vertex does not exist in the graph (i.e., the resource does not exist in the system) then we allow the
 	// request.
-	if attrs.GetVerb() == "delete" && !a.graph.HasVertex(fromType, namespace, attrs.GetName()) {
+	if attrs.GetVerb() == "delete" && !a.Graph.HasVertex(fromType, namespace, attrs.GetName()) {
 		return auth.DecisionAllow, "", nil
 	}
 
-	if !a.graph.HasPathFrom(fromType, namespace, attrs.GetName(), graph.VertexTypeSeed, "", seedName) {
+	if !a.Graph.HasPathFrom(fromType, namespace, attrs.GetName(), graph.VertexTypeSeed, "", seedName) {
 		log.Info("Denying authorization because no relationship is found between seed and object")
 		return auth.DecisionNoOpinion, fmt.Sprintf("no relationship found between seed '%s' and this object", seedName), nil
 	}
@@ -377,7 +397,7 @@ func (a *authorizer) hasPathFrom(log logr.Logger, seedName string, fromType grap
 	return auth.DecisionAllow, "", nil
 }
 
-func (a *authorizer) checkVerb(log logr.Logger, attrs auth.Attributes, allowedVerbs ...string) (bool, string) {
+func (a *Authorizer) checkVerb(log logr.Logger, attrs auth.Attributes, allowedVerbs ...string) (bool, string) {
 	if !utils.ValueExists(attrs.GetVerb(), allowedVerbs) {
 		log.Info("Denying authorization because verb is not allowed for this resource type", "allowedVerbs", allowedVerbs)
 		return false, fmt.Sprintf("only the following verbs are allowed for this resource type: %+v", allowedVerbs)
@@ -386,7 +406,7 @@ func (a *authorizer) checkVerb(log logr.Logger, attrs auth.Attributes, allowedVe
 	return true, ""
 }
 
-func (a *authorizer) checkSubresource(log logr.Logger, attrs auth.Attributes, allowedSubresources ...string) (bool, string) {
+func (a *Authorizer) checkSubresource(log logr.Logger, attrs auth.Attributes, allowedSubresources ...string) (bool, string) {
 	if subresource := attrs.GetSubresource(); len(subresource) > 0 && !utils.ValueExists(attrs.GetSubresource(), allowedSubresources) {
 		log.Info("Denying authorization because subresource is not allowed for this resource type", "allowedSubresources", allowedSubresources)
 		return false, fmt.Sprintf("only the following subresources are allowed for this resource type: %+v", allowedSubresources)

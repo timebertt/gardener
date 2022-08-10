@@ -19,12 +19,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	acadmission "github.com/gardener/gardener/pkg/admissioncontroller/webhooks/admission"
@@ -35,39 +36,33 @@ import (
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
-const (
-	// HandlerName is the name of this admission webhook handler.
-	HandlerName = "internal_domain"
-	// WebhookPath is the HTTP handler path for this admission webhook handler.
-	WebhookPath = "/webhooks/admission/validate-internal-domain"
-)
+// WebhookPath is the HTTP handler path for this admission webhook handler.
+const WebhookPath = "/webhooks/admission/validate-internal-domain"
 
 var secretGVK = metav1.GroupVersionKind{Group: "", Kind: "Secret", Version: "v1"}
 
-// New creates a new handler for validating the immutability of the internal domain secret.
-func New(logger logr.Logger) *handler {
-	return &handler{logger: logger}
-}
-
-type handler struct {
-	logger    logr.Logger
+// Handler is a webhook handler for validating the immutability of the internal domain secret.
+type Handler struct {
 	apiReader client.Reader
 	decoder   *admission.Decoder
 }
 
-var _ admission.Handler = &handler{}
+func (h *Handler) AddToManager(mgr manager.Manager) error {
+	mgr.GetWebhookServer().Register(WebhookPath, &webhook.Admission{Handler: h})
+	return nil
+}
 
-func (h *handler) InjectAPIReader(reader client.Reader) error {
+func (h *Handler) InjectAPIReader(reader client.Reader) error {
 	h.apiReader = reader
 	return nil
 }
 
-func (h *handler) InjectDecoder(d *admission.Decoder) error {
+func (h *Handler) InjectDecoder(d *admission.Decoder) error {
 	h.decoder = d
 	return nil
 }
 
-func (h *handler) Handle(ctx context.Context, request admission.Request) admission.Response {
+func (h *Handler) Handle(ctx context.Context, request admission.Request) admission.Response {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -154,7 +149,7 @@ func (h *handler) Handle(ctx context.Context, request admission.Request) admissi
 	}
 }
 
-func (h *handler) atLeastOneShootExists(ctx context.Context, seedName string) (bool, error) {
+func (h *Handler) atLeastOneShootExists(ctx context.Context, seedName string) (bool, error) {
 	var (
 		shoots      = &metav1.PartialObjectMetadataList{}
 		listOptions = []client.ListOption{client.Limit(1)}
@@ -175,7 +170,7 @@ func (h *handler) atLeastOneShootExists(ctx context.Context, seedName string) (b
 	return len(shoots.Items) > 0, nil
 }
 
-func (h *handler) internalDomainSecretExists(ctx context.Context, namespace string) (bool, error) {
+func (h *Handler) internalDomainSecretExists(ctx context.Context, namespace string) (bool, error) {
 	secrets := &metav1.PartialObjectMetadataList{}
 	secrets.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 
@@ -192,7 +187,7 @@ func (h *handler) internalDomainSecretExists(ctx context.Context, namespace stri
 	return len(secrets.Items) > 0, nil
 }
 
-func (h *handler) secretAlreadyExists(ctx context.Context, name, namespace string) (bool, error) {
+func (h *Handler) secretAlreadyExists(ctx context.Context, name, namespace string) (bool, error) {
 	secret := &corev1.Secret{}
 
 	if err := h.apiReader.Get(ctx, kutil.Key(namespace, name), secret); err != nil {

@@ -34,7 +34,7 @@ import (
 	logzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-var _ = Describe("Handler", func() {
+var _ = Describe("handler", func() {
 	var (
 		log = logger.MustNewZapLogger(logger.DebugLevel, logger.FormatJSON, logzap.WriteTo(GinkgoWriter), logzap.Level(zapcore.Level(0)))
 
@@ -95,7 +95,7 @@ var _ = Describe("Handler", func() {
 `))
 		})
 
-		DescribeTable("authorizer consultation",
+		DescribeTable("Authorizer consultation",
 			func(fn func(context.Context, authorizer.Attributes) (authorizer.Decision, string, error), timeout time.Duration, expectedStatus string) {
 				defer test.WithVar(&DecisionTimeout, timeout)()
 

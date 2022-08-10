@@ -20,6 +20,9 @@ import (
 	"net/http"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
 	acadmission "github.com/gardener/gardener/pkg/admissioncontroller/webhooks/admission"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
@@ -32,7 +35,6 @@ import (
 	auditv1beta1 "github.com/gardener/gardener/third_party/apiserver/pkg/apis/audit/v1beta1"
 
 	"github.com/Masterminds/semver"
-	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -51,9 +53,7 @@ import (
 )
 
 const (
-	// HandlerName is the name of this admission webhook handler.
-	HandlerName = "auditpolicy_validator"
-	// WebhookPath is the HTTP handler path for this admission webhook handler.
+	// WebhookPath is the HTTP Handler path for this admission webhook Handler.
 	WebhookPath = "/webhooks/audit-policies"
 
 	auditPolicyConfigMapDataKey = "policy"
@@ -66,13 +66,6 @@ var (
 	shootGK     = schema.GroupKind{Group: "core.gardener.cloud", Kind: "Shoot"}
 	configmapGK = schema.GroupKind{Group: "", Kind: "ConfigMap"}
 )
-
-// New creates a new handler for validating audit policies.
-func New(logger logr.Logger) *handler {
-	return &handler{
-		logger: logger,
-	}
-}
 
 func init() {
 	auditPolicyScheme := runtime.NewScheme()
@@ -93,32 +86,35 @@ func init() {
 		gardencoreScheme, gardencoreScheme, nil, runtime.DisabledGroupVersioner, runtime.InternalGroupVersioner, gardencoreScheme.Name())
 }
 
-type handler struct {
+// Handler is a webhook Handler for validating audit policies.
+type Handler struct {
 	apiReader client.Reader
 	cache     client.Reader
 	decoder   *admission.Decoder
-	logger    logr.Logger
 }
 
-var _ admission.Handler = &handler{}
+func (h *Handler) AddToManager(mgr manager.Manager) error {
+	mgr.GetWebhookServer().Register(WebhookPath, &webhook.Admission{Handler: h})
+	return nil
+}
 
-func (h *handler) InjectAPIReader(reader client.Reader) error {
+func (h *Handler) InjectAPIReader(reader client.Reader) error {
 	h.apiReader = reader
 	return nil
 }
 
-func (h *handler) InjectCache(cache cache.Cache) error {
+func (h *Handler) InjectCache(cache cache.Cache) error {
 	h.cache = cache
 	return nil
 }
 
-func (h *handler) InjectDecoder(d *admission.Decoder) error {
+func (h *Handler) InjectDecoder(d *admission.Decoder) error {
 	h.decoder = d
 	return nil
 }
 
-// Handle implements the webhook handler for audit log policy validation
-func (h *handler) Handle(ctx context.Context, request admission.Request) admission.Response {
+// Handle implements the webhook Handler for audit log policy validation
+func (h *Handler) Handle(ctx context.Context, request admission.Request) admission.Response {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	requestGK := schema.GroupKind{Group: request.Kind.Group, Kind: request.Kind.Kind}
 	defer cancel()
@@ -132,7 +128,7 @@ func (h *handler) Handle(ctx context.Context, request admission.Request) admissi
 	return acadmission.Allowed("resource is not core.gardener.cloud/v1beta1.shoot or v1.configmap")
 }
 
-func (h *handler) admitShoot(ctx context.Context, request admission.Request) admission.Response {
+func (h *Handler) admitShoot(ctx context.Context, request admission.Request) admission.Response {
 	if request.Operation != admissionv1.Create && request.Operation != admissionv1.Update {
 		return acadmission.Allowed("operation is not Create or Update")
 	}
@@ -205,7 +201,7 @@ func (h *handler) admitShoot(ctx context.Context, request admission.Request) adm
 	return acadmission.Allowed("referenced audit policy is valid")
 }
 
-func (h *handler) admitConfigMap(ctx context.Context, request admission.Request) admission.Response {
+func (h *Handler) admitConfigMap(ctx context.Context, request admission.Request) admission.Response {
 	var (
 		oldCm = &corev1.ConfigMap{}
 		cm    = &corev1.ConfigMap{}
@@ -289,7 +285,7 @@ func validateAuditPolicySemanticsForKubernetesVersion(auditPolicy string, kubern
 	return 0, nil
 }
 
-func (h *handler) getOldObject(request admission.Request, oldObj runtime.Object) error {
+func (h *Handler) getOldObject(request admission.Request, oldObj runtime.Object) error {
 	if len(request.OldObject.Raw) != 0 {
 		return h.decoder.DecodeRaw(request.OldObject, oldObj)
 	}

@@ -49,21 +49,13 @@ func init() {
 	utilruntime.Must(authorizationv1.AddToScheme(scheme))
 }
 
-// NewHandler creates a new HTTP handler for authorizing requests for resources related to a Seed.
-func NewHandler(logger logr.Logger, authorizer auth.Authorizer) http.HandlerFunc {
-	h := &handler{
-		logger:     logger,
-		authorizer: authorizer,
-	}
-	return h.Handle
-}
-
+// handler is an HTTP handler for authorizing requests for resources related to a Seed.
 type handler struct {
 	logger     logr.Logger
 	authorizer auth.Authorizer
 }
 
-func (h *handler) Handle(w http.ResponseWriter, r *http.Request) {
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var (
 		ctx, cancel = context.WithTimeout(r.Context(), DecisionTimeout)
 		body        []byte

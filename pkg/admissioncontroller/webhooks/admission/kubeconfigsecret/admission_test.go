@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-var _ = Describe("handler", func() {
+var _ = Describe("Handler", func() {
 	var (
 		ctx = context.TODO()
 		log logr.Logger

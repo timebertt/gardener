@@ -46,7 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-var _ = Describe("handler", func() {
+var _ = Describe("Handler", func() {
 	var (
 		ctx = context.TODO()
 		log logr.Logger
@@ -223,7 +223,7 @@ var _ = Describe("handler", func() {
 		decoder, err = admission.NewDecoder(kubernetes.GardenScheme)
 		Expect(err).NotTo(HaveOccurred())
 
-		handler = New(log, config())
+		handler = New(config())
 		Expect(admission.InjectDecoderInto(decoder, handler)).To(BeTrue())
 
 		testEncoder = &json.Serializer{}
@@ -291,7 +291,7 @@ var _ = Describe("handler", func() {
 		cfg := config()
 		blockMode := apisconfig.ResourceAdmissionWebhookMode("block")
 		cfg.OperationMode = &blockMode
-		handler = New(log, cfg)
+		handler = New(cfg)
 
 		test(shootv1alpha1, "", restrictedUser, false, "resource size exceeded")
 		Eventually(logBuffer).Should(gbytes.Say("Maximum resource size exceeded"))
@@ -301,7 +301,7 @@ var _ = Describe("handler", func() {
 		cfg := config()
 		logMode := apisconfig.ResourceAdmissionWebhookMode("log")
 		cfg.OperationMode = &logMode
-		handler = New(log, cfg)
+		handler = New(cfg)
 
 		test(shootv1alpha1, "", restrictedUser, true, "resource size ok")
 		Eventually(logBuffer).Should(gbytes.Say("Maximum resource size exceeded"))

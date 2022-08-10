@@ -26,18 +26,18 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	apisconfig "github.com/gardener/gardener/pkg/admissioncontroller/apis/config"
+	"github.com/gardener/gardener/pkg/admissioncontroller/apis/config"
 	confighelper "github.com/gardener/gardener/pkg/admissioncontroller/apis/config/helper"
 	"github.com/gardener/gardener/pkg/admissioncontroller/metrics"
 	acadmission "github.com/gardener/gardener/pkg/admissioncontroller/webhooks/admission"
-	"github.com/gardener/gardener/pkg/logger"
 )
 
 const (
-	// HandlerName is the name of this admission webhook handler.
-	HandlerName = "resource_size_validator"
 	// WebhookPath is the HTTP handler path for this admission webhook handler.
 	WebhookPath = "/webhooks/validate-resource-size"
 
@@ -45,35 +45,26 @@ const (
 	metricReasonSizeExceeded = "Size Exceeded"
 )
 
-// New creates a new webhook handler validating that the resource size of a request doesn't exceed the configured
-// limits.
-func New(logger logr.Logger, config *apisconfig.ResourceAdmissionConfiguration) *handler {
-	return &handler{logger: logger, config: config}
-}
-
-type handler struct {
-	logger  logr.Logger
-	config  *apisconfig.ResourceAdmissionConfiguration
+// Handler is a webhook handler validating that the resource size of a request doesn't exceed the configured limits.
+type Handler struct {
+	Config  config.ResourceAdmissionConfiguration
 	decoder *admission.Decoder
 }
 
-var _ admission.Handler = &handler{}
-
-func (h *handler) InjectDecoder(d *admission.Decoder) error {
+func (h *Handler) InjectDecoder(d *admission.Decoder) error {
 	h.decoder = d
 	return nil
 }
 
-func (h *handler) Handle(_ context.Context, request admission.Request) admission.Response {
-	requestLogger := logger.NewIDLogger(h.logger.WithValues(
-		"user", request.UserInfo.Username,
-		"resource", request.Resource, "name", request.Name,
-	))
-	if request.Namespace != "" {
-		requestLogger = requestLogger.WithValues("namespace", request.Namespace)
-	}
+func (h *Handler) AddToManager(mgr manager.Manager) error {
+	mgr.GetWebhookServer().Register(WebhookPath, &webhook.Admission{Handler: h})
+	return nil
+}
 
-	response := h.admitRequestSize(request, requestLogger)
+func (h *Handler) Handle(ctx context.Context, request admission.Request) admission.Response {
+	log := logf.FromContext(ctx)
+
+	response := h.admitRequestSize(request, log)
 	if !response.Allowed {
 		metrics.RejectedResources.WithLabelValues(
 			fmt.Sprint(request.Operation),
@@ -86,12 +77,12 @@ func (h *handler) Handle(_ context.Context, request admission.Request) admission
 	return response
 }
 
-func (h *handler) admitRequestSize(request admission.Request, requestLogger logr.Logger) admission.Response {
+func (h *Handler) admitRequestSize(request admission.Request, requestLogger logr.Logger) admission.Response {
 	if request.SubResource != "" {
 		return acadmission.Allowed("subresources are not handled")
 	}
 
-	if isUnrestrictedUser(request.UserInfo, h.config.UnrestrictedSubjects) {
+	if isUnrestrictedUser(request.UserInfo, h.Config.UnrestrictedSubjects) {
 		return acadmission.Allowed("user is unrestricted")
 	}
 
@@ -101,14 +92,14 @@ func (h *handler) admitRequestSize(request admission.Request, requestLogger logr
 		requestedResource = request.RequestResource
 	}
 
-	limit := findLimitForGVR(h.config.Limits, requestedResource)
+	limit := findLimitForGVR(h.Config.Limits, requestedResource)
 	if limit == nil {
 		return acadmission.Allowed("no limit configured for requested resource")
 	}
 
 	objectSize := len(request.Object.Raw)
 	if limit.CmpInt64(int64(objectSize)) == -1 {
-		if h.config.OperationMode == nil || *h.config.OperationMode == apisconfig.AdmissionModeBlock {
+		if h.Config.OperationMode == nil || *h.Config.OperationMode == config.AdmissionModeBlock {
 			requestLogger.Info("Maximum resource size exceeded, rejected request",
 				"requestObjectSize", objectSize, "limit", limit)
 
@@ -156,7 +147,7 @@ func isUnrestrictedUser(userInfo authenticationv1.UserInfo, subjects []rbacv1.Su
 	return userMatch(userInfo, subjects)
 }
 
-func findLimitForGVR(limits []apisconfig.ResourceLimit, gvr *metav1.GroupVersionResource) *resource.Quantity {
+func findLimitForGVR(limits []config.ResourceLimit, gvr *metav1.GroupVersionResource) *resource.Quantity {
 	for _, limit := range limits {
 		size := limit.Size
 		if confighelper.APIGroupMatches(limit, gvr.Group) &&
