@@ -39,3 +39,21 @@ func Allowed(msg string) admission.Response {
 	}
 	return resp
 }
+
+// Denied constructs a response indicating that the given operation is denied. In contrast to
+// sigs.k8s.io/controller-runtime/pkg/webhook/admission.Denied it does not set the `.status.result` but the
+// `.status.message` field.
+func Denied(msg string) admission.Response {
+	resp := admission.Response{
+		AdmissionResponse: admissionv1.AdmissionResponse{
+			Allowed: false,
+			Result: &metav1.Status{
+				Code: int32(http.StatusForbidden),
+			},
+		},
+	}
+	if len(msg) > 0 {
+		resp.Result.Message = msg
+	}
+	return resp
+}

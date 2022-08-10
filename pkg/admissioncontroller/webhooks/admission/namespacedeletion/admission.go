@@ -136,10 +136,10 @@ func (h *Handler) admitNamespace(ctx context.Context, request admission.Request)
 			return acadmission.Allowed("namespace doesn't contain any shoots")
 		}
 
-		return admission.Errored(http.StatusUnprocessableEntity, fmt.Errorf("deletion of namespace %q is not permitted (it still contains Shoots)", namespace.Name))
+		return acadmission.Denied(fmt.Sprintf("deletion of namespace %q is not permitted (it still contains Shoots)", namespace.Name))
 	}
 
 	// Namespace is not yet marked for deletion and project is not marked as well. We do not admit and respond that
 	// namespace deletion is only allowed via project deletion.
-	return admission.Errored(http.StatusUnprocessableEntity, fmt.Errorf("direct deletion of namespace %q is not permitted (you must delete the corresponding project %q)", namespace.Name, project.Name))
+	return acadmission.Denied(fmt.Sprintf("direct deletion of namespace %q is not permitted (you must delete the corresponding project %q)", namespace.Name, project.Name))
 }
