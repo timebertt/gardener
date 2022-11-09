@@ -31,7 +31,7 @@ Deployed in the `garden` namespace. Important scrape targets:
 
 Deployed in the `garden` namespace. Important scrape targets:
 
-- pods in `garden` and `extension-*` namespaces annotated with:
+- pods in `garden`, `istio-*` and `extension-*` namespaces annotated with:
   ```
   prometheus.io/scrape=true
   prometheus.io/port=<port>

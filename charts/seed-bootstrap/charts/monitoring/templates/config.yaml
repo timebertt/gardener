@@ -55,7 +55,7 @@ data:
         - __meta_kubernetes_namespace
         - __meta_kubernetes_pod_annotation_prometheus_io_scrape
         - __meta_kubernetes_pod_annotation_prometheus_io_port
-        regex: garden;true;(.+)
+        regex: (garden|istio-(.+));true;(.+)
         action: keep
       - source_labels:
         - __meta_kubernetes_pod_annotation_prometheus_io_scheme

@@ -23,6 +23,10 @@ spec:
         service.istio.io/canonical-revision: "1.7"
       annotations:
         sidecar.istio.io/inject: "false"
+        prometheus.io/scrape: "true"
+        prometheus.io/scheme: "http"
+        prometheus.io/port: "15000"
+        prometheus.io/path: "/stats/prometheus"
         checksum/configmap-bootstrap-config-override: {{ include (print $.Template.BasePath "/bootstrap-config-override.yaml") . | sha256sum }}
     spec:
       serviceAccountName: istio-ingressgateway
