@@ -31,14 +31,18 @@ Deployed in the `garden` namespace. Important scrape targets:
 
 Deployed in the `garden` namespace. Important scrape targets:
 
-- pods in extension namespaces annotated with:
-```
-prometheus.io/scrape=true
-prometheus.io/port=<port>
-```
+- pods in `garden` and `extension-*` namespaces annotated with:
+  ```
+  prometheus.io/scrape=true
+  prometheus.io/port=<port>
+  ```
 - cadvisor metrics from pods in the garden and extension namespaces
 
-**Purpose**: Entrypoint for operators when debugging issues with extensions or other garden components.
+**Purpose**: Entrypoint for operators when debugging issues with extensions or other seed components.
+
+Pod scrape targets can be configured via the following additional annotations:
+- `prometheus.io/scheme`: scrape scheme to use: `http` or `https` (defaults to `https` if unset)
+- `prometheus.io/path`: metrics path to scrape (defaults to `/metrics` if unset)
 
 ### Shoot Prometheus
 
