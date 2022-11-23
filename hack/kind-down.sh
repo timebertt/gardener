@@ -4,35 +4,16 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-CLUSTER_NAME=""
-PATH_KUBECONFIG=""
-KEEP_BACKUPBUCKETS_DIRECTORY=false
-
-parse_flags() {
-  while test $# -gt 0; do
-    case "$1" in
-    --cluster-name)
-      shift; CLUSTER_NAME="$1"
-      ;;
-    --path-kubeconfig)
-      shift; PATH_KUBECONFIG="$1"
-      ;;
-    --keep-backupbuckets-dir)
-      KEEP_BACKUPBUCKETS_DIRECTORY=false
-      ;;
-    esac
-
-    shift
-  done
-}
-
-parse_flags "$@"
+KIND_ENV="${KIND_ENV:-skaffold}"
+KIND_NAME="${KIND_NAME:-local}"
+CLUSTER_NAME="gardener-$KIND_NAME"
+KUBECONFIG_COPY=""
 
 kind delete cluster \
   --name "$CLUSTER_NAME"
 
-rm -f  "$PATH_KUBECONFIG"
+rm -f "$KUBECONFIG_COPY"
 
-if [[ "$KEEP_BACKUPBUCKETS_DIRECTORY" == "false" ]]; then
+if [[ "$KIND_NAME" == "local" ]]; then
   rm -rf "$(dirname "$0")/../dev/local-backupbuckets"
 fi

@@ -81,7 +81,7 @@ export_events_for_cluster() {
 
 clamp_mss_to_pmtu() {
   # https://github.com/kubernetes/test-infra/issues/23741
-  if [[ "$OSTYPE" != "darwin"* ]]; then
+  if [[ "$(uname -s)" == "Linux" ]]; then
     iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
   fi
 }

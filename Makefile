@@ -25,17 +25,8 @@ PUSH_LATEST_TAG                            := false
 VERSION                                    := $(shell cat VERSION)
 EFFECTIVE_VERSION                          := $(VERSION)-$(shell git rev-parse HEAD)
 REPO_ROOT                                  := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
-GARDENER_LOCAL_KUBECONFIG                  := $(REPO_ROOT)/example/gardener-local/kind/local/kubeconfig
-GARDENER_LOCAL2_KUBECONFIG                 := $(REPO_ROOT)/example/gardener-local/kind/local2/kubeconfig
-GARDENER_LOCAL_HA_SINGLE_ZONE_KUBECONFIG   := $(REPO_ROOT)/example/gardener-local/kind/ha-single-zone/kubeconfig
-GARDENER_LOCAL_HA_MULTI_ZONE_KUBECONFIG    := $(REPO_ROOT)/example/gardener-local/kind/ha-multi-zone/kubeconfig
-GARDENER_LOCAL_OPERATOR_KUBECONFIG         := $(REPO_ROOT)/example/gardener-local/kind/operator/kubeconfig
-LOCAL_GARDEN_LABEL                         := local-garden
-REMOTE_GARDEN_LABEL                        := remote-garden
-ACTIVATE_SEEDAUTHORIZER                    := false
 SEED_NAME                                  := ""
 DEV_SETUP_WITH_WEBHOOKS                    := false
-KIND_ENV                                   := "skaffold"
 PARALLEL_E2E_TESTS                         := 5
 
 ifneq ($(strip $(shell git status --porcelain 2>/dev/null)),)
@@ -65,22 +56,6 @@ dev-setup:
 .PHONY: dev-setup-register-gardener
 dev-setup-register-gardener:
 	@./hack/local-development/dev-setup-register-gardener
-
-.PHONY: local-garden-up
-local-garden-up: $(HELM)
-	@./hack/local-development/local-garden/start.sh $(LOCAL_GARDEN_LABEL) $(ACTIVATE_SEEDAUTHORIZER)
-
-.PHONY: local-garden-down
-local-garden-down:
-	@./hack/local-development/local-garden/stop.sh $(LOCAL_GARDEN_LABEL)
-
-.PHONY: remote-garden-up
-remote-garden-up: $(HELM)
-	@./hack/local-development/remote-garden/start.sh $(REMOTE_GARDEN_LABEL)
-
-.PHONY: remote-garden-down
-remote-garden-down:
-	@./hack/local-development/remote-garden/stop.sh $(REMOTE_GARDEN_LABEL)
 
 .PHONY: start-apiserver
 start-apiserver:
@@ -274,46 +249,58 @@ verify: check format test test-integration test-prometheus
 verify-extended: check-generate check format test-cov test-cov-clean test-integration test-prometheus
 
 #####################################################################
-# Rules for local environment                                       #
+# Rules for local environments                                      #
 #####################################################################
 
-kind-up kind-down gardener-up gardener-down register-local-env tear-down-local-env register-kind2-env tear-down-kind2-env test-e2e-local-simple test-e2e-local-migration test-e2e-local: export KUBECONFIG = $(GARDENER_LOCAL_KUBECONFIG)
-kind2-up kind2-down gardenlet-kind2-up gardenlet-kind2-down: export KUBECONFIG = $(GARDENER_LOCAL2_KUBECONFIG)
-kind-ha-single-zone-up kind-ha-single-zone-down gardener-ha-single-zone-up register-kind-ha-single-zone-env tear-down-kind-ha-single-zone-env ci-e2e-kind-ha-single-zone: export KUBECONFIG = $(GARDENER_LOCAL_HA_SINGLE_ZONE_KUBECONFIG)
-kind-ha-multi-zone-up kind-ha-multi-zone-down gardener-ha-multi-zone-up register-kind-ha-multi-zone-env tear-down-kind-ha-multi-zone-env ci-e2e-kind-ha-multi-zone: export KUBECONFIG = $(GARDENER_LOCAL_HA_MULTI_ZONE_KUBECONFIG)
-kind-operator-up kind-operator-down operator-up operator-down test-e2e-local-operator ci-e2e-kind-operator: export KUBECONFIG = $(GARDENER_LOCAL_OPERATOR_KUBECONFIG)
+# legacy environments: local-garden, remote-garden
+
+LOCAL_GARDEN_LABEL := local-garden
+ACTIVATE_SEEDAUTHORIZER := false
+
+.PHONY: local-garden-up
+local-garden-up: $(HELM)
+	@./hack/local-development/local-garden/start.sh $(LOCAL_GARDEN_LABEL) $(ACTIVATE_SEEDAUTHORIZER)
+
+.PHONY: local-garden-down
+local-garden-down:
+	@./hack/local-development/local-garden/stop.sh $(LOCAL_GARDEN_LABEL)
+
+REMOTE_GARDEN_LABEL := remote-garden
+
+.PHONY: remote-garden-up
+remote-garden-up: $(HELM)
+	@./hack/local-development/remote-garden/start.sh $(REMOTE_GARDEN_LABEL)
+
+.PHONY: remote-garden-down
+remote-garden-down:
+	@./hack/local-development/remote-garden/stop.sh $(REMOTE_GARDEN_LABEL)
+
+# new kind-based environments
+
+KIND_ENV := skaffold # skaffold (deploy everything to kind cluster) | local (run all gardener components on host machine)
+KIND_NAME := local # local | local2
+KIND_CONFIG := local # local | local2 | ha-single-zone | ha-multi-zone | operator
+GARDENER_LOCAL_KUBECONFIG := $(REPO_ROOT)/example/gardener-local/kind/local/kubeconfig # points to kind cluster running gardener-apiserver
+KIND_KUBECONFIG := $(REPO_ROOT)/example/gardener-local/kind/$(KIND_NAME)/kubeconfig # points to kind cluster specified by KIND_NAME (might be different to above cluster)
+
+ifeq($(KIND_NAME),local2)
+	export SKIP_REGISTRY = yes
+endif
+
+export KIND_ENV KIND_NAME KIND_CONFIG GARDENER_LOCAL_KUBECONFIG
+kind-% gardener-% gardenlet-% register-% tear-down-%: export KUBECONFIG = $(KIND_KUBECONFIG)
 
 kind-up: $(KIND) $(KUBECTL) $(HELM)
-	./hack/kind-up.sh --cluster-name gardener-local --environment $(KIND_ENV) --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind/base/kubeconfig --path-cluster-values $(REPO_ROOT)/example/gardener-local/kind/local/values.yaml
+	./hack/kind-up.sh --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind/base/kubeconfig
 kind-down: $(KIND)
 	./hack/kind-down.sh --cluster-name gardener-local --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind/base/kubeconfig
-
-kind2-up: $(KIND) $(KUBECTL) $(HELM)
-	./hack/kind-up.sh --cluster-name gardener-local2 --environment $(KIND_ENV) --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind2/base/kubeconfig --path-cluster-values $(REPO_ROOT)/example/gardener-local/kind/local2/values.yaml --skip-registry
-kind2-down: $(KIND)
-	./hack/kind-down.sh --cluster-name gardener-local2 --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind2/base/kubeconfig --keep-backupbuckets-dir
-
-kind-ha-single-zone-up: $(KIND) $(KUBECTL) $(HELM)
-	./hack/kind-up.sh --cluster-name gardener-local-ha-single-zone --environment $(KIND_ENV) --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind-ha-single-zone/base/kubeconfig --path-cluster-values $(REPO_ROOT)/example/gardener-local/kind/ha-single-zone/values.yaml
-kind-ha-single-zone-down: $(KIND)
-	./hack/kind-down.sh --cluster-name gardener-local-ha-single-zone --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind-ha-single-zone/base/kubeconfig
-
-kind-ha-multi-zone-up: $(KIND) $(KUBECTL) $(HELM)
-	./hack/kind-up.sh --cluster-name gardener-local-ha-multi-zone --environment $(KIND_ENV) --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind-ha-multi-zone/base/kubeconfig --path-cluster-values $(REPO_ROOT)/example/gardener-local/kind/ha-multi-zone/values.yaml
-kind-ha-multi-zone-down: $(KIND)
-	./hack/kind-down.sh --cluster-name gardener-local-ha-multi-zone --path-kubeconfig $(REPO_ROOT)/example/provider-local/seed-kind-ha-multi-zone/base/kubeconfig
-
-kind-operator-up: $(KIND) $(KUBECTL) $(HELM)
-	./hack/kind-up.sh --cluster-name gardener-operator-local --environment $(KIND_ENV) --path-kubeconfig $(REPO_ROOT)/example/gardener-local/kind/operator/kubeconfig --path-cluster-values $(REPO_ROOT)/example/gardener-local/kind/operator/values.yaml
-kind-operator-down: $(KIND)
-	./hack/kind-down.sh --cluster-name gardener-operator-local --path-kubeconfig $(REPO_ROOT)/example/gardener-local/kind/operator/kubeconfig
 
 # speed-up skaffold deployments by building all images concurrently
 export SKAFFOLD_BUILD_CONCURRENCY = 0
 # use static label for skaffold to prevent rolling all gardener components on every `skaffold` invocation
-gardener-up gardener-down gardener-ha-single-zone-up gardener-ha-single-zone-down gardener-ha-multi-zone-up gardener-ha-multi-zone-down gardenlet-kind2-up gardenlet-kind2-down: export SKAFFOLD_LABEL = skaffold.dev/run-id=gardener-local
+export SKAFFOLD_LABEL = skaffold.dev/run-id=gardener-local
 # set ldflags for skaffold
-gardener-up gardener-ha-single-zone-up gardener-ha-multi-zone-up gardenlet-kind2-up operator-up: export LD_FLAGS = $(shell $(REPO_ROOT)/hack/get-build-ld-flags.sh)
+gardener-up gardenlet-kind2-up operator-up: export LD_FLAGS = $(shell $(REPO_ROOT)/hack/get-build-ld-flags.sh)
 
 gardener-up: $(SKAFFOLD) $(HELM) $(KUBECTL)
 	SKAFFOLD_DEFAULT_REPO=localhost:5001 SKAFFOLD_PUSH=true $(SKAFFOLD) run
@@ -327,10 +314,12 @@ tear-down-local-env: $(KUBECTL)
 	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/seed-kind/local
 	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/garden/local
 
+gardenlet-kind2-up gardenlet-kind2-down: KIND_NAME = local2
+
 gardenlet-kind2-up: $(SKAFFOLD) $(HELM)
 	$(SKAFFOLD) deploy -m kind2-env -p kind2 --kubeconfig=$(GARDENER_LOCAL_KUBECONFIG)
 	@# define GARDENER_LOCAL_KUBECONFIG so that it can be used by skaffold when checking whether the seed managed by this gardenlet is ready
-	GARDENER_LOCAL_KUBECONFIG=$(GARDENER_LOCAL_KUBECONFIG) SKAFFOLD_DEFAULT_REPO=localhost:5001 SKAFFOLD_PUSH=true $(SKAFFOLD) run -m provider-local,gardenlet -p kind2
+	SKAFFOLD_DEFAULT_REPO=localhost:5001 SKAFFOLD_PUSH=true $(SKAFFOLD) run -m provider-local,gardenlet -p kind2
 gardenlet-kind2-down: $(SKAFFOLD) $(HELM)
 	$(SKAFFOLD) delete -m kind2-env -p kind2 --kubeconfig=$(GARDENER_LOCAL_KUBECONFIG)
 	$(SKAFFOLD) delete -m gardenlet,kind2-env -p kind2
@@ -339,35 +328,17 @@ register-kind2-env: $(KUBECTL)
 tear-down-kind2-env: $(KUBECTL)
 	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/seed-kind2/local
 
-gardener-ha-single-zone-up: $(SKAFFOLD) $(HELM) $(KUBECTL)
-	SKAFFOLD_DEFAULT_REPO=localhost:5001 SKAFFOLD_PUSH=true $(SKAFFOLD) run -p ha-single-zone
-gardener-ha-single-zone-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
-	./hack/gardener-down.sh --skaffold-profile ha-single-zone
-register-kind-ha-single-zone-env: $(KUBECTL)
-	$(KUBECTL) apply -k $(REPO_ROOT)/example/provider-local/garden/local
-	$(KUBECTL) apply -k $(REPO_ROOT)/example/provider-local/seed-kind-ha-single-zone/local
-tear-down-kind-ha-single-zone-env: $(KUBECTL)
-	$(KUBECTL) annotate project local confirmation.gardener.cloud/deletion=true
-	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/seed-kind-ha-single-zone/local
-	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/garden/local
-
-gardener-ha-multi-zone-up: $(SKAFFOLD) $(HELM) $(KUBECTL)
-	SKAFFOLD_DEFAULT_REPO=localhost:5001 SKAFFOLD_PUSH=true $(SKAFFOLD) run -p ha-multi-zone
-gardener-ha-multi-zone-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
-	./hack/gardener-down.sh --skaffold-profile ha-multi-zone
-register-kind-ha-multi-zone-env: $(KUBECTL)
-	$(KUBECTL) apply -k $(REPO_ROOT)/example/provider-local/garden/local
-	$(KUBECTL) apply -k $(REPO_ROOT)/example/provider-local/seed-kind-ha-multi-zone/local
-tear-down-kind-ha-multi-zone-env: $(KUBECTL)
-	$(KUBECTL) annotate project local confirmation.gardener.cloud/deletion=true
-	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/seed-kind-ha-multi-zone/local
-	$(KUBECTL) delete -k $(REPO_ROOT)/example/provider-local/garden/local
-
 operator-up: $(SKAFFOLD) $(HELM) $(KUBECTL)
 	SKAFFOLD_DEFAULT_REPO=localhost:5001 SKAFFOLD_PUSH=true $(SKAFFOLD) run -f skaffold-operator.yaml
 operator-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
 	$(KUBECTL) delete garden --all --ignore-not-found --wait --timeout 5m
 	$(SKAFFOLD) delete -f skaffold-operator.yaml
+
+#####################################################################
+# Rules for e2e tests                                               #
+#####################################################################
+
+test-e2e-local test-e2e-local-simple test-e2e-local-migration test-e2e-local-ha-single-zone test-e2e-local-ha-multi-zone test-e2e-local-operator: export KUBECONFIG = $(GARDENER_LOCAL_KUBECONFIG)
 
 test-e2e-local: $(GINKGO)
 	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="default" ./test/e2e/gardener/...
@@ -381,6 +352,10 @@ test-e2e-local-ha-multi-zone: $(GINKGO)
 	SHOOT_FAILURE_TOLERANCE_TYPE=zone ./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter "simple || (high-availability && upgrade-to-zone)" ./test/e2e/gardener/...
 test-e2e-local-operator: $(GINKGO)
 	./hack/test-e2e-local.sh operator --procs=$(PARALLEL_E2E_TESTS) --label-filter="default" ./test/e2e/operator/...
+
+#####################################################################
+# CI entrypoints for e2e tests                                      #
+#####################################################################
 
 ci-e2e-kind: $(KIND) $(YQ)
 	./hack/ci-e2e-kind.sh

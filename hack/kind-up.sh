@@ -4,37 +4,12 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-CLUSTER_NAME=""
-PATH_CLUSTER_VALUES=""
+KIND_ENV="${KIND_ENV:-skaffold}"
+KIND_NAME="${KIND_NAME:-local}"
+CLUSTER_NAME="gardener-$KIND_NAME"
+PATH_CLUSTER_VALUES="$(dirname "$0")/../example/gardener-local/kind/$KIND_NAME"
+KUBECONFIG_COPY="$(dirname "$0")/../example/provider-local/seed-$(KIND_NAME)/$KIND_NAME"
 PATH_KUBECONFIG=""
-ENVIRONMENT="skaffold"
-DEPLOY_REGISTRY=true
-
-parse_flags() {
-  while test $# -gt 0; do
-    case "$1" in
-    --cluster-name)
-      shift; CLUSTER_NAME="$1"
-      ;;
-    --path-cluster-values)
-      shift; PATH_CLUSTER_VALUES="$1"
-      ;;
-    --path-kubeconfig)
-      shift; PATH_KUBECONFIG="$1"
-      ;;
-    --environment)
-      shift; ENVIRONMENT="$1"
-      ;;
-    --skip-registry)
-      DEPLOY_REGISTRY=false
-      ;;
-    esac
-
-    shift
-  done
-}
-
-parse_flags "$@"
 
 mkdir -m 0755 -p \
   "$(dirname "$0")/../dev/local-backupbuckets" \
@@ -42,7 +17,7 @@ mkdir -m 0755 -p \
 
 kind create cluster \
   --name "$CLUSTER_NAME" \
-  --config <(helm template $(dirname "$0")/../example/gardener-local/kind/cluster --values "$PATH_CLUSTER_VALUES" --set "environment=$ENVIRONMENT")
+  --config <(helm template $(dirname "$0")/../example/gardener-local/kind/cluster --values "$PATH_CLUSTER_VALUES" --set "environment=$KIND_ENV")
 
 # workaround https://kind.sigs.k8s.io/docs/user/known-issues/#pod-errors-due-to-too-many-open-files
 kubectl get nodes -o name |\
@@ -53,7 +28,7 @@ if [[ "$KUBECONFIG" != "$PATH_KUBECONFIG" ]]; then
   cp "$KUBECONFIG" "$PATH_KUBECONFIG"
 fi
 
-if [[ "$DEPLOY_REGISTRY" == "true" ]]; then
+if [[ -z "${SKIP_REGISTRY:-}" ]]; then
   kubectl apply -k "$(dirname "$0")/../example/gardener-local/registry"       --server-side
   kubectl wait --for=condition=available deployment -l app=registry -n registry --timeout 5m
 fi
