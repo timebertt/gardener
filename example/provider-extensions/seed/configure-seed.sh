@@ -18,6 +18,8 @@ set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 REPO_ROOT_DIR="$(realpath "$SCRIPT_DIR"/../../..)"
+CONTROLPLANE_VALUES_FILE="$REPO_ROOT_DIR"/example/provider-extensions/garden/controlplane/values.yaml
+GARDENLET_VALUES_FILE="$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml
 
 usage() {
   echo "Usage:"
@@ -87,27 +89,27 @@ ensure-gardener-dns-annotations() {
 }
 
 echo "Ensuring config files"
-ensure-config-file "$REPO_ROOT_DIR"/example/provider-extensions/garden/controlplane/values.yaml
+ensure-config-file "$CONTROLPLANE_VALUES_FILE"
 ensure-config-file "$REPO_ROOT_DIR"/example/provider-extensions/garden/project/credentials/infrastructure-secrets.yaml
 ensure-config-file "$REPO_ROOT_DIR"/example/provider-extensions/garden/project/credentials/secretbindings.yaml
-ensure-config-file "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml
+ensure-config-file "$GARDENLET_VALUES_FILE"
 
 echo "Check if essential config options are initialized"
 check-not-initial "$SCRIPT_DIR"/kubeconfig ""
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/garden/controlplane/values.yaml ".global.internalDomain.domain"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/garden/controlplane/values.yaml ".global.internalDomain.provider"
+check-not-initial "$CONTROLPLANE_VALUES_FILE" ".global.internalDomain.domain"
+check-not-initial "$CONTROLPLANE_VALUES_FILE" ".global.internalDomain.provider"
 
-registry_domain=
-relay_domain=
+registry_domain="${SEED_REGISTRY_DOMAIN:-}"
+relay_domain="${SEED_RELAY_DOMAIN:-}"
 
-internal_dns_secret=$(yq -e '.global.internalDomain.domain' "$REPO_ROOT_DIR"/example/provider-extensions/garden/controlplane/values.yaml | sed 's/\./-/g' | sed 's/^/internal-domain-/')
-dns_provider_type=$(yq -e '.global.internalDomain.provider' "$REPO_ROOT_DIR"/example/provider-extensions/garden/controlplane/values.yaml)
+internal_dns_secret=$(yq -e '.global.internalDomain.domain' "$CONTROLPLANE_VALUES_FILE" | sed 's/\./-/g' | sed 's/^/internal-domain-/')
+dns_provider_type=$(yq -e '.global.internalDomain.provider' "$CONTROLPLANE_VALUES_FILE")
 
 if kubectl get configmaps -n kube-system shoot-info --kubeconfig "$seed_kubeconfig" -o yaml > "$temp_shoot_info"; then
   use_shoot_info="true"
   echo "Getting config from shoot"
-  registry_domain=reg.$(yq -e '.data.domain' "$temp_shoot_info")
-  relay_domain=relay.$(yq -e '.data.domain' "$temp_shoot_info")
+  registry_domain="${registry_domain:-reg.$(yq -e '.data.domain' "$temp_shoot_info")}"
+  relay_domain="${relay_domain:-relay.$(yq -e '.data.domain' "$temp_shoot_info")}"
   pods_cidr=$(yq -e '.data.podNetwork' "$temp_shoot_info")
   nodes_cidr=$(yq -e '.data.nodeNetwork' "$temp_shoot_info")
   services_cidr=$(yq -e '.data.serviceNetwork' "$temp_shoot_info")
@@ -123,7 +125,7 @@ if kubectl get configmaps -n kube-system shoot-info --kubeconfig "$seed_kubeconf
     .config.seedConfig.spec.dns.provider.type = \"$dns_provider_type\" |
     .config.seedConfig.spec.provider.region = \"$region\" |
     .config.seedConfig.spec.provider.type = \"$type\"
-  " "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml
+  " "$GARDENLET_VALUES_FILE"
 else
   echo "######################################################################################"
   echo "Please enter domain names for registry and relay domains on the seed"
@@ -138,7 +140,7 @@ else
     .config.seedConfig.metadata.name = \"$seed_name\" |
     .config.seedConfig.spec.dns.provider.secretRef.name = \"$internal_dns_secret\" |
     .config.seedConfig.spec.dns.provider.type = \"$dns_provider_type\"
-  " "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml
+  " "$GARDENLET_VALUES_FILE"
 fi
 
 if [[ $registry_domain == "$relay_domain" ]]; then
@@ -148,16 +150,16 @@ fi
 echo "$registry_domain" > "$SCRIPT_DIR"/registrydomain
 
 echo "Check if gardenlet values.yaml is complete"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.metadata.name"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.ingress.domain"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.networks.pods"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.networks.nodes"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.networks.services"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.dns.provider.secretRef.name"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.dns.provider.type"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.provider.region"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.provider.type"
-check-not-initial "$REPO_ROOT_DIR"/example/provider-extensions/gardenlet/values.yaml ".config.seedConfig.spec.provider.zones"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.metadata.name"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.ingress.domain"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.networks.pods"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.networks.nodes"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.networks.services"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.dns.provider.secretRef.name"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.dns.provider.type"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.provider.region"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.provider.type"
+check-not-initial "$GARDENLET_VALUES_FILE" ".config.seedConfig.spec.provider.zones"
 
 echo "Deploying load-balancer services"
 kubectl --server-side=true --kubeconfig "$seed_kubeconfig" apply -k "$SCRIPT_DIR"/../registry-seed/load-balancer/base
