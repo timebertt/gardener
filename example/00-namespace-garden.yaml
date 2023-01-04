@@ -8,3 +8,6 @@ metadata:
   labels:
     gardener.cloud/role: project
     project.gardener.cloud/name: garden
+    # allow bypassing validate-kubeconfig-secrets.gardener.cloud webhook, which prevents adding seed OIDC login secrets
+    # with: "secret contains invalid kubeconfig: exec configurations are not supported"
+    app: gardener

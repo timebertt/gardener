@@ -5,3 +5,12 @@ resources:
 - project.yaml
 - credentials/infrastructure-secrets.yaml
 - credentials/secretbindings.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+secretGenerator:
+- name: provider-extensions.login
+  namespace: garden
+  files:
+  - kubeconfig=credentials/seed-kubeconfig.yaml
