@@ -28,7 +28,6 @@ import (
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
@@ -162,7 +161,7 @@ func (b *backupEntry) WaitMigrate(ctx context.Context) error {
 // If the BackupEntry was deleted it will be recreated.
 func (b *backupEntry) Restore(ctx context.Context, _ *gardencorev1beta1.ShootState) error {
 	bucketName := b.values.BucketName
-	if !gardenletfeatures.FeatureGate.Enabled(features.CopyEtcdBackupsDuringControlPlaneMigration) {
+	if !features.DefaultFeatureGate.Enabled(features.CopyEtcdBackupsDuringControlPlaneMigration) {
 		if err := b.client.Get(ctx, kubernetesutils.Key(b.values.Namespace, b.values.Name), b.backupEntry); err == nil {
 			bucketName = b.backupEntry.Spec.BucketName
 		} else if client.IgnoreNotFound(err) != nil {

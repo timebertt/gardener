@@ -22,7 +22,6 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
 	"github.com/gardener/gardener/pkg/utils/flow"
 )
@@ -76,7 +75,7 @@ func (b *Botanist) runParallelTaskForEachComponent(ctx context.Context, componen
 
 // IsCopyOfBackupsRequired check if etcd backups need to be copied between seeds.
 func (b *Botanist) IsCopyOfBackupsRequired(ctx context.Context) (bool, error) {
-	if !gardenletfeatures.FeatureGate.Enabled(features.CopyEtcdBackupsDuringControlPlaneMigration) ||
+	if !features.DefaultFeatureGate.Enabled(features.CopyEtcdBackupsDuringControlPlaneMigration) ||
 		b.Seed.GetInfo().Spec.Backup == nil || !b.isRestorePhase() {
 		return false, nil
 	}

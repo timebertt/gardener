@@ -36,7 +36,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/utils/pointer"
 	"k8s.io/utils/strings/slices"
 
@@ -384,7 +383,7 @@ func (c *validationContext) validateScheduling(ctx context.Context, a admission.
 			}
 
 			if shootIsBeingRescheduled {
-				if !utilfeature.DefaultFeatureGate.Enabled(features.SeedChange) {
+				if !features.DefaultFeatureGate.Enabled(features.SeedChange) {
 					if err := apivalidation.ValidateImmutableField(c.oldShoot.Spec.SeedName, c.shoot.Spec.SeedName, field.NewPath("spec", "seedName")).ToAggregate(); err != nil {
 						return err
 					}

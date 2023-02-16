@@ -29,7 +29,6 @@ import (
 
 	"github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/operation"
 	. "github.com/gardener/gardener/pkg/operation/botanist"
 	mockbackupentry "github.com/gardener/gardener/pkg/operation/botanist/component/backupentry/mock"
@@ -213,7 +212,7 @@ var _ = Describe("migration", func() {
 
 		Context("CopyEtcdBackups feature gate disabled", func() {
 			It("should return false if CopyEtcdBackups feature gate is not enabled", func() {
-				defer test.WithFeatureGate(gardenletfeatures.FeatureGate, features.CopyEtcdBackupsDuringControlPlaneMigration, false)()
+				defer test.WithFeatureGate(features.DefaultFeatureGate, features.CopyEtcdBackupsDuringControlPlaneMigration, false)()
 				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(copyRequired).To(BeFalse())
@@ -224,7 +223,7 @@ var _ = Describe("migration", func() {
 			var restoreFeatureGate func()
 
 			BeforeEach(func() {
-				restoreFeatureGate = test.WithFeatureGate(gardenletfeatures.FeatureGate, features.CopyEtcdBackupsDuringControlPlaneMigration, true)
+				restoreFeatureGate = test.WithFeatureGate(features.DefaultFeatureGate, features.CopyEtcdBackupsDuringControlPlaneMigration, true)
 			})
 
 			AfterEach(func() {
