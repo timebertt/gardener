@@ -114,6 +114,7 @@ featureGates:
   CopyEtcdBackupsDuringControlPlaneMigration: true
   DefaultSeccompProfile: true
   CoreDNSQueryRewriting: true
+  IPv6SingleStack: true
 # seedConfig:
 #   metadata:
 #     name: my-seed
