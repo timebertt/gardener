@@ -88,6 +88,7 @@ func (b *Botanist) DefaultOperatingSystemConfig() (operatingsystemconfig.Interfa
 		operatingsystemconfig.DefaultInterval,
 		operatingsystemconfig.DefaultSevereThreshold,
 		operatingsystemconfig.DefaultTimeout,
+		b.ImageVector,
 	), nil
 }
 

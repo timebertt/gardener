@@ -13,6 +13,9 @@ images:
     name: resource-manager
   sourceRepository: github.com/gardener/gardener
   repository: eu.gcr.io/gardener-project/gardener/resource-manager
+- name: gardener-node-agent
+  sourceRepository: github.com/gardener/gardener
+  repository: eu.gcr.io/gardener-project/gardener/node-agent
 
 # Seed bootstrap
 - name: pause-container

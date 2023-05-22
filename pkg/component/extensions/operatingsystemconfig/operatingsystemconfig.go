@@ -139,6 +139,7 @@ func New(
 	waitInterval time.Duration,
 	waitSevereThreshold time.Duration,
 	waitTimeout time.Duration,
+	imageVector imagevector.ImageVector,
 ) Interface {
 	osc := &operatingSystemConfig{
 		log:                 log,
@@ -148,6 +149,7 @@ func New(
 		waitInterval:        waitInterval,
 		waitSevereThreshold: waitSevereThreshold,
 		waitTimeout:         waitTimeout,
+		imageVector:         imageVector,
 	}
 
 	osc.workerNameToOSCs = make(map[string]*OperatingSystemConfigs, len(values.Workers))
@@ -168,6 +170,7 @@ type operatingSystemConfig struct {
 	waitInterval        time.Duration
 	waitSevereThreshold time.Duration
 	waitTimeout         time.Duration
+	imageVector         imagevector.ImageVector
 
 	lock             sync.Mutex
 	workerNameToOSCs map[string]*OperatingSystemConfigs
@@ -503,6 +506,7 @@ func (o *operatingSystemConfig) newDeployer(osc *extensionsv1alpha1.OperatingSys
 		osc:                     osc,
 		worker:                  worker,
 		purpose:                 purpose,
+		imageVector:             o.imageVector,
 		key:                     Key(worker.Name, kubernetesVersion, worker.CRI),
 		apiServerURL:            o.values.APIServerURL,
 		caBundle:                caBundle,
@@ -558,9 +562,10 @@ type deployer struct {
 	client client.Client
 	osc    *extensionsv1alpha1.OperatingSystemConfig
 
-	key     string
-	worker  gardencorev1beta1.Worker
-	purpose extensionsv1alpha1.OperatingSystemConfigPurpose
+	key         string
+	worker      gardencorev1beta1.Worker
+	purpose     extensionsv1alpha1.OperatingSystemConfigPurpose
+	imageVector imagevector.ImageVector
 
 	// downloader values
 	apiServerURL string
@@ -605,7 +610,7 @@ func (d *deployer) deploy(ctx context.Context, operation string) (extensionsv1al
 	// If the purpose is 'reconcile' then its unit content as well as its configuration (certificates, etc.) is added
 	// as well so that it can be updated regularly (otherwise, these resources would only be created once during the
 	// initial VM bootstrapping phase and never touched again).
-	downloaderUnits, downloaderFiles, err := DownloaderConfigFn(d.key, d.apiServerURL, d.clusterCASecretName)
+	downloaderUnits, downloaderFiles, err := DownloaderConfigFn(d.key, d.apiServerURL, d.clusterCASecretName, d.imageVector, d.worker)
 	if err != nil {
 		return nil, err
 	}

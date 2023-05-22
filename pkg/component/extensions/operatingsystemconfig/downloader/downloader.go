@@ -15,49 +15,39 @@
 package downloader
 
 import (
-	"bytes"
 	_ "embed"
+	"fmt"
+	"net/url"
 	"strconv"
-	"text/template"
+	"strings"
 
-	"github.com/Masterminds/sprig"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/user"
 	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
 	"k8s.io/utils/pointer"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/docker"
 	"github.com/gardener/gardener/pkg/component/logging/kuberbacproxy"
 	"github.com/gardener/gardener/pkg/utils"
+	"github.com/gardener/gardener/pkg/utils/images"
+	"github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 )
 
-var (
-	tplName = "download-cloud-config"
-	//go:embed templates/scripts/download-cloud-config.tpl.sh
-	tplContent string
-	tpl        *template.Template
-)
-
-func init() {
-	var err error
-	tpl, err = template.
-		New(tplName).
-		Funcs(sprig.TxtFuncMap()).
-		Parse(tplContent)
-	if err != nil {
-		panic(err)
-	}
-}
+//go:embed scripts/gardener-node-init.sh
+var nodeInitScript string
 
 const (
 	// Name is a constant for the cloud-config-downloader.
-	Name = "cloud-config-downloader"
+	Name = "gardener-node-init"
 	// UnitName is the name of the cloud-config-downloader service.
 	UnitName = Name + ".service"
 	// SecretName is a constant for the secret name for the cloud-config-downloader's shoot access secret.
@@ -83,7 +73,7 @@ const (
 
 	// PathCCDScript is a constant for the path of the script containing the instructions to download the cloud-config
 	// user-data.
-	PathCCDScript = PathCCDDirectory + "/download-cloud-config.sh"
+	PathCCDScript = PathCCDDirectory + "/gardener-node-init.sh"
 	// PathCCDScriptChecksum is a constant for the path of the file containing md5 has of PathCCDScript.
 	PathCCDScriptChecksum = PathCCDDirectory + "/download-cloud-config.md5"
 	// PathCredentialsServer is a constant for a path containing the 'server' part for the download.
@@ -115,6 +105,45 @@ const (
 	PathDownloadedCloudConfigChecksum = PathDownloadsDirectory + "/execute-cloud-config-checksum"
 )
 
+func ImageRefToLayerURL(image string, worker gardencorev1beta1.Worker) (*url.URL, string, error) {
+	// TODO(rfranzke): figure this out after breakfast
+	image = strings.ReplaceAll(image, "localhost:5001", "garden.local.gardener.cloud:5001")
+	imageRef, err := name.ParseReference(image, name.Insecure)
+	if err != nil {
+		return nil, "", err
+	}
+
+	arch := v1beta1constants.ArchitectureAMD64
+	if workerArch := worker.Machine.Architecture; workerArch != nil {
+		arch = *workerArch
+	}
+
+	remoteImage, err := remote.Image(imageRef, remote.WithPlatform(v1.Platform{OS: "linux", Architecture: arch}))
+	if err != nil {
+		return nil, "", err
+	}
+
+	imageConfig, err := remoteImage.ConfigFile()
+	if err != nil {
+		return nil, "", err
+	}
+	entrypoint := imageConfig.Config.Entrypoint[0]
+
+	manifest, err := remoteImage.Manifest()
+	if err != nil {
+		return nil, "", err
+	}
+
+	finalLayer := manifest.Layers[len(manifest.Layers)-1]
+
+	// This is what the library does internally as well. It doesn't expose a func for it though.
+	return &url.URL{
+		Scheme: imageRef.Context().Scheme(),
+		Host:   imageRef.Context().RegistryStr(),
+		Path:   fmt.Sprintf("/v2/%s/%s/%s", imageRef.Context().RepositoryStr(), "blobs", finalLayer.Digest),
+	}, entrypoint, nil
+}
+
 // Config returns the units and the files for the OperatingSystemConfig that downloads the actual cloud-config user
 // data.
 // ### !CAUTION! ###
@@ -122,42 +151,30 @@ const (
 // The result of this operating system config is exactly the user-data that will be sent to the providers.
 // We must not exceed the 16 KB, so be careful when extending/changing anything in here.
 // ### !CAUTION! ###
-func Config(cloudConfigUserDataSecretName, apiServerURL, clusterCASecretName string) ([]extensionsv1alpha1.Unit, []extensionsv1alpha1.File, error) {
-	var ccdScript bytes.Buffer
-	if err := tpl.Execute(&ccdScript, map[string]string{
-		"secretName":                   cloudConfigUserDataSecretName,
-		"tokenSecretName":              Name,
-		"pathCredentialsServer":        PathCredentialsServer,
-		"pathCredentialsCACert":        PathCredentialsCACert,
-		"pathCredentialsClientCert":    PathCredentialsClientCert,
-		"pathCredentialsClientKey":     PathCredentialsClientKey,
-		"pathCredentialsToken":         PathCredentialsToken,
-		"pathBootstrapToken":           PathBootstrapToken,
-		"pathDownloadedChecksum":       PathDownloadedCloudConfigChecksum,
-		"pathDownloadedExecutorScript": PathDownloadedExecutorScript,
-		"pathDownloadsDirectory":       PathDownloadsDirectory,
-		"annotationChecksum":           AnnotationKeyChecksum,
-		"dataKeyScript":                DataKeyScript,
-		"dataKeyToken":                 resourcesv1alpha1.DataKeyToken,
-	}); err != nil {
+func Config(cloudConfigUserDataSecretName, apiServerURL, clusterCASecretName string, imageVector imagevector.ImageVector, worker gardencorev1beta1.Worker) ([]extensionsv1alpha1.Unit, []extensionsv1alpha1.File, error) {
+	image, err := imageVector.FindImage(images.ImageNameGardenlet)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	layerURL, binaryPath, err := ImageRefToLayerURL(image.String(), worker)
+	if err != nil {
 		return nil, nil, err
 	}
 
 	units := []extensionsv1alpha1.Unit{
 		{
-			Name:    Name + ".service",
+			Name:    UnitName,
 			Command: pointer.String("start"),
 			Enable:  pointer.Bool(true),
 			Content: pointer.String(`[Unit]
-Description=Downloads the actual cloud config from the Shoot API server and executes it
-After=` + docker.UnitName + ` docker.socket
-Wants=docker.socket
+Description=Downloads the gardener-node-agent binary from the registry and bootstraps it.
 [Service]
 Restart=always
 RestartSec=` + strconv.Itoa(UnitRestartSeconds) + `
-RuntimeMaxSec=1200
+RuntimeMaxSec=120
 EnvironmentFile=/etc/environment
-ExecStart=` + PathCCDScript + `
+ExecStart=` + fmt.Sprintf("%s %s %s", PathCCDScript, layerURL.String(), binaryPath) + `
 [Install]
 WantedBy=multi-user.target`),
 		},
@@ -190,7 +207,7 @@ WantedBy=multi-user.target`),
 			Content: extensionsv1alpha1.FileContent{
 				Inline: &extensionsv1alpha1.FileContentInline{
 					Encoding: "b64",
-					Data:     utils.EncodeBase64(ccdScript.Bytes()),
+					Data:     utils.EncodeBase64([]byte(nodeInitScript)),
 				},
 			},
 		},

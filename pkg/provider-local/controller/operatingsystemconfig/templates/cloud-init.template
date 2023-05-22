@@ -38,5 +38,5 @@ mkdir -p '{{ $unit.DropIns.Path }}'
 
 {{- if .Bootstrap }}
 systemctl daemon-reload
-systemctl enable cloud-config-downloader && systemctl restart cloud-config-downloader
+systemctl enable gardener-node-init && systemctl restart gardener-node-init
 {{- end }}
