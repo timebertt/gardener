@@ -169,6 +169,8 @@ func Config(cloudConfigUserDataSecretName, apiServerURL, clusterCASecretName str
 			Enable:  pointer.Bool(true),
 			Content: pointer.String(`[Unit]
 Description=Downloads the gardener-node-agent binary from the registry and bootstraps it.
+After=network-online.target
+Wants=network-online.target
 [Service]
 Restart=always
 RestartSec=` + strconv.Itoa(UnitRestartSeconds) + `
