@@ -11,8 +11,12 @@ rules:
   resources:
   - backupbuckets
   - backupbuckets/status
+  - backupdownloads
+  - backupdownloads/status
   - backupentries
-  - backupentries/status
+  - backupentrie/status
+  - backupuploads
+  - backupuploads/status
   - clusters
   - controlplanes
   - controlplanes/status

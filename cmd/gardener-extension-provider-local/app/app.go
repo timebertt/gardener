@@ -54,6 +54,7 @@ import (
 	localbackupbucket "github.com/gardener/gardener/pkg/provider-local/controller/backupbucket"
 	localbackupentry "github.com/gardener/gardener/pkg/provider-local/controller/backupentry"
 	"github.com/gardener/gardener/pkg/provider-local/controller/backupoptions"
+	localbackupupload "github.com/gardener/gardener/pkg/provider-local/controller/backupupload"
 	localcontrolplane "github.com/gardener/gardener/pkg/provider-local/controller/controlplane"
 	localdnsrecord "github.com/gardener/gardener/pkg/provider-local/controller/dnsrecord"
 	localhealthcheck "github.com/gardener/gardener/pkg/provider-local/controller/healthcheck"
@@ -243,6 +244,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			workerCtrlOpts.Completed().Apply(&localworker.DefaultAddOptions.Controller)
 			localBackupBucketOptions.Completed().Apply(&localbackupbucket.DefaultAddOptions)
 			localBackupBucketOptions.Completed().Apply(&localbackupentry.DefaultAddOptions)
+			localBackupBucketOptions.Completed().Apply(&localbackupupload.DefaultAddOptions)
 			heartbeatCtrlOptions.Completed().Apply(&heartbeat.DefaultAddOptions)
 
 			reconcileOpts.Completed().Apply(&localcontrolplane.DefaultAddOptions.IgnoreOperationAnnotation)
