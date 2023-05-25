@@ -19,7 +19,6 @@ import (
 	"github.com/gardener/gardener/extensions/pkg/controller/backupdownload"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/types"
 	"os"
 	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,25 +44,19 @@ func (a *actuator) InjectClient(client client.Client) error {
 	return nil
 }
 
-func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, bd *extensionsv1alpha1.BackupDownload) error {
-	be := &extensionsv1alpha1.BackupEntry{}
-
-	err := a.client.Get(ctx, types.NamespacedName{Name: bd.Spec.EntryName, Namespace: bd.Namespace}, be)
-	if err != nil {
-		return err
-	}
+func (a *actuator) Reconcile(
+	ctx context.Context,
+	log logr.Logger,
+	bd *extensionsv1alpha1.BackupDownload,
+	be *extensionsv1alpha1.BackupEntry,
+	_ *extensionsv1alpha1.BackupBucket,
+) ([]byte, error) {
 
 	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, be.Name, bd.Spec.FilePath)
 	file, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	bd.Status.Data = file
-
-	return a.client.Status().Update(ctx, bd)
-}
-
-func (a *actuator) Delete(_ context.Context, _ logr.Logger, _ *extensionsv1alpha1.BackupDownload) error {
-	return nil
+	return file, nil
 }

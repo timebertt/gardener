@@ -20,15 +20,14 @@ import (
 	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/inject"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	"github.com/gardener/gardener/pkg/controllerutils"
 	reconcilerutils "github.com/gardener/gardener/pkg/controllerutils/reconciler"
 )
 
@@ -80,64 +79,47 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	if bd.DeletionTimestamp != nil {
-		return r.delete(ctx, log, bd)
+		log.V(1).Info("Object is in deletion, stop reconciling")
+		return reconcile.Result{}, nil
 	}
 
 	return r.reconcile(ctx, log, bd)
 }
 
 func (r *reconciler) reconcile(ctx context.Context, log logr.Logger, bd *extensionsv1alpha1.BackupDownload) (reconcile.Result, error) {
-	if !controllerutil.ContainsFinalizer(bd, FinalizerName) {
-		log.Info("Adding finalizer")
-		if err := controllerutils.AddFinalizers(ctx, r.client, bd, FinalizerName); err != nil {
-			return reconcile.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
-		}
-	}
-
 	operationType := v1beta1helper.ComputeOperationType(bd.ObjectMeta, bd.Status.LastOperation)
 	if err := r.statusUpdater.Processing(ctx, log, bd, operationType, "Reconciling the BackupDownload"); err != nil {
 		return reconcile.Result{}, err
 	}
 
+	be := &extensionsv1alpha1.BackupEntry{}
+	err := r.client.Get(ctx, types.NamespacedName{Name: bd.Spec.EntryName, Namespace: bd.Namespace}, be)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to get BackupEntry: %w", err)
+	}
+
+	bb := &extensionsv1alpha1.BackupBucket{}
+	err = r.client.Get(ctx, types.NamespacedName{Name: be.Spec.BucketName}, bb)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to get BackupBucket: %w", err)
+	}
+
 	log.Info("Starting the reconciliation of BackupDownload")
-	if err := r.actuator.Reconcile(ctx, log, bd); err != nil {
+	dataContent, err := r.actuator.Reconcile(ctx, log, bd, be, bb)
+	if err != nil || dataContent == nil {
 		_ = r.statusUpdater.Error(ctx, log, bd, reconcilerutils.ReconcileErrCauseOrErr(err), operationType, "Error reconciling BackupDownload")
+		return reconcilerutils.ReconcileErr(err)
+	}
+
+	log.Info("Updating data in BackupDownload status")
+	bd.Status.Data = dataContent
+	if err = r.client.Status().Update(ctx, bd); err != nil {
+		_ = r.statusUpdater.Error(ctx, log, bd, reconcilerutils.ReconcileErrCauseOrErr(err), operationType, "Error updating data status from BackupDownload")
 		return reconcilerutils.ReconcileErr(err)
 	}
 
 	if err := r.statusUpdater.Success(ctx, log, bd, operationType, "Successfully reconciled BackupDownload"); err != nil {
 		return reconcile.Result{}, err
-	}
-
-	return reconcile.Result{}, nil
-}
-
-func (r *reconciler) delete(ctx context.Context, log logr.Logger, bd *extensionsv1alpha1.BackupDownload) (reconcile.Result, error) {
-	if !controllerutil.ContainsFinalizer(bd, FinalizerName) {
-		log.Info("Deleting BackupDownload causes a no-op as there is no finalizer")
-		return reconcile.Result{}, nil
-	}
-
-	operationType := v1beta1helper.ComputeOperationType(bd.ObjectMeta, bd.Status.LastOperation)
-	if err := r.statusUpdater.Processing(ctx, log, bd, operationType, "Deleting the BackupDownload"); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	log.Info("Starting the deletion of BackupDownload")
-	if err := r.actuator.Delete(ctx, log, bd); err != nil {
-		_ = r.statusUpdater.Error(ctx, log, bd, reconcilerutils.ReconcileErrCauseOrErr(err), operationType, "Error deleting BackupDownload")
-		return reconcilerutils.ReconcileErr(err)
-	}
-
-	if err := r.statusUpdater.Success(ctx, log, bd, operationType, "Successfully deleted BackupDownload"); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if controllerutil.ContainsFinalizer(bd, FinalizerName) {
-		log.Info("Removing finalizer")
-		if err := controllerutils.RemoveFinalizers(ctx, r.client, bd, FinalizerName); err != nil {
-			return reconcile.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
-		}
 	}
 
 	return reconcile.Result{}, nil

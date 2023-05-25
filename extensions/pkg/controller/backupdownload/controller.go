@@ -26,8 +26,6 @@ import (
 )
 
 const (
-	// FinalizerName is the BackupDownload controller finalizer.
-	FinalizerName = "extensions.gardener.cloud/BackupDownload"
 	// ControllerName is the name of the controller
 	ControllerName = "BackupDownload"
 )
