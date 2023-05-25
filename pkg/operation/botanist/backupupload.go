@@ -20,13 +20,11 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/pointer"
@@ -78,13 +76,13 @@ func (b *Botanist) DeployBackupUploadForShootState(ctx context.Context) error {
 	if err := component.OpDestroyAndWait(deployer).Destroy(ctx); err != nil {
 		return err
 	}
-
 	if err := component.OpWait(deployer).Deploy(ctx); err != nil {
 		return err
 	}
-
-	return client.IgnoreNotFound(b.SeedClientSet.Client().Delete(ctx, &extensionsv1alpha1.BackupUpload{ObjectMeta: metav1.ObjectMeta{Name: values.Name, Namespace: b.Shoot.SeedNamespace}}))
+	return component.OpDestroyAndWait(deployer).Destroy(ctx)
 }
+
+var cipherKey = []byte("asuperstrong32bitpasswordgohere!") // 32 bit key for AES-256
 
 func (b *Botanist) computeDataForShootStateBackupUpload(ctx context.Context) ([]byte, error) {
 	shootStateSpec, err := b.computeShootStateSpecForBackupUpload(ctx)
@@ -107,7 +105,6 @@ func (b *Botanist) computeDataForShootStateBackupUpload(ctx context.Context) ([]
 	//  - cleanup of secrets manager is called at the end of this function, again right here, after encryption succeeded
 	//  - use owner ref to shoot in generated secrets by secrets manager
 
-	cipherKey := []byte("asuperstrong32bitpasswordgohere!") // 32 bit key for AES-256
 	return encrypt(cipherKey, raw)
 }
 
@@ -246,26 +243,4 @@ func encrypt(key, data []byte) ([]byte, error) {
 	stream.XORKeyStream(encryptedData[aes.BlockSize:], data)
 
 	return encryptedData, nil
-}
-
-func decrypt(key, data []byte) ([]byte, error) {
-	// Create a new AES cipher with the key and encrypted message
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	// IF the length of the cipherText is less than 16 Bytes:
-	if len(data) < aes.BlockSize {
-		return nil, errors.New("Ciphertext block size is too short!")
-	}
-
-	iv := data[:aes.BlockSize]
-	data = data[aes.BlockSize:]
-
-	// Decrypt the message
-	stream := cipher.NewCFBDecrypter(block, iv)
-	stream.XORKeyStream(data, data)
-
-	return data, nil
 }
