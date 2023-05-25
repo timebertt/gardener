@@ -92,7 +92,7 @@ func (b *Botanist) computeDataForShootStateBackupUpload(ctx context.Context) ([]
 		return nil, fmt.Errorf("failed computing ShootState spec for BackupUpload: %w", err)
 	}
 
-	raw, err := json.Marshal(shootStateSpec)
+	raw, err := json.Marshal(&gardencorev1beta1.ShootState{Spec: *shootStateSpec})
 	if err != nil {
 		return nil, fmt.Errorf("failed marshaling ShootState spec to JSON: %w", err)
 	}
