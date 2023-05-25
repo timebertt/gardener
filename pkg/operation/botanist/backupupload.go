@@ -40,9 +40,9 @@ import (
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 )
 
-// DeployBackupUploadForShootState deploys a BackupUpload resource for the shootstate. After success, it immediately
+// UploadShootStateBackup deploys a BackupUpload resource for the shootstate. After success, it immediately
 // deletes the BackupUpload resource again.
-func (b *Botanist) DeployBackupUploadForShootState(ctx context.Context) error {
+func (b *Botanist) UploadShootStateBackup(ctx context.Context) error {
 	if b.Seed.GetInfo().Spec.Backup == nil {
 		return fmt.Errorf("cannot deploy BackupUpload for Shoot state since Seed is not configured with backup")
 	}

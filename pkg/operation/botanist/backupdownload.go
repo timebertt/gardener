@@ -29,9 +29,9 @@ import (
 	"github.com/gardener/gardener/pkg/component/extensions/backupdownload"
 )
 
-// DeployBackupDownloadForShootState deploys a BackupDownload resource for the shootstate. After success, it immediately
+// DownloadShootStateBackup deploys a BackupDownload resource for the shootstate. After success, it immediately
 // deletes the BackupDownload resource again.
-func (b *Botanist) DeployBackupDownloadForShootState(ctx context.Context) error {
+func (b *Botanist) DownloadShootStateBackup(ctx context.Context) error {
 	if b.Seed.GetInfo().Spec.Backup == nil {
 		return fmt.Errorf("cannot deploy BackupDownload for Shoot state since Seed is not configured with backup")
 	}

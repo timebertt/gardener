@@ -223,7 +223,7 @@ func (r *Reconciler) runMigrateShootFlow(ctx context.Context, o *operation.Opera
 		})
 		uploadShootStateBackup = g.Add(flow.Task{
 			Name:         "Uploading ShootState backup",
-			Fn:           botanist.DeployBackupUploadForShootState,
+			Fn:           botanist.UploadShootStateBackup,
 			Dependencies: flow.NewTaskIDs(waitUntilExtensionResourcesMigrated),
 		})
 		deleteExtensionResources = g.Add(flow.Task{
