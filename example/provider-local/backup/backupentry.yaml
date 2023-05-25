@@ -1,0 +1,29 @@
+---
+apiVersion: extensions.gardener.cloud/v1alpha1
+kind: BackupBucket
+metadata:
+  name: example-bucket
+spec:
+  region: local
+  secretRef:
+    name: example-backup
+    namespace: default
+  type: local
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-backup
+  namespace: default
+---
+apiVersion: extensions.gardener.cloud/v1alpha1
+kind: BackupEntry
+metadata:
+  name: example-entry
+spec:
+  bucketName: example-bucket
+  region: local
+  secretRef:
+    name: example-backup
+    namespace: default
+  type: local

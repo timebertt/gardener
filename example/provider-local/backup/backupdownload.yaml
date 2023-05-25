@@ -1,0 +1,10 @@
+---
+apiVersion: extensions.gardener.cloud/v1alpha1
+kind: BackupDownload
+metadata:
+  name: example
+  namespace: default
+spec:
+  entryName: example-entry
+  filePath: shootstate.yaml.enc
+  type: local

@@ -1,0 +1,11 @@
+---
+apiVersion: extensions.gardener.cloud/v1alpha1
+kind: BackupUpload
+metadata:
+  name: example
+  namespace: default
+spec:
+  data: YXBpVmVyc2lvbjogY29yZS5nYXJkZW5lci5jbG91ZC92MWJldGExCmtpbmQ6IFNob290U3RhdGUKbWV0YWRhdGE6CiAgbmFtZTogbG9jYWwKICBuYW1lc3BhY2U6IGdhcmRlbi1sb2NhbApzcGVjOgogIGV4dGVuc2lvbnM6IFtdCiAgZ2FyZGVuZXI6IFtdCiAgcmVzb3VyY2VzOiBbXQo=
+  entryName: example-entry
+  filePath: shootstate.yaml.enc
+  type: local
