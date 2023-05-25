@@ -98,6 +98,24 @@ func addConversionFuncs(scheme *runtime.Scheme) error {
 	return nil
 }
 
+func Convert_v1beta1_InternalSecret_To_core_InternalSecret(in *InternalSecret, out *core.InternalSecret, s conversion.Scope) error {
+	if err := autoConvert_v1beta1_InternalSecret_To_core_InternalSecret(in, out, s); err != nil {
+		return err
+	}
+
+	// StringData overwrites Data
+	if len(in.StringData) > 0 {
+		if out.Data == nil {
+			out.Data = map[string][]byte{}
+		}
+		for k, v := range in.StringData {
+			out.Data[k] = []byte(v)
+		}
+	}
+
+	return nil
+}
+
 func Convert_v1beta1_ProjectSpec_To_core_ProjectSpec(in *ProjectSpec, out *core.ProjectSpec, s conversion.Scope) error {
 	if err := autoConvert_v1beta1_ProjectSpec_To_core_ProjectSpec(in, out, s); err != nil {
 		return err
