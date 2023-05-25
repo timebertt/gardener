@@ -14,11 +14,7 @@
 
 package manager
 
-import (
-	corev1 "k8s.io/api/core/v1"
-)
-
-func (m *manager) Get(name string, opts ...GetOption) (*corev1.Secret, bool) {
+func (m *manager[T]) Get(name string, opts ...GetOption) (T, bool) {
 	options := &GetOptions{}
 	options.ApplyOptions(opts)
 

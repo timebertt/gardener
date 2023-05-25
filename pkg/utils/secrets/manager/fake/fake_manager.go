@@ -36,8 +36,6 @@ type fakeManager struct {
 	namespace string
 }
 
-var _ secretsmanager.Interface = &fakeManager{}
-
 // New returns a simple implementation of secretsmanager.Interface which can be used to fake the SecretsManager in unit
 // tests.
 func New(client client.Client, namespace string) *fakeManager {
@@ -75,7 +73,7 @@ func (m *fakeManager) Get(name string, opts ...secretsmanager.GetOption) (*corev
 }
 
 func (m *fakeManager) Generate(ctx context.Context, config secretsutils.ConfigInterface, opts ...secretsmanager.GenerateOption) (*corev1.Secret, error) {
-	options := &secretsmanager.GenerateOptions{}
+	options := &secretsmanager.GenerateOptions[*corev1.Secret]{}
 	if err := options.ApplyOptions(m, config, opts); err != nil {
 		return nil, err
 	}

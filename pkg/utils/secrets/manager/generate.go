@@ -23,11 +23,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/config/v1"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,8 +39,8 @@ import (
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 )
 
-func (m *manager) Generate(ctx context.Context, config secretsutils.ConfigInterface, opts ...GenerateOption) (*corev1.Secret, error) {
-	options := &GenerateOptions{}
+func (m *manager[T]) Generate(ctx context.Context, config secretsutils.ConfigInterface, opts ...GenericGenerateOption[T]) (T, error) {
+	options := &GenerateOptions[T]{}
 	if err := options.ApplyOptions(m, config, opts); err != nil {
 		return nil, err
 	}
@@ -63,7 +65,7 @@ func (m *manager) Generate(ctx context.Context, config secretsutils.ConfigInterf
 	}
 	desiredLabels := utils.MergeStringMaps(objectMeta.Labels) // copy labels map
 
-	secret := &corev1.Secret{}
+	secret := newObject[T]()
 	if err := m.client.Get(ctx, kubernetesutils.Key(objectMeta.Namespace, objectMeta.Name), secret); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
@@ -87,7 +89,7 @@ func (m *manager) Generate(ctx context.Context, config secretsutils.ConfigInterf
 		if ignore, err := m.shouldIgnoreOldSecrets(desiredLabels[LabelKeyIssuedAtTime], options); err != nil {
 			return nil, err
 		} else if !ignore {
-			if err := m.storeOldSecrets(ctx, config.GetName(), secret.Name); err != nil {
+			if err := m.storeOldSecrets(ctx, config.GetName(), secret.GetName()); err != nil {
 				return nil, err
 			}
 		}
@@ -104,7 +106,7 @@ func (m *manager) Generate(ctx context.Context, config secretsutils.ConfigInterf
 	return secret, nil
 }
 
-func (m *manager) generateAndCreate(ctx context.Context, config secretsutils.ConfigInterface, objectMeta metav1.ObjectMeta) (*corev1.Secret, error) {
+func (m *manager[T]) generateAndCreate(ctx context.Context, config secretsutils.ConfigInterface, objectMeta metav1.ObjectMeta) (T, error) {
 	// Use secret name as common name to make sure the x509 subject names in the CA certificates are always unique.
 	if certConfig := certificateSecretConfig(config); certConfig != nil && certConfig.CertType == secretsutils.CACert {
 		certConfig.CommonName = objectMeta.Name
@@ -120,7 +122,7 @@ func (m *manager) generateAndCreate(ctx context.Context, config secretsutils.Con
 		return nil, err
 	}
 
-	secret := Secret(objectMeta, dataMap)
+	secret := SecretGeneric[T](objectMeta, dataMap)
 	if err := m.client.Create(ctx, secret); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return nil, err
@@ -131,11 +133,11 @@ func (m *manager) generateAndCreate(ctx context.Context, config secretsutils.Con
 		}
 	}
 
-	m.logger.Info("Generated new secret", "configName", config.GetName(), "secretName", secret.Name)
+	m.logger.Info("Generated new secret", "configName", config.GetName(), "secretName", secret.GetName())
 	return secret, nil
 }
 
-func (m *manager) keepExistingSecretsIfNeeded(ctx context.Context, configName string, newData map[string][]byte) (map[string][]byte, error) {
+func (m *manager[T]) keepExistingSecretsIfNeeded(ctx context.Context, configName string, newData map[string][]byte) (map[string][]byte, error) {
 	existingSecrets := &corev1.SecretList{}
 	if err := m.client.List(ctx, existingSecrets, client.InNamespace(m.namespace), client.MatchingLabels{LabelKeyUseDataForName: configName}); err != nil {
 		return nil, err
@@ -211,7 +213,7 @@ func (m *manager) keepExistingSecretsIfNeeded(ctx context.Context, configName st
 	return newData, nil
 }
 
-func (m *manager) shouldIgnoreOldSecrets(issuedAt string, options *GenerateOptions) (bool, error) {
+func (m *manager[T]) shouldIgnoreOldSecrets(issuedAt string, options *GenerateOptions[T]) (bool, error) {
 	// unconditionally ignore old secrets
 	if options.RotationStrategy != KeepOld || options.IgnoreOldSecrets {
 		return true, nil
@@ -238,8 +240,8 @@ func (m *manager) shouldIgnoreOldSecrets(issuedAt string, options *GenerateOptio
 	return false, nil
 }
 
-func (m *manager) storeOldSecrets(ctx context.Context, name, currentSecretName string) error {
-	secretList := &corev1.SecretList{}
+func (m *manager[T]) storeOldSecrets(ctx context.Context, name, currentSecretName string) error {
+	secretList := newList[T]()
 	if err := m.client.List(ctx, secretList, client.InNamespace(m.namespace), client.MatchingLabels{
 		LabelKeyName:            name,
 		LabelKeyManagedBy:       LabelValueSecretsManager,
@@ -248,26 +250,28 @@ func (m *manager) storeOldSecrets(ctx context.Context, name, currentSecretName s
 		return err
 	}
 
-	var oldSecret *corev1.Secret
+	var oldSecret T
 
-	for _, secret := range secretList.Items {
-		if secret.Name == currentSecretName {
-			continue
+	utilruntime.Must(meta.EachListItem(secretList, func(obj runtime.Object) error {
+		secret := obj.(client.Object)
+		if secret.GetName() == currentSecretName {
+			return nil
 		}
 
-		if oldSecret == nil || oldSecret.CreationTimestamp.Time.Before(secret.CreationTimestamp.Time) {
-			oldSecret = secret.DeepCopy()
+		if oldSecret == nil || oldSecret.GetCreationTimestamp().Time.Before(secret.GetCreationTimestamp().Time) {
+			oldSecret = secret.DeepCopyObject().(T)
 		}
-	}
+		return nil
+	}))
 
 	if oldSecret == nil {
 		return nil
 	}
 
-	return m.addToStore(oldSecret.Labels[LabelKeyName], oldSecret, old)
+	return m.addToStore(oldSecret.GetLabels()[LabelKeyName], oldSecret, old)
 }
 
-func (m *manager) generateBundleSecret(ctx context.Context, config secretsutils.ConfigInterface) error {
+func (m *manager[T]) generateBundleSecret(ctx context.Context, config secretsutils.ConfigInterface) error {
 	var bundleConfig secretsutils.ConfigInterface
 
 	secrets, found := m.getFromStore(config.GetName())
@@ -275,12 +279,15 @@ func (m *manager) generateBundleSecret(ctx context.Context, config secretsutils.
 		return fmt.Errorf("secrets for name %q not found in internal store", config.GetName())
 	}
 
+	accCurrent := Accessor(secrets.current.obj)
+
 	switch c := config.(type) {
 	case *secretsutils.CertificateSecretConfig:
 		if c.SigningCA == nil {
-			certs := [][]byte{secrets.current.obj.Data[secretsutils.DataKeyCertificateCA]}
+			certs := [][]byte{accCurrent.GetData()[secretsutils.DataKeyCertificateCA]}
 			if secrets.old != nil {
-				certs = append(certs, secrets.old.obj.Data[secretsutils.DataKeyCertificateCA])
+				accOld := Accessor(secrets.old.obj)
+				certs = append(certs, accOld.GetData()[secretsutils.DataKeyCertificateCA])
 			}
 
 			bundleConfig = &secretsutils.CertificateBundleSecretConfig{
@@ -291,9 +298,10 @@ func (m *manager) generateBundleSecret(ctx context.Context, config secretsutils.
 
 	case *secretsutils.RSASecretConfig:
 		if !c.UsedForSSH {
-			keys := [][]byte{secrets.current.obj.Data[secretsutils.DataKeyRSAPrivateKey]}
+			keys := [][]byte{accCurrent.GetData()[secretsutils.DataKeyRSAPrivateKey]}
 			if secrets.old != nil {
-				keys = append(keys, secrets.old.obj.Data[secretsutils.DataKeyRSAPrivateKey])
+				accOld := Accessor(secrets.old.obj)
+				keys = append(keys, accOld.GetData()[secretsutils.DataKeyRSAPrivateKey])
 			}
 
 			bundleConfig = &secretsutils.RSAPrivateKeyBundleSecretConfig{
@@ -307,7 +315,7 @@ func (m *manager) generateBundleSecret(ctx context.Context, config secretsutils.
 		return nil
 	}
 
-	secret, err := m.Generate(ctx, bundleConfig, isBundleSecret())
+	secret, err := m.Generate(ctx, bundleConfig, isBundleSecret[T]())
 	if err != nil {
 		return err
 	}
@@ -315,13 +323,13 @@ func (m *manager) generateBundleSecret(ctx context.Context, config secretsutils.
 	return m.addToStore(config.GetName(), secret, bundle)
 }
 
-func (m *manager) maintainLifetimeLabels(
+func (m *manager[T]) maintainLifetimeLabels(
 	config secretsutils.ConfigInterface,
-	secret *corev1.Secret,
+	secret T,
 	desiredLabels map[string]string,
 	validity time.Duration,
 ) error {
-	issuedAt := secret.Labels[LabelKeyIssuedAtTime]
+	issuedAt := secret.GetLabels()[LabelKeyIssuedAtTime]
 	if issuedAt == "" {
 		issuedAt = unixTime(m.clock.Now())
 	}
@@ -332,13 +340,13 @@ func (m *manager) maintainLifetimeLabels(
 
 		// Handle changed validity values in case there already is a valid-until-time label from previous Generate
 		// invocations.
-		if secret.Labels[LabelKeyValidUntilTime] != "" {
+		if secret.GetLabels()[LabelKeyValidUntilTime] != "" {
 			issuedAtTime, err := strconv.ParseInt(issuedAt, 10, 64)
 			if err != nil {
 				return err
 			}
 
-			existingValidUntilTime, err := strconv.ParseInt(secret.Labels[LabelKeyValidUntilTime], 10, 64)
+			existingValidUntilTime, err := strconv.ParseInt(secret.GetLabels()[LabelKeyValidUntilTime], 10, 64)
 			if err != nil {
 				return err
 			}
@@ -367,7 +375,8 @@ func (m *manager) maintainLifetimeLabels(
 		return nil
 	}
 
-	certificate, err := utils.DecodeCertificate(secret.Data[dataKeyCertificate])
+	acc := Accessor(secret)
+	certificate, err := utils.DecodeCertificate(acc.GetData()[dataKeyCertificate])
 	if err != nil {
 		return fmt.Errorf("error decoding certificate when trying to maintain lifetime labels: %w", err)
 	}
@@ -377,28 +386,34 @@ func (m *manager) maintainLifetimeLabels(
 	return nil
 }
 
-func (m *manager) reconcileSecret(ctx context.Context, secret *corev1.Secret, labels map[string]string) error {
-	patch := client.MergeFrom(secret.DeepCopy())
+func (m *manager[T]) reconcileSecret(ctx context.Context, secret T, labels map[string]string) error {
+	patch := client.MergeFrom(secret.DeepCopyObject().(client.Object))
 
 	var mustPatch bool
 
-	if secret.Immutable == nil || !*secret.Immutable {
-		secret.Immutable = pointer.Bool(true)
+	acc := Accessor(secret)
+	if acc.GetImmutable() == nil || !*acc.GetImmutable() {
+		acc.SetImmutable(pointer.Bool(true))
 		mustPatch = true
 	}
 
 	// Check if desired labels must be added or changed.
 	for k, desired := range labels {
-		if current, ok := secret.Labels[k]; !ok || current != desired {
-			metav1.SetMetaDataLabel(&secret.ObjectMeta, k, desired)
+		if current, ok := secret.GetLabels()[k]; !ok || current != desired {
+			lbls := secret.GetLabels()
+			if lbls == nil {
+				lbls = make(map[string]string)
+			}
+			lbls[k] = desired
+			secret.SetLabels(lbls)
 			mustPatch = true
 		}
 	}
 
 	// Check if existing labels must be removed
-	for k := range secret.Labels {
+	for k := range secret.GetLabels() {
 		if _, ok := labels[k]; !ok {
-			delete(secret.Labels, k)
+			delete(secret.GetLabels(), k)
 			mustPatch = true
 		}
 	}
@@ -411,10 +426,13 @@ func (m *manager) reconcileSecret(ctx context.Context, secret *corev1.Secret, la
 }
 
 // GenerateOption is some configuration that modifies options for a Generate request.
-type GenerateOption func(Interface, secretsutils.ConfigInterface, *GenerateOptions) error
+type GenerateOption = GenericGenerateOption[*corev1.Secret]
+
+// GenericGenerateOption is some configuration that modifies options for a Generate request.
+type GenericGenerateOption[T secret] func(Generic[T], secretsutils.ConfigInterface, *GenerateOptions[T]) error
 
 // GenerateOptions are options for Generate calls.
-type GenerateOptions struct {
+type GenerateOptions[T secret] struct {
 	// Persist specifies whether the 'persist=true' label should be added to the secret resources.
 	Persist bool
 	// RotationStrategy specifies how the secret should be rotated in case it needs to get rotated.
@@ -443,7 +461,7 @@ const (
 )
 
 // ApplyOptions applies the given update options on these options, and then returns itself (for convenient chaining).
-func (o *GenerateOptions) ApplyOptions(manager Interface, configInterface secretsutils.ConfigInterface, opts []GenerateOption) error {
+func (o *GenerateOptions[T]) ApplyOptions(manager Generic[T], configInterface secretsutils.ConfigInterface, opts []GenericGenerateOption[T]) error {
 	for _, opt := range opts {
 		if err := opt(manager, configInterface, o); err != nil {
 			return err
@@ -492,12 +510,18 @@ func (o useCAClassOption) ApplyToOptions(options *SignedByCAOptions) {
 // SignedByCA returns a function which sets the 'SigningCA' field in case the ConfigInterface provided to the
 // Generate request is a CertificateSecretConfig. Additionally, in such case it stores a checksum of the signing
 // CA in the options.
-func SignedByCA(name string, opts ...SignedByCAOption) GenerateOption {
+var SignedByCA = SignedByCAGeneric[*corev1.Secret]
+
+// SignedByCAGeneric returns a function which sets the 'SigningCA' field in case the ConfigInterface provided to the
+// Generate request is a CertificateSecretConfig. Additionally, in such case it stores a checksum of the signing
+// CA in the options.
+func SignedByCAGeneric[T secret](name string, opts ...SignedByCAOption) GenericGenerateOption[T] {
 	signedByCAOptions := &SignedByCAOptions{}
 	signedByCAOptions.ApplyOptions(opts)
 
-	return func(m Interface, config secretsutils.ConfigInterface, options *GenerateOptions) error {
-		mgr, ok := m.(*manager)
+	return func(m Generic[T], config secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
+
+		mgr, ok := m.(*manager[T])
 		if !ok {
 			return nil
 		}
@@ -528,7 +552,8 @@ func SignedByCA(name string, opts ...SignedByCAOption) GenerateOption {
 			}
 		}
 
-		ca, err := secretsutils.LoadCertificate(name, secret.obj.Data[secretsutils.DataKeyPrivateKeyCA], secret.obj.Data[secretsutils.DataKeyCertificateCA])
+		acc := Accessor(secret.obj)
+		ca, err := secretsutils.LoadCertificate(name, acc.GetData()[secretsutils.DataKeyPrivateKeyCA], acc.GetData()[secretsutils.DataKeyCertificateCA])
 		if err != nil {
 			return err
 		}
@@ -540,32 +565,44 @@ func SignedByCA(name string, opts ...SignedByCAOption) GenerateOption {
 }
 
 // Persist returns a function which sets the 'Persist' field to true.
-func Persist() GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+var Persist = PersistGeneric[*corev1.Secret]
+
+// PersistGeneric returns a function which sets the 'Persist' field to true.
+func PersistGeneric[T secret]() GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.Persist = true
 		return nil
 	}
 }
 
 // Rotate returns a function which sets the 'RotationStrategy' field to the specified value.
-func Rotate(strategy rotationStrategy) GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+var Rotate = RotateGeneric[*corev1.Secret]
+
+// RotateGeneric returns a function which sets the 'RotationStrategy' field to the specified value.
+func RotateGeneric[T secret](strategy rotationStrategy) GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.RotationStrategy = strategy
 		return nil
 	}
 }
 
 // IgnoreOldSecrets returns a function which sets the 'IgnoreOldSecrets' field to true.
-func IgnoreOldSecrets() GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+var IgnoreOldSecrets = IgnoreOldSecretsGeneric[*corev1.Secret]
+
+// IgnoreOldSecretsGeneric returns a function which sets the 'IgnoreOldSecrets' field to true.
+func IgnoreOldSecretsGeneric[T secret]() GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.IgnoreOldSecrets = true
 		return nil
 	}
 }
 
 // IgnoreOldSecretsAfter returns a function which sets the 'IgnoreOldSecretsAfter' field to the given duration.
-func IgnoreOldSecretsAfter(d time.Duration) GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+var IgnoreOldSecretsAfter = IgnoreOldSecretsAfterGeneric[*corev1.Secret]
+
+// IgnoreOldSecretsAfterGeneric returns a function which sets the 'IgnoreOldSecretsAfter' field to the given duration.
+func IgnoreOldSecretsAfterGeneric[T secret](d time.Duration) GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.IgnoreOldSecretsAfter = &d
 		return nil
 	}
@@ -573,8 +610,12 @@ func IgnoreOldSecretsAfter(d time.Duration) GenerateOption {
 
 // Validity returns a function which sets the 'Validity' field to the provided value. Note that the value is ignored in
 // case Generate is called with a certificate secret configuration.
-func Validity(v time.Duration) GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+var Validity = ValidityGeneric[*corev1.Secret]
+
+// ValidityGeneric returns a function which sets the 'Validity' field to the provided value. Note that the value is ignored in
+// case Generate is called with a certificate secret configuration.
+func ValidityGeneric[T secret](v time.Duration) GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.Validity = v
 		return nil
 	}
@@ -582,15 +623,19 @@ func Validity(v time.Duration) GenerateOption {
 
 // IgnoreConfigChecksumForCASecretName returns a function which sets the 'IgnoreConfigChecksumForCASecretName' field to
 // true.
-func IgnoreConfigChecksumForCASecretName() GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+var IgnoreConfigChecksumForCASecretName = IgnoreConfigChecksumForCASecretNameGeneric[*corev1.Secret]
+
+// IgnoreConfigChecksumForCASecretNameGeneric returns a function which sets the 'IgnoreConfigChecksumForCASecretName' field to
+// true.
+func IgnoreConfigChecksumForCASecretNameGeneric[T secret]() GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.IgnoreConfigChecksumForCASecretName = true
 		return nil
 	}
 }
 
-func isBundleSecret() GenerateOption {
-	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+func isBundleSecret[T secret]() GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.isBundleSecret = true
 		return nil
 	}

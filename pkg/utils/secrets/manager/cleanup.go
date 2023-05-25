@@ -22,7 +22,7 @@ import (
 	"github.com/gardener/gardener/pkg/utils/flow"
 )
 
-func (m *manager) Cleanup(ctx context.Context) error {
+func (m *manager[T]) Cleanup(ctx context.Context) error {
 	secretList, err := m.listSecrets(ctx)
 	if err != nil {
 		return err
@@ -39,9 +39,9 @@ func (m *manager) Cleanup(ctx context.Context) error {
 		}
 
 		if secrets, found := m.getFromStore(name); found &&
-			(secrets.current.obj.Name == secret.Name ||
-				(secrets.old != nil && secrets.old.obj.Name == secret.Name) ||
-				(secrets.bundle != nil && secrets.bundle.obj.Name == secret.Name)) {
+			(secrets.current.obj.GetName() == secret.Name ||
+				(secrets.old != nil && secrets.old.obj.GetName() == secret.Name) ||
+				(secrets.bundle != nil && secrets.bundle.obj.GetName() == secret.Name)) {
 			continue
 		}
 

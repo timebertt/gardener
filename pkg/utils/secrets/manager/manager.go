@@ -74,10 +74,11 @@ const (
 )
 
 type (
-	manager struct {
+	manager[T secret] struct {
+		object                      T
 		lock                        sync.Mutex
 		clock                       clock.Clock
-		store                       secretStore
+		store                       secretStore[T]
 		logger                      logr.Logger
 		client                      client.Client
 		namespace                   string
@@ -87,14 +88,14 @@ type (
 
 	nameToUnixTime map[string]string
 
-	secretStore map[string]secretInfos
-	secretInfos struct {
-		current secretInfo
-		old     *secretInfo
-		bundle  *secretInfo
+	secretStore[T secret] map[string]secretInfos[T]
+	secretInfos[T secret] struct {
+		current secretInfo[T]
+		old     *secretInfo[T]
+		bundle  *secretInfo[T]
 	}
-	secretInfo struct {
-		obj                        *corev1.Secret
+	secretInfo[T secret] struct {
+		obj                        T
 		dataChecksum               string
 		lastRotationInitiationTime int64
 	}
@@ -108,8 +109,6 @@ type (
 		SecretNamesToTimes map[string]time.Time
 	}
 )
-
-var _ Interface = &manager{}
 
 type secretClass string
 
@@ -132,8 +131,8 @@ func New(
 	Interface,
 	error,
 ) {
-	m := &manager{
-		store:                       make(secretStore),
+	m := &manager[*corev1.Secret]{
+		store:                       make(secretStore[*corev1.Secret]),
 		clock:                       clock,
 		logger:                      logger.WithValues("namespace", namespace),
 		client:                      c,
@@ -149,7 +148,7 @@ func New(
 	return m, nil
 }
 
-func (m *manager) listSecrets(ctx context.Context) (*corev1.SecretList, error) {
+func (m *manager[T]) listSecrets(ctx context.Context) (*corev1.SecretList, error) {
 	secretList := &corev1.SecretList{}
 	return secretList, m.client.List(ctx, secretList, client.InNamespace(m.namespace), client.MatchingLabels{
 		LabelKeyManagedBy:       LabelValueSecretsManager,
@@ -157,7 +156,7 @@ func (m *manager) listSecrets(ctx context.Context) (*corev1.SecretList, error) {
 	})
 }
 
-func (m *manager) initialize(ctx context.Context, rotation Config) error {
+func (m *manager[T]) initialize(ctx context.Context, rotation Config) error {
 	secretList, err := m.listSecrets(ctx)
 	if err != nil {
 		return err
@@ -200,7 +199,7 @@ func (m *manager) initialize(ctx context.Context, rotation Config) error {
 	return nil
 }
 
-func (m *manager) mustAutoRenewSecret(secret corev1.Secret) (bool, error) {
+func (m *manager[T]) mustAutoRenewSecret(secret corev1.Secret) (bool, error) {
 	if secret.Labels[LabelKeyIssuedAtTime] == "" || secret.Labels[LabelKeyValidUntilTime] == "" {
 		return false, nil
 	}
@@ -227,7 +226,7 @@ func (m *manager) mustAutoRenewSecret(secret corev1.Secret) (bool, error) {
 	return now.After(renewAt) || now.After(validUntil.Add(-10*24*time.Hour)), nil
 }
 
-func (m *manager) addToStore(name string, secret *corev1.Secret, class secretClass) error {
+func (m *manager[T]) addToStore(name string, secret T, class secretClass) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -252,7 +251,7 @@ func (m *manager) addToStore(name string, secret *corev1.Secret, class secretCla
 	return nil
 }
 
-func (m *manager) getFromStore(name string) (secretInfos, bool) {
+func (m *manager[T]) getFromStore(name string) (secretInfos[T], bool) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -260,22 +259,23 @@ func (m *manager) getFromStore(name string) (secretInfos, bool) {
 	return secrets, ok
 }
 
-func computeSecretInfo(obj *corev1.Secret) (secretInfo, error) {
+func computeSecretInfo[T secret](obj T) (secretInfo[T], error) {
 	var (
+		acc                   = Accessor(obj)
 		lastRotationStartTime int64
 		err                   error
 	)
 
-	if v := obj.Labels[LabelKeyLastRotationInitiationTime]; len(v) > 0 {
-		lastRotationStartTime, err = strconv.ParseInt(obj.Labels[LabelKeyLastRotationInitiationTime], 10, 64)
+	if v := acc.GetLabels()[LabelKeyLastRotationInitiationTime]; len(v) > 0 {
+		lastRotationStartTime, err = strconv.ParseInt(acc.GetLabels()[LabelKeyLastRotationInitiationTime], 10, 64)
 		if err != nil {
-			return secretInfo{}, err
+			return secretInfo[T]{}, err
 		}
 	}
 
-	return secretInfo{
+	return secretInfo[T]{
 		obj:                        obj,
-		dataChecksum:               utils.ComputeSecretChecksum(obj.Data),
+		dataChecksum:               utils.ComputeSecretChecksum(acc.GetData()),
 		lastRotationInitiationTime: lastRotationStartTime,
 	}, nil
 }
@@ -345,14 +345,22 @@ func computeSecretName(config secretsutils.ConfigInterface, labels map[string]st
 	return name
 }
 
-// Secret constructs a *corev1.Secret for the given metadata and data.
-func Secret(objectMeta metav1.ObjectMeta, data map[string][]byte) *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: objectMeta,
-		Data:       data,
-		Type:       secretTypeForData(data),
-		Immutable:  pointer.Bool(true),
-	}
+// Secret constructs a T for the given metadata and data.
+var Secret = SecretGeneric[*corev1.Secret]
+
+// SecretGeneric constructs a T for the given metadata and data.
+func SecretGeneric[T secret](objectMeta metav1.ObjectMeta, data map[string][]byte) T {
+	s := newObject[T]()
+	acc := Accessor(s)
+
+	acc.SetName(objectMeta.Name)
+	acc.SetNamespace(objectMeta.Namespace)
+	acc.SetLabels(objectMeta.Labels)
+	acc.SetData(data)
+	acc.SetType(secretTypeForData(data))
+	acc.SetImmutable(pointer.Bool(true))
+
+	return s
 }
 
 func secretTypeForData(data map[string][]byte) corev1.SecretType {
