@@ -28,7 +28,9 @@ import (
 
 type (
 	backupBucketValidator          struct{}
+	backupDownloadValidator        struct{}
 	backupEntryValidator           struct{}
+	backupUploadValidator          struct{}
 	bastionValidator               struct{}
 	containerRuntimeValidator      struct{}
 	controlPlaneValidator          struct{}
@@ -61,6 +63,26 @@ func (backupBucketValidator) ValidateDelete(ctx context.Context, obj runtime.Obj
 	return nil
 }
 
+func (backupDownloadValidator) ValidateCreate(ctx context.Context, obj runtime.Object) error {
+	object := obj.(*extensionsv1alpha1.BackupDownload)
+	if errs := validation.ValidateBackupDownload(object); len(errs) > 0 {
+		return apierrors.NewInvalid(extensionsv1alpha1.Kind(extensionsv1alpha1.BackupDownloadResource), object.GetName(), errs)
+	}
+	return nil
+}
+
+func (backupDownloadValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) error {
+	object := newObj.(*extensionsv1alpha1.BackupDownload)
+	if errs := validation.ValidateBackupDownloadUpdate(object, oldObj.(*extensionsv1alpha1.BackupDownload)); len(errs) > 0 {
+		return apierrors.NewInvalid(extensionsv1alpha1.Kind(extensionsv1alpha1.BackupDownloadResource), object.GetName(), errs)
+	}
+	return nil
+}
+
+func (backupDownloadValidator) ValidateDelete(ctx context.Context, obj runtime.Object) error {
+	return nil
+}
+
 func (backupEntryValidator) ValidateCreate(ctx context.Context, obj runtime.Object) error {
 	object := obj.(*extensionsv1alpha1.BackupEntry)
 	if errs := validation.ValidateBackupEntry(object); len(errs) > 0 {
@@ -78,6 +100,26 @@ func (backupEntryValidator) ValidateUpdate(ctx context.Context, oldObj, newObj r
 }
 
 func (backupEntryValidator) ValidateDelete(ctx context.Context, obj runtime.Object) error {
+	return nil
+}
+
+func (backupUploadValidator) ValidateCreate(ctx context.Context, obj runtime.Object) error {
+	object := obj.(*extensionsv1alpha1.BackupUpload)
+	if errs := validation.ValidateBackupUpload(object); len(errs) > 0 {
+		return apierrors.NewInvalid(extensionsv1alpha1.Kind(extensionsv1alpha1.BackupUploadResource), object.GetName(), errs)
+	}
+	return nil
+}
+
+func (backupUploadValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) error {
+	object := newObj.(*extensionsv1alpha1.BackupUpload)
+	if errs := validation.ValidateBackupUploadUpdate(object, oldObj.(*extensionsv1alpha1.BackupUpload)); len(errs) > 0 {
+		return apierrors.NewInvalid(extensionsv1alpha1.Kind(extensionsv1alpha1.BackupUploadResource), object.GetName(), errs)
+	}
+	return nil
+}
+
+func (backupUploadValidator) ValidateDelete(ctx context.Context, obj runtime.Object) error {
 	return nil
 }
 

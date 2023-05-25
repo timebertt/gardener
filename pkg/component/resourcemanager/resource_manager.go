@@ -1420,6 +1420,15 @@ func GetExtensionValidationValidatingWebhooks(secretServerCA *corev1.Secret, bui
 			path: extensionvalidation.WebhookPathBackupBucket,
 		},
 		{
+			resource: "backupdownloads",
+			rule: admissionregistrationv1.Rule{
+				APIGroups:   []string{extensionsv1alpha1.SchemeGroupVersion.Group},
+				APIVersions: []string{extensionsv1alpha1.SchemeGroupVersion.Version},
+				Resources:   []string{"backupdownloads"},
+			},
+			path: extensionvalidation.WebhookPathBackupDownload,
+		},
+		{
 			resource: "backupentries",
 			rule: admissionregistrationv1.Rule{
 				APIGroups:   []string{extensionsv1alpha1.SchemeGroupVersion.Group},
@@ -1427,6 +1436,15 @@ func GetExtensionValidationValidatingWebhooks(secretServerCA *corev1.Secret, bui
 				Resources:   []string{"backupentries"},
 			},
 			path: extensionvalidation.WebhookPathBackupEntry,
+		},
+		{
+			resource: "backupuploads",
+			rule: admissionregistrationv1.Rule{
+				APIGroups:   []string{extensionsv1alpha1.SchemeGroupVersion.Group},
+				APIVersions: []string{extensionsv1alpha1.SchemeGroupVersion.Version},
+				Resources:   []string{"backupuploads"},
+			},
+			path: extensionvalidation.WebhookPathBackupUpload,
 		},
 		{
 			resource: "bastions",

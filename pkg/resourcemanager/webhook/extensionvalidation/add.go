@@ -29,8 +29,12 @@ const (
 	HandlerName = "extension-validation"
 	// WebhookPathBackupBucket is the HTTP handler path for this admission webhook handler for BackupBucket.
 	WebhookPathBackupBucket = "/validate-extensions-gardener-cloud-v1alpha1-backupbucket"
+	// WebhookPathBackupDownload is the HTTP handler path for this admission webhook handler for BackupDownload.
+	WebhookPathBackupDownload = "/validate-extensions-gardener-cloud-v1alpha1-backupdownload"
 	// WebhookPathBackupEntry is the HTTP handler path for this admission webhook handler for BackupEntry.
 	WebhookPathBackupEntry = "/validate-extensions-gardener-cloud-v1alpha1-backupentry"
+	// WebhookPathBackupUpload is the HTTP handler path for this admission webhook handler for BackupUpload.
+	WebhookPathBackupUpload = "/validate-extensions-gardener-cloud-v1alpha1-backupupload"
 	// WebhookPathBastion is the HTTP handler path for this admission webhook handler for Bastion.
 	WebhookPathBastion = "/validate-extensions-gardener-cloud-v1alpha1-bastion"
 	// WebhookPathContainerRuntime is the HTTP handler path for this admission webhook handler for ContainerRuntime.
@@ -57,7 +61,9 @@ const (
 func AddToManager(mgr manager.Manager) error {
 	for obj, validator := range map[client.Object]admission.CustomValidator{
 		&extensionsv1alpha1.BackupBucket{}:          &backupBucketValidator{},
+		&extensionsv1alpha1.BackupDownload{}:        &backupDownloadValidator{},
 		&extensionsv1alpha1.BackupEntry{}:           &backupEntryValidator{},
+		&extensionsv1alpha1.BackupUpload{}:          &backupUploadValidator{},
 		&extensionsv1alpha1.Bastion{}:               &bastionValidator{},
 		&extensionsv1alpha1.ContainerRuntime{}:      &containerRuntimeValidator{},
 		&extensionsv1alpha1.ControlPlane{}:          &controlPlaneValidator{},
