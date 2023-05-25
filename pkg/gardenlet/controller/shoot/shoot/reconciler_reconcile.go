@@ -199,7 +199,7 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			Dependencies: flow.NewTaskIDs(deployBackupEntryInGarden),
 		})
 		downloadShootStateBackup = g.Add(flow.Task{
-			Name:         "Waiting until ShootState backups have been downloaded",
+			Name:         "Downloading ShootState backups",
 			Fn:           flow.TaskFn(botanist.DownloadShootStateBackup).DoIf(isRestoring).SkipIf(skipReadiness),
 			Dependencies: flow.NewTaskIDs(waitUntilBackupEntryInGardenReconciled, waitUntilSourceBackupEntryInGardenReconciled),
 		})

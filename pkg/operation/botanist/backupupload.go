@@ -186,13 +186,15 @@ func (b *Botanist) computeShootStateExtensionsDataAndResources(ctx context.Conte
 				return nil
 			}
 
-			dataList.Upsert(&gardencorev1beta1.ExtensionResourceState{
-				Kind:      objKind,
-				Name:      pointer.String(extensionObj.GetName()),
-				Purpose:   extensionObj.GetExtensionSpec().GetExtensionPurpose(),
-				State:     extensionObj.GetExtensionStatus().GetState(),
-				Resources: extensionObj.GetExtensionStatus().GetResources(),
-			})
+			if extensionObj.GetExtensionStatus().GetState() != nil || len(extensionObj.GetExtensionStatus().GetResources()) > 0 {
+				dataList.Upsert(&gardencorev1beta1.ExtensionResourceState{
+					Kind:      objKind,
+					Name:      pointer.String(extensionObj.GetName()),
+					Purpose:   extensionObj.GetExtensionSpec().GetExtensionPurpose(),
+					State:     extensionObj.GetExtensionStatus().GetState(),
+					Resources: extensionObj.GetExtensionStatus().GetResources(),
+				})
+			}
 
 			for _, newResource := range extensionObj.GetExtensionStatus().GetResources() {
 				referencedObj, err := unstructuredutils.GetObjectByRef(ctx, b.SeedClientSet.Client(), &newResource.ResourceRef, b.Shoot.SeedNamespace)
