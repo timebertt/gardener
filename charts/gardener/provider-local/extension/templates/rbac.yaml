@@ -14,7 +14,7 @@ rules:
   - backupdownloads
   - backupdownloads/status
   - backupentries
-  - backupentrie/status
+  - backupentries/status
   - backupuploads
   - backupuploads/status
   - clusters
