@@ -16,8 +16,13 @@ package botanist
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -92,7 +97,8 @@ func (b *Botanist) computeDataForShootStateBackupUpload(ctx context.Context) ([]
 		return nil, fmt.Errorf("failed marshaling ShootState spec to JSON: %w", err)
 	}
 
-	return raw, nil
+	cipherKey := []byte("asuperstrong32bitpasswordgohere!") // 32 bit key for AES-256
+	return encrypt(cipherKey, raw)
 }
 
 func (b *Botanist) computeShootStateSpecForBackupUpload(ctx context.Context) (*gardencorev1beta1.ShootStateSpec, error) {
@@ -208,4 +214,48 @@ func (b *Botanist) computeShootStateExtensionsDataAndResources(ctx context.Conte
 	}
 
 	return dataList, resources, nil
+}
+
+func encrypt(key, data []byte) ([]byte, error) {
+	// Create a new AES cipher using the key
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	encryptedData := make([]byte, aes.BlockSize+len(data))
+
+	// iv is the ciphertext up to the blocksize (16)
+	iv := encryptedData[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+
+	// Encrypt the data:
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(encryptedData[aes.BlockSize:], data)
+
+	return encryptedData, nil
+}
+
+func decrypt(key, data []byte) ([]byte, error) {
+	// Create a new AES cipher with the key and encrypted message
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// IF the length of the cipherText is less than 16 Bytes:
+	if len(data) < aes.BlockSize {
+		return nil, errors.New("Ciphertext block size is too short!")
+	}
+
+	iv := data[:aes.BlockSize]
+	data = data[aes.BlockSize:]
+
+	// Decrypt the message
+	stream := cipher.NewCFBDecrypter(block, iv)
+	stream.XORKeyStream(data, data)
+
+	return data, nil
 }
