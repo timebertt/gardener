@@ -17,11 +17,13 @@ package backupdownload
 import (
 	"context"
 	"github.com/gardener/gardener/extensions/pkg/controller/backupdownload"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/go-logr/logr"
 	"os"
 	"path/filepath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"strings"
 )
 
 type actuator struct {
@@ -52,7 +54,7 @@ func (a *actuator) Reconcile(
 	_ *extensionsv1alpha1.BackupBucket,
 ) ([]byte, error) {
 
-	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, be.Name, bd.Spec.FilePath)
+	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, strings.TrimPrefix(be.Name, v1beta1constants.BackupSourcePrefix+"-"), bd.Spec.FilePath)
 	file, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
