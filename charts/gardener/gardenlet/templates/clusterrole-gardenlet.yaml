@@ -263,7 +263,9 @@ rules:
   - extensions.gardener.cloud
   resources:
   - backupbuckets
+  - backupdownloads
   - backupentries
+  - backupuploads
   - bastions
   - clusters
   - containerruntimes

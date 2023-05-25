@@ -221,10 +221,15 @@ func (r *Reconciler) runMigrateShootFlow(ctx context.Context, o *operation.Opera
 			Fn:           botanist.Shoot.Components.Extensions.Extension.WaitMigrateBeforeKubeAPIServer,
 			Dependencies: flow.NewTaskIDs(migrateExtensionsBeforeKubeAPIServer),
 		})
+		uploadShootStateBackup = g.Add(flow.Task{
+			Name:         "Uploading ShootState backup",
+			Fn:           botanist.DeployBackupUploadForShootState,
+			Dependencies: flow.NewTaskIDs(waitUntilExtensionResourcesMigrated),
+		})
 		deleteExtensionResources = g.Add(flow.Task{
 			Name:         "Deleting extension resources from the Shoot namespace",
 			Fn:           botanist.DestroyExtensionResourcesInParallel,
-			Dependencies: flow.NewTaskIDs(waitUntilExtensionResourcesMigrated),
+			Dependencies: flow.NewTaskIDs(uploadShootStateBackup),
 		})
 		waitUntilExtensionResourcesDeleted = g.Add(flow.Task{
 			Name:         "Waiting until extension resources have been deleted",
