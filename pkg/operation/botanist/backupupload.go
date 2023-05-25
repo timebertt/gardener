@@ -97,6 +97,16 @@ func (b *Botanist) computeDataForShootStateBackupUpload(ctx context.Context) ([]
 		return nil, fmt.Errorf("failed marshaling ShootState spec to JSON: %w", err)
 	}
 
+	// TODO:
+	//  - generate this key with secrets manager in garden cluster with 'keep old' and auto-rotation every 7d
+	//  - store the key in project namespace in a `core.gardener.cloud/v1beta1.Secret` resource named <shoot>.state-encryption-key
+	//  - this new Gardener resource can also contain the client CAs which are needed when eliminating the ShootState for
+	//    adminkubeconfig generation
+	//  - the manager should have a dedicated identity per shoot
+	//  - the generation happens in this function right here
+	//  - cleanup of secrets manager is called at the end of this function, again right here, after encryption succeeded
+	//  - use owner ref to shoot in generated secrets by secrets manager
+
 	cipherKey := []byte("asuperstrong32bitpasswordgohere!") // 32 bit key for AES-256
 	return encrypt(cipherKey, raw)
 }
