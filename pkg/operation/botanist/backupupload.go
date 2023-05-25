@@ -69,6 +69,11 @@ func (b *Botanist) DeployBackupUploadForShootState(ctx context.Context) error {
 		)
 	)
 
+	// Make sure no `BackupUpload`s exist anymore before deploying a new one.
+	if err := component.OpDestroyAndWait(deployer).Destroy(ctx); err != nil {
+		return err
+	}
+
 	if err := component.OpWait(deployer).Deploy(ctx); err != nil {
 		return err
 	}
