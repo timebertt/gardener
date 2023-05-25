@@ -52,6 +52,7 @@ import (
 	gardenerhealthz "github.com/gardener/gardener/pkg/healthz"
 	localinstall "github.com/gardener/gardener/pkg/provider-local/apis/local/install"
 	localbackupbucket "github.com/gardener/gardener/pkg/provider-local/controller/backupbucket"
+	localbackupdownload "github.com/gardener/gardener/pkg/provider-local/controller/backupdownload"
 	localbackupentry "github.com/gardener/gardener/pkg/provider-local/controller/backupentry"
 	"github.com/gardener/gardener/pkg/provider-local/controller/backupoptions"
 	localbackupupload "github.com/gardener/gardener/pkg/provider-local/controller/backupupload"
@@ -244,6 +245,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			workerCtrlOpts.Completed().Apply(&localworker.DefaultAddOptions.Controller)
 			localBackupBucketOptions.Completed().Apply(&localbackupbucket.DefaultAddOptions)
 			localBackupBucketOptions.Completed().Apply(&localbackupentry.DefaultAddOptions)
+			localBackupBucketOptions.Completed().Apply(&localbackupdownload.DefaultAddOptions)
 			localBackupBucketOptions.Completed().Apply(&localbackupupload.DefaultAddOptions)
 			heartbeatCtrlOptions.Completed().Apply(&heartbeat.DefaultAddOptions)
 

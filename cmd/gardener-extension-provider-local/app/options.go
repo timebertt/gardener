@@ -27,6 +27,7 @@ import (
 	extensionscontrolplanewebhook "github.com/gardener/gardener/extensions/pkg/webhook/controlplane"
 	extensionsshootwebhook "github.com/gardener/gardener/extensions/pkg/webhook/shoot"
 	backupbucketcontroller "github.com/gardener/gardener/pkg/provider-local/controller/backupbucket"
+	backupdownloadcontroller "github.com/gardener/gardener/pkg/provider-local/controller/backupdownload"
 	backupentrycontroller "github.com/gardener/gardener/pkg/provider-local/controller/backupentry"
 	backupuploadcontroller "github.com/gardener/gardener/pkg/provider-local/controller/backupupload"
 	controlplanecontroller "github.com/gardener/gardener/pkg/provider-local/controller/controlplane"
@@ -54,6 +55,7 @@ func ControllerSwitchOptions() *extensionscmdcontroller.SwitchOptions {
 		extensionscmdcontroller.Switch(backupbucketcontroller.ControllerName, backupbucketcontroller.AddToManager),
 		extensionscmdcontroller.Switch(backupentrycontroller.ControllerName, backupentrycontroller.AddToManager),
 		extensionscmdcontroller.Switch(backupuploadcontroller.ControllerName, backupuploadcontroller.AddToManager),
+		extensionscmdcontroller.Switch(backupdownloadcontroller.ControllerName, backupdownloadcontroller.AddToManager),
 		extensionscmdcontroller.Switch(extensionscontrolplanecontroller.ControllerName, controlplanecontroller.AddToManager),
 		extensionscmdcontroller.Switch(extensionsdnsrecordcontroller.ControllerName, dnsrecordcontroller.AddToManager),
 		extensionscmdcontroller.Switch(extensionsinfrastructurecontroller.ControllerName, infrastructurecontroller.AddToManager),

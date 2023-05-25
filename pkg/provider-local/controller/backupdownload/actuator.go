@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package backupupload
+package backupdownload
 
 import (
 	"context"
-	"github.com/gardener/gardener/extensions/pkg/controller/backupupload"
+	"github.com/gardener/gardener/extensions/pkg/controller/backupdownload"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
@@ -26,14 +26,14 @@ import (
 )
 
 type actuator struct {
-	backupupload.Actuator
+	backupdownload.Actuator
 	client client.Client
 
 	containerMountPath string
 	backBucketPath     string
 }
 
-func newActuator(containerMountPath, backupBucketPath string) backupupload.Actuator {
+func newActuator(containerMountPath, backupBucketPath string) backupdownload.Actuator {
 	return &actuator{
 		containerMountPath: containerMountPath,
 		backBucketPath:     backupBucketPath,
@@ -45,19 +45,25 @@ func (a *actuator) InjectClient(client client.Client) error {
 	return nil
 }
 
-func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, bu *extensionsv1alpha1.BackupUpload) error {
+func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, bd *extensionsv1alpha1.BackupDownload) error {
 	be := &extensionsv1alpha1.BackupEntry{}
 
-	err := a.client.Get(ctx, types.NamespacedName{Name: bu.Spec.EntryName, Namespace: bu.Namespace}, be)
+	err := a.client.Get(ctx, types.NamespacedName{Name: bd.Spec.EntryName, Namespace: bd.Namespace}, be)
 	if err != nil {
 		return err
 	}
 
-	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, be.Name, bu.Spec.FilePath)
+	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, be.Name, bd.Spec.FilePath)
+	file, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
 
-	return os.WriteFile(path, bu.Spec.Data, 0644)
+	bd.Status.Data = file
+
+	return a.client.Status().Update(ctx, bd)
 }
 
-func (a *actuator) Delete(_ context.Context, _ logr.Logger, _ *extensionsv1alpha1.BackupUpload) error {
+func (a *actuator) Delete(_ context.Context, _ logr.Logger, _ *extensionsv1alpha1.BackupDownload) error {
 	return nil
 }

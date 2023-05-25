@@ -535,6 +535,7 @@ build:
         - extensions/pkg/apis/config
         - extensions/pkg/controller
         - extensions/pkg/controller/backupbucket
+        - extensions/pkg/controller/backupdownload
         - extensions/pkg/controller/backupentry
         - extensions/pkg/controller/backupentry/genericactuator
         - extensions/pkg/controller/backupupload
@@ -622,6 +623,7 @@ build:
         - pkg/provider-local/apis/local/v1alpha1
         - pkg/provider-local/controller/backupbucket
         - pkg/provider-local/controller/backupentry
+        - pkg/provider-local/controller/backupdownload
         - pkg/provider-local/controller/backupupload
         - pkg/provider-local/controller/backupoptions
         - pkg/provider-local/controller/controlplane
