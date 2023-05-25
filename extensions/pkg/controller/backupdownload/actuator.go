@@ -25,5 +25,5 @@ import (
 // Actuator acts upon BackupDownload resources.
 type Actuator interface {
 	// Reconcile reconciles the BackupDownload.
-	Reconcile(context.Context, logr.Logger, *extensionsv1alpha1.BackupDownload, *extensionsv1alpha1.BackupEntry, *extensionsv1alpha1.BackupBucket) ([]byte, error)
+	Reconcile(context.Context, logr.Logger, *extensionsv1alpha1.BackupDownload, *extensionsv1alpha1.BackupEntry) ([]byte, error)
 }

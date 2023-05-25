@@ -98,14 +98,8 @@ func (r *reconciler) reconcile(ctx context.Context, log logr.Logger, bd *extensi
 		return reconcile.Result{}, fmt.Errorf("failed to get BackupEntry: %w", err)
 	}
 
-	bb := &extensionsv1alpha1.BackupBucket{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: be.Spec.BucketName}, bb)
-	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("failed to get BackupBucket: %w", err)
-	}
-
 	log.Info("Starting the reconciliation of BackupDownload")
-	dataContent, err := r.actuator.Reconcile(ctx, log, bd, be, bb)
+	dataContent, err := r.actuator.Reconcile(ctx, log, bd, be)
 	if err != nil || dataContent == nil {
 		_ = r.statusUpdater.Error(ctx, log, bd, reconcilerutils.ReconcileErrCauseOrErr(err), operationType, "Error reconciling BackupDownload")
 		return reconcilerutils.ReconcileErr(err)

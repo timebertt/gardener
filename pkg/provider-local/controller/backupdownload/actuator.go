@@ -51,9 +51,7 @@ func (a *actuator) Reconcile(
 	log logr.Logger,
 	bd *extensionsv1alpha1.BackupDownload,
 	be *extensionsv1alpha1.BackupEntry,
-	_ *extensionsv1alpha1.BackupBucket,
 ) ([]byte, error) {
-
 	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, strings.TrimPrefix(be.Name, v1beta1constants.BackupSourcePrefix+"-"), bd.Spec.FilePath)
 	file, err := os.ReadFile(path)
 	if err != nil {
