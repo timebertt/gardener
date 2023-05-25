@@ -26,8 +26,12 @@ import (
 var (
 	//go:embed assets/crd-extensions.gardener.cloud_backupbuckets.yaml
 	backupBucketCRD string
+	//go:embed assets/crd-extensions.gardener.cloud_backupdownloads.yaml
+	backupDownloadCRD string
 	//go:embed assets/crd-extensions.gardener.cloud_backupentries.yaml
 	backupEntryCRD string
+	//go:embed assets/crd-extensions.gardener.cloud_backupuploads.yaml
+	backupUploadCRD string
 	//go:embed assets/crd-extensions.gardener.cloud_bastions.yaml
 	bastionCRD string
 	//go:embed assets/crd-extensions.gardener.cloud_clusters.yaml
@@ -55,7 +59,9 @@ var (
 func init() {
 	resources = append(resources,
 		backupBucketCRD,
+		backupDownloadCRD,
 		backupEntryCRD,
+		backupUploadCRD,
 		bastionCRD,
 		clusterCRD,
 		containerRuntimeCRD,
