@@ -270,11 +270,6 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			Fn:           flow.TaskFn(botanist.DeployEtcd).RetryUntilTimeout(defaultInterval, helper.GetEtcdDeployTimeout(o.Shoot, defaultTimeout)),
 			Dependencies: flow.NewTaskIDs(initializeSecretsManagement, deployCloudProviderSecret, waitUntilBackupEntryInGardenReconciled, waitUntilEtcdBackupsCopied),
 		})
-		_ = g.Add(flow.Task{
-			Name:         "Destroying source backup entry",
-			Fn:           flow.TaskFn(botanist.DestroySourceBackupEntry).DoIf(allowBackup),
-			Dependencies: flow.NewTaskIDs(deployETCD),
-		})
 		waitUntilEtcdReady = g.Add(flow.Task{
 			Name:         "Waiting until main and event etcd report readiness",
 			Fn:           flow.TaskFn(botanist.WaitUntilEtcdsReady).SkipIf(o.Shoot.HibernationEnabled || skipReadiness),
@@ -810,6 +805,14 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 		ErrorCleaner:     o.CleanShootTaskError,
 	}); err != nil {
 		return v1beta1helper.NewWrappedLastErrors(v1beta1helper.FormatLastErrDescription(err), flow.Errors(err))
+	}
+
+	if allowBackup {
+		o.Logger.Info("Destroying source backup entry")
+		if err := botanist.DestroySourceBackupEntry(ctx); err != nil {
+			err = fmt.Errorf("failed to destroy source backup entry: %w", err)
+			return v1beta1helper.NewWrappedLastErrors(v1beta1helper.FormatLastErrDescription(err), err)
+		}
 	}
 
 	o.Logger.Info("Cleaning no longer required secrets")

@@ -24,6 +24,7 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/component"
 	corebackupentry "github.com/gardener/gardener/pkg/component/backupentry"
 )
 
@@ -103,5 +104,5 @@ func (b *Botanist) DestroySourceBackupEntry(ctx context.Context) error {
 		return err
 	}
 
-	return b.Shoot.Components.SourceBackupEntry.Destroy(ctx)
+	return component.OpDestroyAndWait(b.Shoot.Components.SourceBackupEntry).Destroy(ctx)
 }
