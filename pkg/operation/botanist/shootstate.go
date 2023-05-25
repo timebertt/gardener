@@ -29,7 +29,7 @@ import (
 // EnsureShootStateExists creates the ShootState resource for the corresponding shoot and updates the operations object
 func (b *Botanist) EnsureShootStateExists(ctx context.Context) error {
 	if b.isRestorePhase() {
-		return b.DownloadShootStateBackup(ctx)
+		return nil
 	}
 
 	var (
