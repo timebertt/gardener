@@ -22,9 +22,13 @@ import (
 	"errors"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/extensions/backupdownload"
 )
@@ -36,11 +40,16 @@ func (b *Botanist) DownloadShootStateBackup(ctx context.Context) error {
 		return fmt.Errorf("cannot deploy BackupDownload for Shoot state since Seed is not configured with backup")
 	}
 
+	sourceBackupEntry := &extensionsv1alpha1.BackupEntry{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%s", v1beta1constants.BackupSourcePrefix, b.Shoot.BackupEntryName)}}
+	if err := b.SeedClientSet.Client().Get(ctx, client.ObjectKeyFromObject(sourceBackupEntry), sourceBackupEntry); err != nil {
+		return err
+	}
+
 	var (
 		values = &backupdownload.Values{
 			Name:      "shootstate",
-			Type:      b.Seed.GetInfo().Spec.Backup.Provider,
-			EntryName: b.Shoot.BackupEntryName,
+			EntryName: sourceBackupEntry.Name,
+			Type:      sourceBackupEntry.Spec.Type,
 			FilePath:  "shootstate",
 		}
 		deployer = backupdownload.New(
