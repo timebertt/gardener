@@ -215,6 +215,8 @@ const (
 	ShootProjectSecretSuffixOldSSHKeypair = v1beta1constants.SecretNameSSHKeyPair + ".old"
 	// ShootProjectSecretSuffixMonitoring is a constant for a shoot project secret with suffix 'monitoring'.
 	ShootProjectSecretSuffixMonitoring = "monitoring"
+	// ShootProjectSecretSuffixCAClient is a constant for a shoot project secret with suffix 'ca-client'.
+	ShootProjectSecretSuffixCAClient = "ca-client"
 )
 
 // GetShootProjectSecretSuffixes returns the list of shoot-related project secret suffixes.
