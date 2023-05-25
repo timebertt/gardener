@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"reflect"
 
+	corev1 "k8s.io/api/core/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -42,63 +43,63 @@ func ValidateSecret(secret *core.InternalSecret) field.ErrorList {
 		}
 		totalSize += len(value)
 	}
-	if totalSize > core.MaxSecretSize {
-		allErrs = append(allErrs, field.TooLong(dataPath, "", core.MaxSecretSize))
+	if totalSize > corev1.MaxSecretSize {
+		allErrs = append(allErrs, field.TooLong(dataPath, "", corev1.MaxSecretSize))
 	}
 
 	switch secret.Type {
-	case core.SecretTypeServiceAccountToken:
+	case corev1.SecretTypeServiceAccountToken:
 		// Only require Annotations[kubernetes.io/service-account.name]
 		// Additional fields (like Annotations[kubernetes.io/service-account.uid] and Data[token]) might be contributed later by a controller loop
-		if value := secret.Annotations[core.ServiceAccountNameKey]; len(value) == 0 {
-			allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(core.ServiceAccountNameKey), ""))
+		if value := secret.Annotations[corev1.ServiceAccountNameKey]; len(value) == 0 {
+			allErrs = append(allErrs, field.Required(field.NewPath("metadata", "annotations").Key(corev1.ServiceAccountNameKey), ""))
 		}
-	case core.SecretTypeOpaque, "":
+	case corev1.SecretTypeOpaque, "":
 	// no-op
-	case core.SecretTypeDockercfg:
-		dockercfgBytes, exists := secret.Data[core.DockerConfigKey]
+	case corev1.SecretTypeDockercfg:
+		dockercfgBytes, exists := secret.Data[corev1.DockerConfigKey]
 		if !exists {
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.DockerConfigKey), ""))
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.DockerConfigKey), ""))
 			break
 		}
 
 		// make sure that the content is well-formed json.
 		if err := json.Unmarshal(dockercfgBytes, &map[string]interface{}{}); err != nil {
-			allErrs = append(allErrs, field.Invalid(dataPath.Key(core.DockerConfigKey), "<secret contents redacted>", err.Error()))
+			allErrs = append(allErrs, field.Invalid(dataPath.Key(corev1.DockerConfigKey), "<secret contents redacted>", err.Error()))
 		}
-	case core.SecretTypeDockerConfigJSON:
-		dockerConfigJSONBytes, exists := secret.Data[core.DockerConfigJSONKey]
+	case corev1.SecretTypeDockerConfigJson:
+		dockerConfigJSONBytes, exists := secret.Data[corev1.DockerConfigJsonKey]
 		if !exists {
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.DockerConfigJSONKey), ""))
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.DockerConfigJsonKey), ""))
 			break
 		}
 
 		// make sure that the content is well-formed json.
 		if err := json.Unmarshal(dockerConfigJSONBytes, &map[string]interface{}{}); err != nil {
-			allErrs = append(allErrs, field.Invalid(dataPath.Key(core.DockerConfigJSONKey), "<secret contents redacted>", err.Error()))
+			allErrs = append(allErrs, field.Invalid(dataPath.Key(corev1.DockerConfigJsonKey), "<secret contents redacted>", err.Error()))
 		}
-	case core.SecretTypeBasicAuth:
-		_, usernameFieldExists := secret.Data[core.BasicAuthUsernameKey]
-		_, passwordFieldExists := secret.Data[core.BasicAuthPasswordKey]
+	case corev1.SecretTypeBasicAuth:
+		_, usernameFieldExists := secret.Data[corev1.BasicAuthUsernameKey]
+		_, passwordFieldExists := secret.Data[corev1.BasicAuthPasswordKey]
 
 		// username or password might be empty, but the field must be present
 		if !usernameFieldExists && !passwordFieldExists {
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.BasicAuthUsernameKey), ""))
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.BasicAuthPasswordKey), ""))
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.BasicAuthUsernameKey), ""))
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.BasicAuthPasswordKey), ""))
 			break
 		}
-	case core.SecretTypeSSHAuth:
-		if len(secret.Data[core.SSHAuthPrivateKey]) == 0 {
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.SSHAuthPrivateKey), ""))
+	case corev1.SecretTypeSSHAuth:
+		if len(secret.Data[corev1.SSHAuthPrivateKey]) == 0 {
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.SSHAuthPrivateKey), ""))
 			break
 		}
 
-	case core.SecretTypeTLS:
-		if _, exists := secret.Data[core.TLSCertKey]; !exists {
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.TLSCertKey), ""))
+	case corev1.SecretTypeTLS:
+		if _, exists := secret.Data[corev1.TLSCertKey]; !exists {
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.TLSCertKey), ""))
 		}
-		if _, exists := secret.Data[core.TLSPrivateKeyKey]; !exists {
-			allErrs = append(allErrs, field.Required(dataPath.Key(core.TLSPrivateKeyKey), ""))
+		if _, exists := secret.Data[corev1.TLSPrivateKeyKey]; !exists {
+			allErrs = append(allErrs, field.Required(dataPath.Key(corev1.TLSPrivateKeyKey), ""))
 		}
 	// TODO: Verify that the key matches the cert.
 	default:

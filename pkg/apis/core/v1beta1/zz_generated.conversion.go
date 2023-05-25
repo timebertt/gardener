@@ -3278,7 +3278,7 @@ func autoConvert_v1beta1_InternalSecret_To_core_InternalSecret(in *InternalSecre
 	out.Immutable = (*bool)(unsafe.Pointer(in.Immutable))
 	out.Data = *(*map[string][]byte)(unsafe.Pointer(&in.Data))
 	// INFO: in.StringData opted out of conversion generation
-	out.Type = core.InternalSecretType(in.Type)
+	out.Type = v1.SecretType(in.Type)
 	return nil
 }
 
@@ -3286,7 +3286,7 @@ func autoConvert_core_InternalSecret_To_v1beta1_InternalSecret(in *core.Internal
 	out.ObjectMeta = in.ObjectMeta
 	out.Immutable = (*bool)(unsafe.Pointer(in.Immutable))
 	out.Data = *(*map[string][]byte)(unsafe.Pointer(&in.Data))
-	out.Type = InternalSecretType(in.Type)
+	out.Type = v1.SecretType(in.Type)
 	return nil
 }
 

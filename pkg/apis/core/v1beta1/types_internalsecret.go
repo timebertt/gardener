@@ -15,6 +15,7 @@
 package v1beta1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -55,95 +56,8 @@ type InternalSecret struct {
 	// Used to facilitate programmatic handling of secret data.
 	// More info: https://kubernetes.io/docs/concepts/configuration/secret/#secret-types
 	// +optional
-	Type InternalSecretType `json:"type,omitempty" protobuf:"bytes,3,opt,name=type,casttype=SecretType"`
+	Type corev1.SecretType `json:"type,omitempty" protobuf:"bytes,3,opt,name=type,casttype=SecretType"`
 }
-
-const MaxSecretSize = 1 * 1024 * 1024
-
-type InternalSecretType string
-
-const (
-	// SecretTypeOpaque is the default. Arbitrary user-defined data
-	SecretTypeOpaque InternalSecretType = "Opaque"
-
-	// SecretTypeServiceAccountToken contains a token that identifies a service account to the API
-	//
-	// Required fields:
-	// - Secret.Annotations["kubernetes.io/service-account.name"] - the name of the ServiceAccount the token identifies
-	// - Secret.Annotations["kubernetes.io/service-account.uid"] - the UID of the ServiceAccount the token identifies
-	// - Secret.Data["token"] - a token that identifies the service account to the API
-	SecretTypeServiceAccountToken InternalSecretType = "kubernetes.io/service-account-token"
-
-	// ServiceAccountNameKey is the key of the required annotation for SecretTypeServiceAccountToken secrets
-	ServiceAccountNameKey = "kubernetes.io/service-account.name"
-	// ServiceAccountUIDKey is the key of the required annotation for SecretTypeServiceAccountToken secrets
-	ServiceAccountUIDKey = "kubernetes.io/service-account.uid"
-	// ServiceAccountTokenKey is the key of the required data for SecretTypeServiceAccountToken secrets
-	ServiceAccountTokenKey = "token"
-	// ServiceAccountKubeconfigKey is the key of the optional kubeconfig data for SecretTypeServiceAccountToken secrets
-	ServiceAccountKubeconfigKey = "kubernetes.kubeconfig"
-	// ServiceAccountRootCAKey is the key of the optional root certificate authority for SecretTypeServiceAccountToken secrets
-	ServiceAccountRootCAKey = "ca.crt"
-	// ServiceAccountNamespaceKey is the key of the optional namespace to use as the default for namespaced API calls
-	ServiceAccountNamespaceKey = "namespace"
-
-	// SecretTypeDockercfg contains a dockercfg file that follows the same format rules as ~/.dockercfg
-	//
-	// Required fields:
-	// - Secret.Data[".dockercfg"] - a serialized ~/.dockercfg file
-	SecretTypeDockercfg InternalSecretType = "kubernetes.io/dockercfg"
-
-	// DockerConfigKey is the key of the required data for SecretTypeDockercfg secrets
-	DockerConfigKey = ".dockercfg"
-
-	// SecretTypeDockerConfigJson contains a dockercfg file that follows the same format rules as ~/.docker/config.json
-	//
-	// Required fields:
-	// - Secret.Data[".dockerconfigjson"] - a serialized ~/.docker/config.json file
-	SecretTypeDockerConfigJson InternalSecretType = "kubernetes.io/dockerconfigjson"
-
-	// DockerConfigJsonKey is the key of the required data for SecretTypeDockerConfigJson secrets
-	DockerConfigJsonKey = ".dockerconfigjson"
-
-	// SecretTypeBasicAuth contains data needed for basic authentication.
-	//
-	// Required at least one of fields:
-	// - Secret.Data["username"] - username used for authentication
-	// - Secret.Data["password"] - password or token needed for authentication
-	SecretTypeBasicAuth InternalSecretType = "kubernetes.io/basic-auth"
-
-	// BasicAuthUsernameKey is the key of the username for SecretTypeBasicAuth secrets
-	BasicAuthUsernameKey = "username"
-	// BasicAuthPasswordKey is the key of the password or token for SecretTypeBasicAuth secrets
-	BasicAuthPasswordKey = "password"
-
-	// SecretTypeSSHAuth contains data needed for SSH authetication.
-	//
-	// Required field:
-	// - Secret.Data["ssh-privatekey"] - private SSH key needed for authentication
-	SecretTypeSSHAuth InternalSecretType = "kubernetes.io/ssh-auth"
-
-	// SSHAuthPrivateKey is the key of the required SSH private key for SecretTypeSSHAuth secrets
-	SSHAuthPrivateKey = "ssh-privatekey"
-	// SecretTypeTLS contains information about a TLS client or server secret. It
-	// is primarily used with TLS termination of the Ingress resource, but may be
-	// used in other types.
-	//
-	// Required fields:
-	// - Secret.Data["tls.key"] - TLS private key.
-	//   Secret.Data["tls.crt"] - TLS certificate.
-	// TODO: Consider supporting different formats, specifying CA/destinationCA.
-	SecretTypeTLS InternalSecretType = "kubernetes.io/tls"
-
-	// TLSCertKey is the key for tls certificates in a TLS secret.
-	TLSCertKey = "tls.crt"
-	// TLSPrivateKeyKey is the key for the private key field in a TLS secret.
-	TLSPrivateKeyKey = "tls.key"
-	// SecretTypeBootstrapToken is used during the automated bootstrap process (first
-	// implemented by kubeadm). It stores tokens that are used to sign well known
-	// ConfigMaps. They are used for authn.
-	SecretTypeBootstrapToken InternalSecretType = "bootstrap.kubernetes.io/token"
-)
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
