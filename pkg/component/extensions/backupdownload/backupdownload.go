@@ -40,6 +40,11 @@ const (
 	DefaultTimeout = 10 * time.Minute
 )
 
+type Interface interface {
+	component.DeployWaiter
+	GetData() []byte
+}
+
 // Values contains the values used to create a BackupDownload CRD
 type Values struct {
 	// Name is the name of the BackupDownload resource.
@@ -50,8 +55,6 @@ type Values struct {
 	EntryName string
 	// FilePath is the path of the file that should be downloaded.
 	FilePath string
-	// Data is the data that should be downloaded.
-	Data []byte
 }
 
 // New creates a new instance of Interface.
@@ -64,8 +67,8 @@ func New(
 	waitInterval time.Duration,
 	waitSevereThreshold time.Duration,
 	waitTimeout time.Duration,
-) component.DeployWaiter {
-	return &backupDownload{
+) Interface {
+	b := &backupDownload{
 		log:                 log,
 		client:              client,
 		namespace:           namespace,
@@ -75,6 +78,8 @@ func New(
 		waitSevereThreshold: waitSevereThreshold,
 		waitTimeout:         waitTimeout,
 	}
+	b.backupDownload = b.emptyBackupDownload()
+	return b
 }
 
 type backupDownload struct {
@@ -86,17 +91,17 @@ type backupDownload struct {
 	waitInterval        time.Duration
 	waitSevereThreshold time.Duration
 	waitTimeout         time.Duration
+
+	backupDownload *extensionsv1alpha1.BackupDownload
 }
 
 // Deploy uses the seed client to create or update the BackupDownload custom resource in the Seed.
 func (b *backupDownload) Deploy(ctx context.Context) error {
-	download := b.emptyBackupDownload()
+	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.client, b.backupDownload, func() error {
+		metav1.SetMetaDataAnnotation(&b.backupDownload.ObjectMeta, v1beta1constants.GardenerOperation, v1beta1constants.GardenerOperationReconcile)
+		metav1.SetMetaDataAnnotation(&b.backupDownload.ObjectMeta, v1beta1constants.GardenerTimestamp, b.clock.Now().UTC().Format(time.RFC3339Nano))
 
-	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.client, download, func() error {
-		metav1.SetMetaDataAnnotation(&download.ObjectMeta, v1beta1constants.GardenerOperation, v1beta1constants.GardenerOperationReconcile)
-		metav1.SetMetaDataAnnotation(&download.ObjectMeta, v1beta1constants.GardenerTimestamp, b.clock.Now().UTC().Format(time.RFC3339Nano))
-
-		download.Spec = extensionsv1alpha1.BackupDownloadSpec{
+		b.backupDownload.Spec = extensionsv1alpha1.BackupDownloadSpec{
 			DefaultSpec: extensionsv1alpha1.DefaultSpec{
 				Type: b.values.Type,
 			},
@@ -114,7 +119,7 @@ func (b *backupDownload) Destroy(ctx context.Context) error {
 	return extensions.DeleteExtensionObject(
 		ctx,
 		b.client,
-		b.emptyBackupDownload(),
+		b.backupDownload,
 	)
 }
 
@@ -123,7 +128,8 @@ func (b *backupDownload) Wait(ctx context.Context) error {
 	return extensions.WaitUntilExtensionObjectReady(
 		ctx,
 		b.client,
-		b.log, b.emptyBackupDownload(),
+		b.log,
+		b.backupDownload,
 		extensionsv1alpha1.BackupDownloadResource,
 		b.waitInterval,
 		b.waitSevereThreshold,
@@ -138,11 +144,15 @@ func (b *backupDownload) WaitCleanup(ctx context.Context) error {
 		ctx,
 		b.client,
 		b.log,
-		b.emptyBackupDownload(),
+		b.backupDownload,
 		extensionsv1alpha1.BackupDownloadResource,
 		b.waitInterval,
 		b.waitTimeout,
 	)
+}
+
+func (b *backupDownload) GetData() []byte {
+	return b.backupDownload.Status.Data
 }
 
 func (b *backupDownload) emptyBackupDownload() *extensionsv1alpha1.BackupDownload {
