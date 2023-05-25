@@ -18,12 +18,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	etcddruidutils "github.com/gardener/etcd-druid/pkg/utils"
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/extensions/pkg/controller/backupentry/genericactuator"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 )
 
@@ -51,7 +53,7 @@ func (a *actuator) GetETCDSecretData(_ context.Context, _ logr.Logger, _ *extens
 }
 
 func (a *actuator) Delete(_ context.Context, log logr.Logger, be *extensionsv1alpha1.BackupEntry) error {
-	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, be.Name)
+	path := filepath.Join(a.backBucketPath, be.Spec.BucketName, strings.TrimPrefix(be.Name, v1beta1constants.BackupSourcePrefix+"-"))
 	log.Info("Deleting directory", "path", path)
 	return os.RemoveAll(path)
 }
