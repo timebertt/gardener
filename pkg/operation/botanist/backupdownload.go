@@ -31,6 +31,7 @@ import (
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/extensions/backupdownload"
+	"github.com/gardener/gardener/pkg/controllerutils"
 )
 
 // DownloadShootStateBackup deploys a BackupDownload resource for the shootstate. After success, it immediately
@@ -71,13 +72,15 @@ func (b *Botanist) DownloadShootStateBackup(ctx context.Context) error {
 	if err := component.OpWait(deployer).Deploy(ctx); err != nil {
 		return err
 	}
-	if err := b.loadShootState(deployer.GetData()); err != nil {
+	if err := b.loadShootState(ctx, deployer.GetData()); err != nil {
 		return err
 	}
+	// TODO: Delete the download object only at the very end of the restore flow so that the data is not downloaded again
+	//  and again when the restoration fails for whatever reason.
 	return component.OpDestroyAndWait(deployer).Destroy(ctx)
 }
 
-func (b *Botanist) loadShootState(data []byte) error {
+func (b *Botanist) loadShootState(ctx context.Context, data []byte) error {
 	raw, err := decrypt(cipherKey, data)
 	if err != nil {
 		return fmt.Errorf("failed decrypting ShootState: %w", err)
@@ -88,8 +91,28 @@ func (b *Botanist) loadShootState(data []byte) error {
 		return fmt.Errorf("failed unmarshaling raw ShootState: %w", err)
 	}
 
+	if err := b.storeShootState(ctx, shootState); err != nil {
+		return err
+	}
+
 	b.Shoot.SetShootState(shootState)
 	return nil
+}
+
+func (b *Botanist) storeShootState(ctx context.Context, shootStateFromBackup *gardencorev1beta1.ShootState) error {
+	shootState := &gardencorev1beta1.ShootState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      b.Shoot.GetInfo().Name,
+			Namespace: b.Shoot.GetInfo().Namespace,
+		},
+	}
+
+	_, err := controllerutils.CreateOrGetAndMergePatch(ctx, b.GardenClient, shootState, func() error {
+		shootState.Spec = shootStateFromBackup.Spec
+		return nil
+	})
+	*shootStateFromBackup = *shootState
+	return err
 }
 
 func decrypt(key, data []byte) ([]byte, error) {

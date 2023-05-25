@@ -45,10 +45,10 @@ import (
 func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Operation, operationType gardencorev1beta1.LastOperationType) *v1beta1helper.WrappedLastErrors {
 	// We create the botanists (which will do the actual work).
 	var (
-		botanist                *botanistpkg.Botanist
-		err                     error
-		isCopyOfBackupsRequired bool
-		tasksWithErrors         []string
+		botanist                    *botanistpkg.Botanist
+		err                         error
+		isCopyOfEtcdBackupsRequired bool
+		tasksWithErrors             []string
 
 		isRestoring   = operationType == gardencorev1beta1.LastOperationTypeRestore
 		skipReadiness = metav1.HasAnnotation(o.Shoot.GetInfo().ObjectMeta, v1beta1constants.AnnotationShootSkipReadiness)
@@ -81,7 +81,7 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			return botanist.WaitUntilRequiredExtensionsReady(ctx)
 		}),
 		errors.ToExecute("Check if copy of backups is required", func() error {
-			isCopyOfBackupsRequired, err = botanist.IsCopyOfBackupsRequired(ctx)
+			isCopyOfEtcdBackupsRequired, err = botanist.IsCopyOfEtcdBackupsRequired(ctx)
 			return err
 		}),
 	)
@@ -180,12 +180,12 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 		})
 		deploySourceBackupEntry = g.Add(flow.Task{
 			Name:         "Deploying source backup entry",
-			Fn:           flow.TaskFn(botanist.DeploySourceBackupEntry).DoIf(isCopyOfBackupsRequired),
+			Fn:           flow.TaskFn(botanist.DeploySourceBackupEntry).DoIf(isCopyOfEtcdBackupsRequired),
 			Dependencies: flow.NewTaskIDs(ensureShootStateExists, deployReferencedResources),
 		})
 		waitUntilSourceBackupEntryInGardenReconciled = g.Add(flow.Task{
 			Name:         "Waiting until the source backup entry has been reconciled",
-			Fn:           flow.TaskFn(botanist.Shoot.Components.SourceBackupEntry.Wait).DoIf(isCopyOfBackupsRequired).SkipIf(skipReadiness),
+			Fn:           flow.TaskFn(botanist.Shoot.Components.SourceBackupEntry.Wait).DoIf(isCopyOfEtcdBackupsRequired).SkipIf(skipReadiness),
 			Dependencies: flow.NewTaskIDs(deploySourceBackupEntry),
 		})
 		deployBackupEntryInGarden = g.Add(flow.Task{
@@ -200,22 +200,22 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 		})
 		downloadShootStateBackup = g.Add(flow.Task{
 			Name:         "Waiting until ShootState backups have been downloaded",
-			Fn:           flow.TaskFn(botanist.DownloadShootStateBackup).DoIf(isCopyOfBackupsRequired).SkipIf(skipReadiness),
+			Fn:           flow.TaskFn(botanist.DownloadShootStateBackup).DoIf(isRestoring).SkipIf(skipReadiness),
 			Dependencies: flow.NewTaskIDs(waitUntilBackupEntryInGardenReconciled, waitUntilSourceBackupEntryInGardenReconciled),
 		})
 		copyEtcdBackups = g.Add(flow.Task{
 			Name:         "Copying etcd backups to new seed's backup bucket",
-			Fn:           flow.TaskFn(botanist.DeployEtcdCopyBackupsTask).DoIf(isCopyOfBackupsRequired),
+			Fn:           flow.TaskFn(botanist.DeployEtcdCopyBackupsTask).DoIf(isCopyOfEtcdBackupsRequired),
 			Dependencies: flow.NewTaskIDs(waitUntilBackupEntryInGardenReconciled, waitUntilSourceBackupEntryInGardenReconciled),
 		})
 		waitUntilEtcdBackupsCopied = g.Add(flow.Task{
 			Name:         "Waiting until etcd backups are copied",
-			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.EtcdCopyBackupsTask.Wait).DoIf(isCopyOfBackupsRequired).SkipIf(skipReadiness),
+			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.EtcdCopyBackupsTask.Wait).DoIf(isCopyOfEtcdBackupsRequired).SkipIf(skipReadiness),
 			Dependencies: flow.NewTaskIDs(copyEtcdBackups),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying copy etcd backups task resource",
-			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.EtcdCopyBackupsTask.Destroy).DoIf(isCopyOfBackupsRequired),
+			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.EtcdCopyBackupsTask.Destroy).DoIf(isCopyOfEtcdBackupsRequired),
 			Dependencies: flow.NewTaskIDs(waitUntilEtcdBackupsCopied),
 		})
 		initializeSecretsManagement = g.Add(flow.Task{

@@ -72,8 +72,8 @@ func (b *Botanist) runParallelTaskForEachComponent(ctx context.Context, componen
 	return flow.Parallel(fns...)(ctx)
 }
 
-// IsCopyOfBackupsRequired check if etcd backups need to be copied between seeds.
-func (b *Botanist) IsCopyOfBackupsRequired(ctx context.Context) (bool, error) {
+// IsCopyOfEtcdBackupsRequired check if etcd backups need to be copied between seeds.
+func (b *Botanist) IsCopyOfEtcdBackupsRequired(ctx context.Context) (bool, error) {
 	if b.Seed.GetInfo().Spec.Backup == nil || !b.isRestorePhase() {
 		return false, nil
 	}

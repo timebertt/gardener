@@ -176,7 +176,7 @@ var _ = Describe("migration", func() {
 		})
 	})
 
-	Describe("#IsCopyOfBackupsRequired", func() {
+	Describe("#IsCopyOfEtcdBackupsRequired", func() {
 		var (
 			etcdMain          *mocketcd.MockInterface
 			backupEntry       *mockbackupentry.MockInterface
@@ -222,21 +222,21 @@ var _ = Describe("migration", func() {
 
 		It("should return false if lastOperation is not restore", func() {
 			botanist.Shoot.GetInfo().Status.LastOperation.Type = v1beta1.LastOperationTypeReconcile
-			copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+			copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(copyRequired).To(BeFalse())
 		})
 
 		It("should return false if seed backup is not set", func() {
 			botanist.Seed.GetInfo().Spec.Backup = nil
-			copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+			copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(copyRequired).To(BeFalse())
 		})
 
 		It("should return false if lastOperation is nil", func() {
 			botanist.Shoot.GetInfo().Status.LastOperation = nil
-			copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+			copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(copyRequired).To(BeFalse())
 		})
@@ -244,14 +244,14 @@ var _ = Describe("migration", func() {
 		Context("Last operation is restore and etcd main exists", func() {
 			It("should return false if etcd main resource has been deployed", func() {
 				etcdMain.EXPECT().Get(ctx)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(copyRequired).To(BeFalse())
 			})
 
 			It("should return error if retrieval of etcd main resource fials", func() {
 				etcdMain.EXPECT().Get(ctx).Return(nil, fakeErr)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(MatchError(fakeErr))
 				Expect(copyRequired).To(BeFalse())
 			})
@@ -265,7 +265,7 @@ var _ = Describe("migration", func() {
 
 			It("should return an error if backupentry retrieval fails", func() {
 				backupEntry.EXPECT().Get(ctx).Return(nil, fakeErr)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(MatchError(fakeErr))
 				Expect(copyRequired).To(BeFalse())
 			})
@@ -273,7 +273,7 @@ var _ = Describe("migration", func() {
 			It("should return an error if backupentry is not found", func() {
 				backupEntryNotFoundErr := apierrors.NewNotFound(schema.GroupResource{}, "backupentry")
 				backupEntry.EXPECT().Get(ctx).Return(nil, backupEntryNotFoundErr)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(MatchError(backupEntryNotFoundErr))
 				Expect(copyRequired).To(BeFalse())
 			})
@@ -284,7 +284,7 @@ var _ = Describe("migration", func() {
 						BucketName: "old-seed",
 					},
 				}, nil)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(Succeed())
 				Expect(copyRequired).To(BeTrue())
 			})
@@ -303,14 +303,14 @@ var _ = Describe("migration", func() {
 			It("should return error if source backupentry does not exist", func() {
 				sourceBackupEntryNotFoundErr := apierrors.NewNotFound(schema.GroupResource{}, "source-backupentry")
 				sourceBackupEntry.EXPECT().Get(ctx).Return(nil, sourceBackupEntryNotFoundErr)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(MatchError(sourceBackupEntryNotFoundErr))
 				Expect(copyRequired).To(BeFalse())
 			})
 
 			It("should return an error if source backupentry retrieval fails", func() {
 				sourceBackupEntry.EXPECT().Get(ctx).Return(nil, fakeErr)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(MatchError(fakeErr))
 				Expect(copyRequired).To(BeFalse())
 			})
@@ -321,7 +321,7 @@ var _ = Describe("migration", func() {
 						BucketName: string(botanist.Seed.GetInfo().UID),
 					},
 				}, nil)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(HaveOccurred())
 				Expect(copyRequired).To(BeFalse())
 			})
@@ -332,7 +332,7 @@ var _ = Describe("migration", func() {
 						BucketName: "old-seed",
 					},
 				}, nil)
-				copyRequired, err := botanist.IsCopyOfBackupsRequired(ctx)
+				copyRequired, err := botanist.IsCopyOfEtcdBackupsRequired(ctx)
 				Expect(err).To(Succeed())
 				Expect(copyRequired).To(BeTrue())
 			})
