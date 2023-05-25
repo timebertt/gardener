@@ -41,7 +41,7 @@ type reconciler struct {
 }
 
 // NewReconciler creates a new reconcile.Reconciler that reconciles
-// BackupUpload resources of Gardener's `extensions.gardener.cloud` API group.
+// BackupDownload resources of Gardener's `extensions.gardener.cloud` API group.
 func NewReconciler(actuator Actuator) reconcile.Reconciler {
 	return reconcilerutils.OperationAnnotationWrapper(
 		func() client.Object { return &extensionsv1alpha1.BackupDownload{} },

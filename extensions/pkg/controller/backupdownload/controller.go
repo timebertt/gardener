@@ -26,15 +26,15 @@ import (
 )
 
 const (
-	// FinalizerName is the backupbucket controller finalizer.
+	// FinalizerName is the BackupDownload controller finalizer.
 	FinalizerName = "extensions.gardener.cloud/BackupDownload"
 	// ControllerName is the name of the controller
 	ControllerName = "BackupDownload"
 )
 
-// AddArgs are arguments for adding a BackupBucket controller to a manager.
+// AddArgs are arguments for adding a BackupDownload controller to a manager.
 type AddArgs struct {
-	// Actuator is a BackupBucket actuator.
+	// Actuator is a BackupDownload actuator.
 	Actuator Actuator
 	// ControllerOptions are the controller options used for creating a controller.
 	// The options.Reconciler is always overridden with a reconciler created from the
@@ -52,12 +52,12 @@ type AddArgs struct {
 	IgnoreOperationAnnotation bool
 }
 
-// DefaultPredicates returns the default predicates for a BackupBucket reconciler.
+// DefaultPredicates returns the default predicates for a BackupDownload reconciler.
 func DefaultPredicates(ignoreOperationAnnotation bool) []predicate.Predicate {
 	return extensionspredicate.DefaultControllerPredicates(ignoreOperationAnnotation)
 }
 
-// Add creates a new BackupBucket Controller and adds it to the Manager.
+// Add creates a new BackupDownload Controller and adds it to the Manager.
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager, args AddArgs) error {
 	args.ControllerOptions.Reconciler = NewReconciler(args.Actuator)

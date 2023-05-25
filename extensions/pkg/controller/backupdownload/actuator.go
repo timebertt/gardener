@@ -24,8 +24,8 @@ import (
 
 // Actuator acts upon BackupDownload resources.
 type Actuator interface {
-	// Reconcile reconciles the BackupUpload.
+	// Reconcile reconciles the BackupDownload.
 	Reconcile(context.Context, logr.Logger, *extensionsv1alpha1.BackupDownload) error
-	// Delete deletes the BackupUpload.
+	// Delete deletes the BackupDownload.
 	Delete(context.Context, logr.Logger, *extensionsv1alpha1.BackupDownload) error
 }

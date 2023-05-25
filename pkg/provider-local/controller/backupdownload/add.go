@@ -31,7 +31,7 @@ var (
 	DefaultAddOptions = backupoptions.AddOptions{}
 )
 
-// AddOptions are options to apply when adding the backupbucket controller to the manager.
+// AddOptions are options to apply when adding the backupdownload controller to the manager.
 type AddOptions struct {
 	// BackupBucketLocalDir is the directory of the backupbucket.
 	BackupBucketLocalDir string
