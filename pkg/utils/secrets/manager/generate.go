@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,6 +60,7 @@ func (m *manager[T]) Generate(ctx context.Context, config secretsutils.ConfigInt
 		options.signingCAChecksum,
 		&options.Persist,
 		bundleFor,
+		options.OwnerReferences,
 	)
 	if err != nil {
 		return nil, err
@@ -99,7 +101,7 @@ func (m *manager[T]) Generate(ctx context.Context, config secretsutils.ConfigInt
 		}
 	}
 
-	if err := m.reconcileSecret(ctx, secret, desiredLabels); err != nil {
+	if err := m.reconcileSecret(ctx, secret, desiredLabels, options.OwnerReferences); err != nil {
 		return nil, err
 	}
 
@@ -386,8 +388,8 @@ func (m *manager[T]) maintainLifetimeLabels(
 	return nil
 }
 
-func (m *manager[T]) reconcileSecret(ctx context.Context, secret T, labels map[string]string) error {
-	patch := client.MergeFrom(secret.DeepCopyObject().(client.Object))
+func (m *manager[T]) reconcileSecret(ctx context.Context, secret T, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+	patch := client.StrategicMergeFrom(secret.DeepCopyObject().(client.Object))
 
 	var mustPatch bool
 
@@ -418,6 +420,12 @@ func (m *manager[T]) reconcileSecret(ctx context.Context, secret T, labels map[s
 		}
 	}
 
+	// Check if ownerReferences need to be added or removed
+	if !apiequality.Semantic.DeepEqual(secret.GetOwnerReferences(), ownerRefs) {
+		secret.SetOwnerReferences(ownerRefs)
+		mustPatch = true
+	}
+
 	if !mustPatch {
 		return nil
 	}
@@ -446,6 +454,8 @@ type GenerateOptions[T secret] struct {
 	// IgnoreConfigChecksumForCASecretName specifies whether the secret config checksum should be ignored when
 	// computing the secret name for CA secrets.
 	IgnoreConfigChecksumForCASecretName bool
+	// OwnerReferences specifies the owner references that should be added to the secret.
+	OwnerReferences []metav1.OwnerReference
 
 	signingCAChecksum *string
 	isBundleSecret    bool
@@ -630,6 +640,17 @@ var IgnoreConfigChecksumForCASecretName = IgnoreConfigChecksumForCASecretNameGen
 func IgnoreConfigChecksumForCASecretNameGeneric[T secret]() GenericGenerateOption[T] {
 	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
 		options.IgnoreConfigChecksumForCASecretName = true
+		return nil
+	}
+}
+
+// OwnerReferences returns a function which sets the 'OwnerReferences' field.
+var OwnerReferences = OwnerReferencesGeneric[*corev1.Secret]
+
+// OwnerReferencesGeneric returns a function which sets the 'OwnerReferences' field.
+func OwnerReferencesGeneric[T secret](ownerRefs ...metav1.OwnerReference) GenericGenerateOption[T] {
+	return func(_ Generic[T], _ secretsutils.ConfigInterface, options *GenerateOptions[T]) error {
+		options.OwnerReferences = append(options.OwnerReferences, ownerRefs...)
 		return nil
 	}
 }

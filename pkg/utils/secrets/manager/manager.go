@@ -290,6 +290,7 @@ func ObjectMeta(
 	signingCAChecksum *string,
 	persist *bool,
 	bundleFor *string,
+	ownerRefs []metav1.OwnerReference,
 ) (
 	metav1.ObjectMeta,
 	error,
@@ -320,9 +321,10 @@ func ObjectMeta(
 	}
 
 	return metav1.ObjectMeta{
-		Name:      computeSecretName(config, labels, ignoreConfigChecksumForCASecretName),
-		Namespace: namespace,
-		Labels:    labels,
+		Name:            computeSecretName(config, labels, ignoreConfigChecksumForCASecretName),
+		Namespace:       namespace,
+		Labels:          labels,
+		OwnerReferences: ownerRefs,
 	}, nil
 }
 
@@ -356,6 +358,7 @@ func SecretGeneric[T secret](objectMeta metav1.ObjectMeta, data map[string][]byt
 	acc.SetName(objectMeta.Name)
 	acc.SetNamespace(objectMeta.Namespace)
 	acc.SetLabels(objectMeta.Labels)
+	acc.SetOwnerReferences(objectMeta.OwnerReferences)
 	acc.SetData(data)
 	acc.SetType(secretTypeForData(data))
 	acc.SetImmutable(pointer.Bool(true))
