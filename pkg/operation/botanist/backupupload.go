@@ -22,9 +22,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/pointer"
@@ -36,7 +38,9 @@ import (
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/extensions/backupupload"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	unstructuredutils "github.com/gardener/gardener/pkg/utils/kubernetes/unstructured"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 )
 
@@ -97,15 +101,32 @@ func (b *Botanist) computeDataForShootStateBackupUpload(ctx context.Context) ([]
 
 	// TODO:
 	//  - generate this key with secrets manager in garden cluster with 'keep old' and auto-rotation every 7d
-	//  - store the key in project namespace in a `core.gardener.cloud/v1beta1.Secret` resource named <shoot>.state-encryption-key
-	//  - this new Gardener resource can also contain the client CAs which are needed when eliminating the ShootState for
-	//    adminkubeconfig generation
+	//  - store the key in project namespace in a `core.gardener.cloud/v1beta1.InternalSecret` resource named <shoot>.state-encryption-key
 	//  - the manager should have a dedicated identity per shoot
 	//  - the generation happens in this function right here
-	//  - cleanup of secrets manager is called at the end of this function, again right here, after encryption succeeded
+	//  - cleanup of secrets manager is called at the end of this function, again right here, after encryption succeeded (discuss this again with rfranzke)
 	//  - use owner ref to shoot in generated secrets by secrets manager
 
-	return encrypt(cipherKey, raw)
+	secret, err := b.InternalSecretsManager.Generate(
+		ctx,
+		&secretsutils.ETCDEncryptionKeySecretConfig{
+			Name:         gardenerutils.ComputeShootProjectSecretName(b.Shoot.GetInfo().Name, gardenerutils.ShootProjectSecretSuffixStateEncryptionKey),
+			SecretLength: 32,
+		},
+		secretsmanager.RotateGeneric[*gardencorev1beta1.InternalSecret](secretsmanager.KeepOld),
+		secretsmanager.ValidityGeneric[*gardencorev1beta1.InternalSecret](7*24*time.Hour),
+		secretsmanager.OwnerReferencesGeneric[*gardencorev1beta1.InternalSecret](metav1.OwnerReference{
+			APIVersion: gardencorev1beta1.SchemeGroupVersion.String(),
+			Kind:       "Shoot",
+			Name:       b.Shoot.GetInfo().Name,
+			UID:        b.Shoot.GetInfo().UID,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed generating state encryption key: %w", err)
+	}
+
+	return encrypt(secret.Data[secretsutils.DataKeyEncryptionSecret], raw)
 }
 
 func (b *Botanist) computeShootStateSpecForBackupUpload(ctx context.Context) (*gardencorev1beta1.ShootStateSpec, error) {

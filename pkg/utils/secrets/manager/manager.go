@@ -118,7 +118,7 @@ const (
 	bundle  secretClass = "bundle"
 )
 
-// New returns a new manager for secrets in a given namespace.
+// New returns a new manager for Secrets in a given namespace.
 func New(
 	ctx context.Context,
 	logger logr.Logger,
@@ -131,8 +131,24 @@ func New(
 	Interface,
 	error,
 ) {
-	m := &manager[*corev1.Secret]{
-		store:                       make(secretStore[*corev1.Secret]),
+	return NewGeneric[*corev1.Secret](ctx, logger, clock, c, namespace, identity, rotation)
+}
+
+// NewGeneric returns a new manager for Secrets or InternalSecrets in a given namespace.
+func NewGeneric[T secret](
+	ctx context.Context,
+	logger logr.Logger,
+	clock clock.Clock,
+	c client.Client,
+	namespace string,
+	identity string,
+	rotation Config,
+) (
+	Generic[T],
+	error,
+) {
+	m := &manager[T]{
+		store:                       make(secretStore[T]),
 		clock:                       clock,
 		logger:                      logger.WithValues("namespace", namespace),
 		client:                      c,

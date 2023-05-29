@@ -26,6 +26,7 @@ const (
 )
 
 // ETCDEncryptionKeySecretConfig contains the specification for a to-be-generated random key.
+// TODO: rename this to EncryptionKeySecretConfig
 type ETCDEncryptionKeySecretConfig struct {
 	Name         string
 	SecretLength int

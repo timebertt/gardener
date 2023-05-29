@@ -85,6 +85,19 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 		return nil, err
 	}
 
+	o.InternalSecretsManager, err = secretsmanager.NewGeneric[*gardencorev1beta1.InternalSecret](
+		ctx,
+		b.Logger.WithName("secretsmanager"),
+		clock.RealClock{},
+		b.GardenClient,
+		b.Shoot.GetInfo().Namespace,
+		v1beta1constants.SecretManagerIdentityGardenlet+"-"+b.Shoot.GetInfo().Name,
+		secretsmanager.Config{},
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// extension components
 	o.Shoot.Components.Extensions.ExternalDNSRecord = b.DefaultExternalDNSRecord()
 	o.Shoot.Components.Extensions.InternalDNSRecord = b.DefaultInternalDNSRecord()

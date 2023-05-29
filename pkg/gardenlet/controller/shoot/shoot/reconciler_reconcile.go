@@ -820,6 +820,10 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 		err = fmt.Errorf("failed to clean no longer required secrets: %w", err)
 		return v1beta1helper.NewWrappedLastErrors(v1beta1helper.FormatLastErrDescription(err), err)
 	}
+	if err := botanist.InternalSecretsManager.Cleanup(ctx); err != nil {
+		err = fmt.Errorf("failed to clean no longer required internal secrets: %w", err)
+		return v1beta1helper.NewWrappedLastErrors(v1beta1helper.FormatLastErrDescription(err), err)
+	}
 
 	// ensure that shoot client is invalidated after it has been hibernated
 	if o.Shoot.HibernationEnabled {

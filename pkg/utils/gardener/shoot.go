@@ -217,6 +217,8 @@ const (
 	ShootProjectSecretSuffixMonitoring = "monitoring"
 	// ShootProjectSecretSuffixCAClient is a constant for a shoot project secret with suffix 'ca-client'.
 	ShootProjectSecretSuffixCAClient = "ca-client"
+	// ShootProjectSecretSuffixStateEncryptionKey is a constant for a shoot project secret with suffix 'state-encryption-key'.
+	ShootProjectSecretSuffixStateEncryptionKey = "state-encryption-key"
 )
 
 // GetShootProjectSecretSuffixes returns the list of shoot-related project secret suffixes.
