@@ -67,7 +67,7 @@ func (r *Reconciler) AddToManager(ctx context.Context, mgr manager.Manager, sour
 			MaxConcurrentReconciles: pointer.IntDeref(r.Config.ConcurrentSyncs, 0),
 		}).
 		Watches(
-			&source.Kind{Type: &resourcesv1alpha1.ManagedResource{}},
+			&resourcesv1alpha1.ManagedResource{},
 			r.EnqueueCreateAndUpdate(),
 			builder.WithPredicates(
 				predicate.Or(
