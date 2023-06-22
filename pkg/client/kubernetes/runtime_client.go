@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"golang.org/x/time/rate"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
@@ -65,8 +64,6 @@ func setClientOptionsDefaults(config *rest.Config, options *client.Options) erro
 		mapper, err := apiutil.NewDynamicRESTMapper(
 			config,
 			httpClient,
-			apiutil.WithLazyDiscovery,
-			apiutil.WithLimiter(rate.NewLimiter(rate.Every(5*time.Second), 1)),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create new DynamicRESTMapper: %w", err)

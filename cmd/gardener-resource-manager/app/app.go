@@ -27,7 +27,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	eventsv1beta1 "k8s.io/api/events/v1beta1"
@@ -210,8 +209,6 @@ func run(ctx context.Context, log logr.Logger, cfg *config.ResourceManagerConfig
 				return apiutil.NewDynamicRESTMapper(
 					config,
 					httpClient,
-					apiutil.WithLazyDiscovery,
-					apiutil.WithLimiter(rate.NewLimiter(rate.Every(1*time.Minute), 1)), // rediscover at maximum every minute
 				)
 			}
 

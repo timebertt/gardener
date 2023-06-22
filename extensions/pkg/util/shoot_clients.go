@@ -113,7 +113,7 @@ func NewClientForShoot(ctx context.Context, c client.Client, namespace string, o
 			return nil, nil, fmt.Errorf("failed to get HTTP client for config: %w", err)
 		}
 
-		mapper, err := apiutil.NewDynamicRESTMapper(shootRESTConfig, httpClient, apiutil.WithLazyDiscovery)
+		mapper, err := apiutil.NewDynamicRESTMapper(shootRESTConfig, httpClient)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create new DynamicRESTMapper: %w", err)
 		}
