@@ -15,6 +15,7 @@
 package controllerutils
 
 import (
+	"context"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -39,19 +40,19 @@ func reconcileRequest(obj client.Object) reconcile.Request {
 // All other events are normally enqueued.
 func EnqueueCreateEventsOncePer24hDuration(clock clock.Clock) handler.Funcs {
 	return handler.Funcs{
-		CreateFunc: func(evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+		CreateFunc: func(_ context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
 			if evt.Object == nil {
 				return
 			}
 			q.AddAfter(reconcileRequest(evt.Object), getDuration(evt.Object, clock))
 		},
-		UpdateFunc: func(evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+		UpdateFunc: func(_ context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
 			if evt.ObjectNew == nil {
 				return
 			}
 			q.Add(reconcileRequest(evt.ObjectNew))
 		},
-		DeleteFunc: func(evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+		DeleteFunc: func(_ context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
 			if evt.Object == nil {
 				return
 			}

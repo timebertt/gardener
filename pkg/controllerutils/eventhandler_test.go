@@ -15,6 +15,7 @@
 package controllerutils_test
 
 import (
+	"context"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -35,6 +36,7 @@ import (
 var _ = Describe("EventHandler", func() {
 	Describe("#EnqueueCreateEventsOncePer24hDuration", func() {
 		var (
+			ctx          = context.TODO()
 			handlerFuncs = handler.Funcs{}
 			queue        workqueue.RateLimitingInterface
 			fakeClock    *testclock.FakeClock
@@ -69,7 +71,7 @@ var _ = Describe("EventHandler", func() {
 				Object: backupBucket,
 			}
 			fakeClock.Step(24 * time.Hour)
-			handlerFuncs.Create(evt, queue)
+			handlerFuncs.Create(ctx, evt, queue)
 			verifyQueue(queue)
 		})
 
@@ -78,7 +80,7 @@ var _ = Describe("EventHandler", func() {
 			evt := event.CreateEvent{
 				Object: backupBucket,
 			}
-			handlerFuncs.Create(evt, queue)
+			handlerFuncs.Create(ctx, evt, queue)
 			Expect(queue.Len()).To(Equal(0))
 			fakeClock.Step(1 * time.Second)
 			Eventually(func() int {
@@ -92,7 +94,7 @@ var _ = Describe("EventHandler", func() {
 				ObjectNew: backupBucket,
 				ObjectOld: backupBucket,
 			}
-			handlerFuncs.Update(evt, queue)
+			handlerFuncs.Update(ctx, evt, queue)
 			verifyQueue(queue)
 		})
 
@@ -100,7 +102,7 @@ var _ = Describe("EventHandler", func() {
 			evt := event.DeleteEvent{
 				Object: backupBucket,
 			}
-			handlerFuncs.Delete(evt, queue)
+			handlerFuncs.Delete(ctx, evt, queue)
 			verifyQueue(queue)
 		})
 	})
