@@ -2929,7 +2929,7 @@ func (in *NginxIngress) DeepCopyInto(out *NginxIngress) {
 	}
 	if in.ExternalTrafficPolicy != nil {
 		in, out := &in.ExternalTrafficPolicy, &out.ExternalTrafficPolicy
-		*out = new(v1.ServiceExternalTrafficPolicyType)
+		*out = new(v1.ServiceExternalTrafficPolicy)
 		**out = **in
 	}
 	return
@@ -3902,7 +3902,7 @@ func (in *SeedSettingLoadBalancerServices) DeepCopyInto(out *SeedSettingLoadBala
 	}
 	if in.ExternalTrafficPolicy != nil {
 		in, out := &in.ExternalTrafficPolicy, &out.ExternalTrafficPolicy
-		*out = new(v1.ServiceExternalTrafficPolicyType)
+		*out = new(v1.ServiceExternalTrafficPolicy)
 		**out = **in
 	}
 	if in.Zones != nil {
@@ -3937,7 +3937,7 @@ func (in *SeedSettingLoadBalancerServicesZones) DeepCopyInto(out *SeedSettingLoa
 	}
 	if in.ExternalTrafficPolicy != nil {
 		in, out := &in.ExternalTrafficPolicy, &out.ExternalTrafficPolicy
-		*out = new(v1.ServiceExternalTrafficPolicyType)
+		*out = new(v1.ServiceExternalTrafficPolicy)
 		**out = **in
 	}
 	return
