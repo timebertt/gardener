@@ -168,9 +168,13 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *c
 			RecoverPanic: pointer.Bool(true),
 		},
 
-		ClientDisableCacheFor: []client.Object{
-			&corev1.Event{},
-			&eventsv1.Event{},
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{
+					&corev1.Event{},
+					&eventsv1.Event{},
+				},
+			},
 		},
 	})
 	if err != nil {
@@ -258,9 +262,11 @@ func (g *garden) Start(ctx context.Context) error {
 		opts.Scheme = kubernetes.GardenScheme
 		opts.Logger = log
 
-		opts.ClientDisableCacheFor = []client.Object{
-			&corev1.Event{},
-			&eventsv1.Event{},
+		opts.Client.Cache = &client.CacheOptions{
+			DisableFor: []client.Object{
+				&corev1.Event{},
+				&eventsv1.Event{},
+			},
 		}
 
 		opts.NewCache = func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
@@ -312,7 +318,22 @@ func (g *garden) Start(ctx context.Context) error {
 		// namespace (e.g., backup secret in the SeedSpec). Hence, let's use a fallback client which falls back to an
 		// uncached reader in case it fails to read objects from the cache.
 		opts.NewClient = func(config *rest.Config, options client.Options) (client.Client, error) {
-			return client.New(config, options)
+			uncachedOptions := options
+			uncachedOptions.Cache = nil
+			uncachedClient, err := client.New(config, uncachedOptions)
+			if err != nil {
+				return nil, err
+			}
+
+			cachedClient, err := client.New(config, options)
+			if err != nil {
+				return nil, err
+			}
+
+			return &kubernetes.FallbackClient{
+				Client: cachedClient,
+				Reader: uncachedClient,
+			}, nil
 		}
 	})
 	if err != nil {
