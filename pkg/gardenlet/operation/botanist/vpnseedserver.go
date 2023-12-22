@@ -20,6 +20,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
 )
@@ -45,6 +46,8 @@ func (b *Botanist) DefaultVPNSeedServer() (vpnseedserver.Interface, error) {
 			ServiceCIDR: b.Shoot.Networks.Services.String(),
 			// NodeCIDR is set in DeployVPNServer to handle dynamice node network CIDRs
 			IPFamilies: b.Shoot.GetInfo().Spec.Networking.IPFamilies,
+			// TODO(VPN) select the IPv6 VPN default network when IPv6 is used
+			VPNCIDR: ptr.Deref(b.Seed.GetInfo().Spec.Networks.VPN, v1beta1constants.DefaultVPNRange),
 		},
 		Replicas:                             b.Shoot.GetReplicas(1),
 		HighAvailabilityEnabled:              b.Shoot.VPNHighAvailabilityEnabled,
