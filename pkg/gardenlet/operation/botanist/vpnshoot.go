@@ -18,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/imagevector"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	vpnshoot "github.com/gardener/gardener/pkg/component/networking/vpn/shoot"
@@ -46,6 +47,12 @@ func (b *Botanist) DefaultVPNShoot() (vpnshoot.Interface, error) {
 		HighAvailabilityNumberOfSeedServers:  b.Shoot.VPNHighAvailabilityNumberOfSeedServers,
 		HighAvailabilityNumberOfShootClients: b.Shoot.VPNHighAvailabilityNumberOfShootClients,
 		KubernetesVersion:                    b.Shoot.KubernetesVersion,
+	}
+
+	if gardencorev1beta1.IsIPv6SingleStack(b.Shoot.GetInfo().Spec.Networking.IPFamilies) {
+		values.ReversedVPN.Network = ptr.Deref(b.Seed.GetInfo().Spec.Networks.VPN, v1beta1constants.DefaultVPNRangeV6)
+	} else {
+		values.ReversedVPN.Network = ptr.Deref(b.Seed.GetInfo().Spec.Networks.VPN, v1beta1constants.DefaultVPNRange)
 	}
 
 	return vpnshoot.New(
