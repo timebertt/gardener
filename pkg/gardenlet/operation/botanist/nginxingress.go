@@ -54,6 +54,7 @@ func (b *Botanist) DefaultNginxIngress() (component.DeployWaiter, error) {
 		externalTrafficPolicy,
 		v1beta1constants.ShootNginxIngressClass,
 		nil,
+		"",
 		nil,
 	)
 }

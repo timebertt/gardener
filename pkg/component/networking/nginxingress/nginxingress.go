@@ -103,6 +103,8 @@ type Values struct {
 	VPAEnabled bool
 	// WildcardIngressDomains are the wildcard domains used by all ingress resources exposed by nginx-ingress.
 	WildcardIngressDomains []string
+	// IstioIngressGatewayNamespace is the namespace of the used istio ingress gateway.
+	IstioIngressGatewayNamespace string
 	// IstioIngressGatewayLabels are the labels for identifying the used istio ingress gateway.
 	IstioIngressGatewayLabels map[string]string
 }
@@ -216,6 +218,9 @@ func (n *nginxIngress) computeResourcesData() (map[string][]byte, error) {
 				corev1.ResourceMemory: resource.MustParse("375Mi"),
 			},
 		}
+
+		serviceName       = n.getName("Service", false)
+		publishServiceKey = client.ObjectKey{Namespace: n.values.TargetNamespace, Name: serviceName}
 	)
 
 	if n.values.ClusterType == component.ClusterTypeSeed {
@@ -248,10 +253,14 @@ func (n *nginxIngress) computeResourcesData() (map[string][]byte, error) {
 		}
 	}
 
+	if istio {
+		publishServiceKey = _
+	}
+
 	var (
 		serviceController = &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        n.getName("Service", false),
+				Name:        serviceName,
 				Namespace:   n.values.TargetNamespace,
 				Labels:      n.getLabels(LabelValueController, false),
 				Annotations: serviceAnnotations,
@@ -511,7 +520,7 @@ func (n *nginxIngress) computeResourcesData() (map[string][]byte, error) {
 							Name:            n.getName("Container", false),
 							Image:           n.values.ImageController,
 							ImagePullPolicy: corev1.PullIfNotPresent,
-							Args:            n.getArgs(configMap.Name, serviceController.Name),
+							Args:            n.getArgs(configMap.Name, publishServiceKey),
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
 									Drop: []corev1.Capability{"ALL"},
@@ -776,12 +785,12 @@ func (n *nginxIngress) getLabels(componentLabelValue string, optionalLabels bool
 	return labels
 }
 
-func (n *nginxIngress) getArgs(configMapName, serviceNameController string) []string {
+func (n *nginxIngress) getArgs(configMapName string, publishServiceKey client.ObjectKey) []string {
 	out := []string{
 		"/nginx-ingress-controller",
 		"--default-backend-service=" + n.values.TargetNamespace + "/" + n.getName("Service", true),
 		"--enable-ssl-passthrough=true",
-		"--publish-service=" + n.values.TargetNamespace + "/" + serviceNameController,
+		"--publish-service=" + publishServiceKey.Namespace + "/" + publishServiceKey.Name,
 		"--election-id=" + n.getName("Lease", false),
 		"--update-status=true",
 		"--annotations-prefix=nginx.ingress.kubernetes.io",

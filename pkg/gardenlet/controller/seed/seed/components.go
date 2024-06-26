@@ -156,7 +156,7 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
-	c.nginxIngressController, err = r.newNginxIngressController(seed, c.istioDefaultLabels)
+	c.nginxIngressController, err = r.newNginxIngressController(seed, c.istioDefaultNamespace, c.istioDefaultLabels)
 	if err != nil {
 		return
 	}
@@ -839,7 +839,7 @@ func (r *Reconciler) newClusterIdentity(seed *gardencorev1beta1.Seed) component.
 	return clusteridentity.NewForSeed(r.SeedClientSet.Client(), r.GardenNamespace, *seed.Status.ClusterIdentity)
 }
 
-func (r *Reconciler) newNginxIngressController(seed *seedpkg.Seed, istioDefaultLabels map[string]string) (component.DeployWaiter, error) {
+func (r *Reconciler) newNginxIngressController(seed *seedpkg.Seed, istioIngressGatewayNamespace string, istioDefaultLabels map[string]string) (component.DeployWaiter, error) {
 	providerConfig, err := getConfig(seed.GetInfo())
 	if err != nil {
 		return nil, err
@@ -859,6 +859,7 @@ func (r *Reconciler) newNginxIngressController(seed *seedpkg.Seed, istioDefaultL
 		"",
 		v1beta1constants.SeedNginxIngressClass,
 		[]string{seed.GetIngressFQDN("*")},
+		istioIngressGatewayNamespace,
 		istioDefaultLabels,
 	)
 }
