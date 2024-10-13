@@ -1,0 +1,117 @@
+# A lima config to start Docker on macOS that can run the Gardener local setup.
+# Based on: https://github.com/lima-vm/lima/blob/v0.23.2/examples/docker-rootful.yaml
+
+# Use it with:
+# $ name=default
+# $ limactl start --name=$name ./example/gardener-local/lima/docker.yaml
+# $ docker context create lima-$default --docker "host=$(limactl list $name --format 'unix://{{.Dir}}/sock/docker.sock')"
+# $ docker context use lima-$default
+# $ make kind-up gardener-up
+
+# TODO: add reference to local setup docs
+
+# This template requires Lima v0.20.0 or later
+images:
+  # TODO: drop these or configure renovate
+  # Try to use release-yyyyMMdd image if available. Note that release-yyyyMMdd will be removed after several months.
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release-20240821/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+    digest: "sha256:0e25ca6ee9f08ec5d4f9910054b66ae7163c6152e81a3e67689d89bd6e4dfa69"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release-20240821/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+    digest: "sha256:5ecac6447be66a164626744a87a27fd4e6c6606dc683e0a233870af63df4276a"
+  # Fallback to the latest release image.
+  # Hint: run `limactl prune` to invalidate the cache
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+mounts:
+  - location: "~"
+    writable: true
+  - location: "/tmp/lima"
+    writable: true
+# containerd is managed by Docker, not by Lima, so the values are set to false here.
+containerd:
+  system: false
+  user: false
+provision:
+  - mode: system
+    # This script defines the host.docker.internal hostname when hostResolver is disabled.
+    # It is also needed for lima 0.8.2 and earlier, which does not support hostResolver.hosts.
+    # Names defined in /etc/hosts inside the VM are not resolved inside containers when
+    # using the hostResolver; use hostResolver.hosts instead (requires lima 0.8.3 or later).
+    script: |
+      #!/bin/sh
+      sed -i 's/host.lima.internal.*/host.lima.internal host.docker.internal/' /etc/hosts
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      command -v docker >/dev/null 2>&1 && exit 0
+      if [ ! -e /etc/systemd/system/docker.socket.d/override.conf ]; then
+        mkdir -p /etc/systemd/system/docker.socket.d
+        # Alternatively we could just add the user to the "docker" group, but that requires restarting the user session
+        cat <<-EOF >/etc/systemd/system/docker.socket.d/override.conf
+        [Socket]
+        SocketUser={{.User}}
+      EOF
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      curl -fsSL https://get.docker.com | sh
+  - mode: system
+    # TODO: add other local setup IP addresses (see kind-up.sh), also add to probes[1]
+    script: |
+      #!/bin/sh
+      ip address add 172.18.255.1 dev lo
+probes:
+  - script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      if ! timeout 30s bash -c "until command -v docker >/dev/null 2>&1; do sleep 3; done"; then
+        echo >&2 "docker is not installed yet"
+        exit 1
+      fi
+      if ! timeout 30s bash -c "until pgrep dockerd; do sleep 3; done"; then
+        echo >&2 "dockerd is not running"
+        exit 1
+      fi
+    hint: See "/var/log/cloud-init-output.log" in the guest
+  - script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      if ! timeout 30s bash -c "until ip address show dev lo | grep 172.18.255.1 >/dev/null 2>&1; do sleep 3; done"; then
+        echo >&2 "loopback device does not have 172.18.255.1 address assigned yet"
+        exit 1
+      fi
+    hint: See the output of "ip address show dev lo" in the guest
+hostResolver:
+  # hostResolver.hosts requires lima 0.8.3 or later. Names defined here will also
+  # resolve inside containers, and not just inside the VM itself.
+  hosts:
+    host.docker.internal: host.lima.internal
+portForwards:
+  - guestSocket: "/var/run/docker.sock"
+    hostSocket: "{{.Dir}}/sock/docker.sock"
+  # TODO: this probably doesn't work with multiple guest IPs
+  - guestIP: 172.18.255.1
+    # TODO: explain why this works
+    # See https://github.com/lima-vm/lima/blob/v0.23.2/pkg/hostagent/port_darwin.go#L36-L39
+    hostIP: 0.0.0.0
+message: |
+  To run `docker` on the host (assumes docker-cli is installed), run the following commands:
+  ------
+  docker context create lima-{{.Name}} --docker "host=unix://{{.Dir}}/sock/docker.sock"
+  docker context use lima-{{.Name}}
+  make kind-up gardener-up
+  ------
+
+# TODO: drop these fields in favor of adding docs how to configure the VM via flags
+cpus: 10
+memory: 28GiB
+disk: 100GiB
+vmType: vz
+mountType: virtiofs
+# TODO: probably not needed?
+networks:
+  - vzNAT: true
