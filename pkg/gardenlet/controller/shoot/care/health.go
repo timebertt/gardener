@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/rest"
+	nodeutil "k8s.io/component-helpers/node/util"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -653,6 +654,7 @@ func (h *Health) CheckClusterNodes(
 		nodeNotManagedByMCM int
 	)
 
+	// count ready nodes related to machine objects
 	for _, node := range nodeList.Items {
 		if metav1.HasAnnotation(node.ObjectMeta, annotationKeyNotManagedByMCM) && node.Annotations[annotationKeyNotManagedByMCM] == "1" {
 			nodeNotManagedByMCM++
@@ -661,11 +663,18 @@ func (h *Health) CheckClusterNodes(
 		if node.Spec.Unschedulable {
 			continue
 		}
-		for _, condition := range node.Status.Conditions {
-			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
-				readyNodes++
+		_, readyCondition := nodeutil.GetNodeCondition(&node.Status, corev1.NodeReady)
+		if readyCondition == nil || readyCondition.Status != corev1.ConditionTrue {
+			continue
+		}
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == v1beta1constants.TaintNodeCriticalComponentsNotReady {
+				// node is ready but not all node-critical components are ready
+				continue
 			}
 		}
+
+		readyNodes++
 	}
 
 	// only nodes that are managed by MCM is considered
