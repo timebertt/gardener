@@ -5,7 +5,9 @@
 package kubernetes
 
 import (
+	"context"
 	"errors"
+	"net"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -45,6 +47,18 @@ type ConfigFunc func(config *Config) error
 func WithRESTConfig(restConfig *rest.Config) ConfigFunc {
 	return func(config *Config) error {
 		config.restConfig = restConfig
+		return nil
+	}
+}
+
+// WithDial returns a ConfigFunc that sets the passed dial function on the REST config of the Config object.
+// This can be used for connecting to an API server via a bastion host.
+func WithDial(dial func(ctx context.Context, network, addr string) (net.Conn, error)) ConfigFunc {
+	return func(config *Config) error {
+		if config.restConfig == nil {
+			return errors.New("REST config must be set before setting dial")
+		}
+		config.restConfig.Dial = dial
 		return nil
 	}
 }

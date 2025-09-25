@@ -71,7 +71,7 @@ func run(ctx context.Context, opts *Options) error {
 	if err != nil {
 		return fmt.Errorf("failed creating autonomous botanist: %w", err)
 	}
-	b.SeedClientSet, err = b.CreateClientSet(ctx)
+	b.SeedClientSet, err = b.NewLocalClientSet(ctx)
 	if err != nil {
 		return fmt.Errorf("failed creating client set for autonomous shoot: %w", err)
 	}

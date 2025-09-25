@@ -66,6 +66,7 @@ func AddToManagerWithOptions(mgr manager.Manager, _ AddOptions) (*extensionswebh
 		ObjectSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 			{Key: "app", Operator: metav1.LabelSelectorOpIn, Values: []string{
 				"machine",
+				"bastion",
 				"dependency-watchdog-prober",
 				"blackbox-exporter",
 			}},

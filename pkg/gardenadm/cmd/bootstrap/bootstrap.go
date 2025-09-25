@@ -308,8 +308,17 @@ func run(ctx context.Context, opts *Options) error {
 			},
 			Dependencies: flow.NewTaskIDs(bootstrapControlPlane),
 		})
+		initializeClientSet = g.Add(flow.Task{
+			Name: "Initializing connection to Kubernetes control plane",
+			Fn: flow.TaskFn(func(ctx context.Context) error {
+				clientSet, err = b.NewRemoteClientSet(ctx)
+				b.ShootClientSet = clientSet
+				return err
+			}).RetryUntilTimeout(2*time.Second, time.Minute),
+			Dependencies: flow.NewTaskIDs(fetchKubeconfig),
+		})
 
-		_ = fetchKubeconfig
+		_ = initializeClientSet
 
 		// In contrast to the usual Shoot migrate flow, we don't delete the shoot control plane namespace at the end.
 		// The bootstrap cluster is designed to be temporary and thrown away after successfully executing

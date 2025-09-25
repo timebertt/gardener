@@ -18,5 +18,5 @@ import (
 // CreateClientSet creates a new client set using the AutonomousBotanist to create the client set.
 // Exposed for unit testing.
 var CreateClientSet = func(ctx context.Context, log logr.Logger) (kubernetes.Interface, error) {
-	return (&botanist.AutonomousBotanist{Botanist: &botanistpkg.Botanist{Operation: &operation.Operation{Logger: log}}}).CreateClientSet(ctx)
+	return (&botanist.AutonomousBotanist{Botanist: &botanistpkg.Botanist{Operation: &operation.Operation{Logger: log}}}).NewLocalClientSet(ctx)
 }

@@ -396,7 +396,7 @@ func bootstrapControlPlane(ctx context.Context, opts *Options) (*botanist.Autono
 		initializeClientSet = g.Add(flow.Task{
 			Name: "Initializing connection to Kubernetes control plane",
 			Fn: flow.TaskFn(func(_ context.Context) error {
-				clientSet, err = b.CreateClientSet(ctx)
+				clientSet, err = b.NewLocalClientSet(ctx)
 				return err
 			}).RetryUntilTimeout(2*time.Second, time.Minute),
 			Dependencies: flow.NewTaskIDs(applyOperatingSystemConfig),

@@ -313,8 +313,9 @@ func NewClientSetFromFile(kubeconfigPath string, scheme *runtime.Scheme) (kubern
 	)
 }
 
-// CreateClientSet creates a client set for the control plane.
-func (b *AutonomousBotanist) CreateClientSet(ctx context.Context) (kubernetes.Interface, error) {
+// NewLocalClientSet creates a client set for the control plane running on the local machine, i.e., from
+// /etc/kubernetes/admin.conf. It ensures the kube-apiserver reports readiness via its /readyz endpoint.
+func (b *AutonomousBotanist) NewLocalClientSet(ctx context.Context) (kubernetes.Interface, error) {
 	pathKubeconfig := PathKubeconfig
 	if path := os.Getenv("KUBECONFIG"); path != "" {
 		pathKubeconfig = path
@@ -347,6 +348,18 @@ func (b *AutonomousBotanist) CreateClientSet(ctx context.Context) (kubernetes.In
 	}
 
 	return clientSet, nil
+}
+
+// NewRemoteClientSet creates a client set for the control plane of the autonomous shoot. It reads the kubeconfig
+// from the kubeconfig secret in the shoot namespace of the bootstrap cluster. It connects to the control plane via the
+// bastion host.
+func (b *AutonomousBotanist) NewRemoteClientSet(ctx context.Context) (kubernetes.Interface, error) {
+	return kubernetes.NewClientFromSecret(ctx, b.SeedClientSet.Client(), b.Shoot.ControlPlaneNamespace, KubeconfigSecretName,
+		kubernetes.WithDial(b.Bastion.Connection.DialContext),
+		kubernetes.WithClientOptions(client.Options{Scheme: kubernetes.ShootScheme}),
+		kubernetes.WithClientConnectionOptions(componentbaseconfigv1alpha1.ClientConnectionConfiguration{QPS: 100, Burst: 130}),
+		kubernetes.WithDisabledCachedClient(),
+	)
 }
 
 // NewWithConfig in alias for kubernetes.NewWithConfig.
