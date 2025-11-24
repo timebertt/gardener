@@ -1292,6 +1292,11 @@ profiles:
       kustomize:
         paths:
           - dev-setup/gardenadm/resources/overlays/managed-infra
+  - name: gind
+    manifests:
+      kustomize:
+        paths:
+          - dev-setup/gardenadm/resources/overlays/gind
 ---
 apiVersion: skaffold/v4beta12
 kind: Config
@@ -1327,26 +1332,6 @@ deploy:
               - bash
               - -ec
               - |
-                set -o errexit
-                set -o nounset
-                set -o pipefail
-
-                echo "> Prepare temporary directory for image pull and mount"
-                tmp_dir="$(mktemp -d)"
-                unmount() {
-                  ctr images unmount "$tmp_dir" && rm -rf "$tmp_dir"
-                }
-                trap unmount EXIT
-
-                image="$(cat /tmp/.skaffold-image)"
-
-                echo "> Pull gardenadm image and mount it to the temporary directory"
-                ctr images pull --hosts-dir "/etc/containerd/certs.d" "$image"
-                ctr images mount "$image" "$tmp_dir"
-
-                echo "> Copy gardenadm binary to host (/gardenadm) and make it executable"
-                mkdir -p "/gardenadm"
-                cp -f "$tmp_dir/ko-app/gardenadm" "/gardenadm"
-                chmod +x "/gardenadm/gardenadm"
+                /install-gardenadm.sh $(cat /tmp/.skaffold-image)
             podName: machine-*
             containerName: node
