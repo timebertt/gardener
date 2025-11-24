@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - patch: |
+      - op: replace
+        path: /spec/runtimeCluster/networking/nodes
+        value:
+        -  10.0.0.0/16
+      - op: replace
+        path: /spec/runtimeCluster/networking/pods
+        value:
+        - 10.3.0.0/16
+      - op: replace
+        path: /spec/runtimeCluster/networking/services
+        value:
+        - 10.4.0.0/16
+    target:
+      group: operator.gardener.cloud
+      kind: Garden
+      name: local

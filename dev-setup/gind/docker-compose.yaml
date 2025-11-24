@@ -1,0 +1,109 @@
+services:
+  control-plane:
+    hostname: gind-control-plane
+    build:
+      context: ../../pkg/provider-local/node
+      dockerfile: Dockerfile
+    ports:
+    - "6443:443"
+    volumes:
+    - /lib/modules:/lib/modules:ro
+    - /var
+    - ../gardenadm/resources/generated:/gardenadm
+    environment:
+      PATH: /gardenadm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      IMAGEVECTOR_OVERWRITE: /gardenadm/.imagevector-overwrite.yaml
+      IMAGEVECTOR_OVERWRITE_CHARTS: /gardenadm/.imagevector-overwrite-charts.yaml
+    privileged: true
+    security_opt:
+    - seccomp=unconfined
+    - apparmor=unconfined
+    tmpfs:
+    - /tmp
+    - /run
+    networks:
+      gind:
+        aliases:
+        - api.root.garden.local.gardener.cloud
+
+  registry:
+    image: europe-docker.pkg.dev/gardener-project/releases/3rd/registry:3.0.0
+    ports:
+    - "5001:5001"
+    environment:
+      REGISTRY_HTTP_ADDR: ":5001"
+    volumes:
+    - ../../dev/local-registry/localhost:/var/lib/registry
+    - ./config.yaml:/etc/distribution/config.yml
+    networks:
+      gind:
+        aliases:
+        - garden.local.gardener.cloud
+
+  registry-gcr:
+    image: europe-docker.pkg.dev/gardener-project/releases/3rd/registry:3.0.0
+    ports:
+    - "5003:5003"
+    environment:
+      REGISTRY_HTTP_ADDR: ":5003"
+      REGISTRY_PROXY_REMOTEURL: https://gcr.io
+    volumes:
+    - ../../dev/local-registry/gcr:/var/lib/registry
+    - ./config.yaml:/etc/distribution/config.yml
+    networks:
+      gind:
+        aliases:
+        - garden.local.gardener.cloud
+
+  registry-k8s:
+    image: europe-docker.pkg.dev/gardener-project/releases/3rd/registry:3.0.0
+    ports:
+    - "5006:5006"
+    environment:
+      REGISTRY_HTTP_ADDR: ":5006"
+      REGISTRY_PROXY_REMOTEURL: https://registry.k8s.io
+    volumes:
+    - ../../dev/local-registry/k8s:/var/lib/registry
+    - ./config.yaml:/etc/distribution/config.yml
+    networks:
+      gind:
+        aliases:
+        - garden.local.gardener.cloud
+
+  registry-quay:
+    image: europe-docker.pkg.dev/gardener-project/releases/3rd/registry:3.0.0
+    ports:
+    - "5007:5007"
+    environment:
+      REGISTRY_HTTP_ADDR: ":5007"
+      REGISTRY_PROXY_REMOTEURL: https://quay.io
+    volumes:
+    - ../../dev/local-registry/quay:/var/lib/registry
+    - ./config.yaml:/etc/distribution/config.yml
+    networks:
+      gind:
+        aliases:
+        - garden.local.gardener.cloud
+
+  registry-europe-docker-pkg-dev:
+    image: europe-docker.pkg.dev/gardener-project/releases/3rd/registry:3.0.0
+    ports:
+    - "5008:5008"
+    environment:
+      REGISTRY_HTTP_ADDR: ":5008"
+      REGISTRY_PROXY_REMOTEURL: https://europe-docker.pkg.dev
+    volumes:
+    - ../../dev/local-registry/europe-docker-pkg-dev:/var/lib/registry
+    - ./config.yaml:/etc/distribution/config.yml
+    networks:
+      gind:
+        aliases:
+        - garden.local.gardener.cloud
+
+networks:
+  gind:
+    name: gind
+    ipam:
+      config:
+      - subnet: 10.0.0.0/16
+        gateway: 10.0.0.1

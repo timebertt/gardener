@@ -10,7 +10,7 @@ COMMAND="${1:-up}"
 VALID_COMMANDS=("up" "down")
 
 SCENARIO="${SCENARIO:-unmanaged-infra}"
-VALID_SCENARIOS=("unmanaged-infra" "managed-infra" "connect")
+VALID_SCENARIOS=("unmanaged-infra" "managed-infra" "connect" "gind")
 
 valid_scenario=false
 for scenario in "${VALID_SCENARIOS[@]}"; do

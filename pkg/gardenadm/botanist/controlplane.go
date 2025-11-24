@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-cmp/cmp"
@@ -323,14 +322,6 @@ func (b *GardenadmBotanist) CreateClientSet(ctx context.Context) (kubernetes.Int
 	if err != nil {
 		b.Logger.Info("Waiting for kube-apiserver to start", "error", err.Error())
 		return nil, fmt.Errorf("failed creating client set: %w", err)
-	}
-
-	clientSet.Start(ctx)
-
-	waitContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if !clientSet.WaitForCacheSync(waitContext) {
-		return nil, fmt.Errorf("timed out waiting for caches")
 	}
 
 	result := clientSet.RESTClient().Get().AbsPath("/readyz").Do(ctx)
