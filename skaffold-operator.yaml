@@ -1025,6 +1025,7 @@ profiles:
       - env: SCENARIO=single-node
       - env: SCENARIO=single-node-ipv6
       - env: SCENARIO=single-node-dual
+      - env: SCENARIO=single-node-gind
     patches:
       - op: replace
         path: /deploy/helm/releases/0/setValueTemplates/replicaCount

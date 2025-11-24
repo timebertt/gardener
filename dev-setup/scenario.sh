@@ -23,6 +23,10 @@ function detect_scenario() {
     exit 1
   fi
 
+  if grep -q "gind-control-plane" <<< "$nodes"; then
+    export SCENARIO="${SCENARIO}-gind"
+  fi
+
   if [[ "$IPFAMILY" == "ipv6" ]]; then
     export SCENARIO="${SCENARIO}-ipv6"
   elif [[ "$IPFAMILY" == "dual" ]]; then

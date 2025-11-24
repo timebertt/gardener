@@ -17,6 +17,8 @@ COPY run-userdata.sh /run-userdata.sh
 COPY run-userdata.service /etc/systemd/system
 RUN systemctl enable run-userdata.service
 
+COPY install-gardenadm.sh /install-gardenadm.sh
+
 RUN runc --version ; containerd --version
 
 RUN chmod 755 /etc/sysctl.d/
