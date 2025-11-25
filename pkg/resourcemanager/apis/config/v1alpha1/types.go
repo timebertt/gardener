@@ -369,6 +369,10 @@ const (
 	DefaultResourceClass = "resources"
 	// AllResourceClass is used as resource class when all values for resource classes should be covered.
 	AllResourceClass = "*"
+	// SelfHostedShootResourceClass is a special resource class that makes gardener-resource-manager cover all
+	// ManagedResources in the kube-system namespace (.spec.class is ignored entirely), while in all other namespaces
+	// only ManagedResources with .spec.class=seed are covered.
+	SelfHostedShootResourceClass = "self-hosted-shoot"
 
 	// HostsConfigMapKey defines the key in the configmap that contains the kube-apiserver hosts.
 	HostsConfigMapKey = "hosts"

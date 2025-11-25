@@ -127,7 +127,7 @@ func selfHostedShootResourceManager() resourcemanager.Values {
 	applyDefaults(&values, runtimeValues)
 	applyDefaults(&values, targetValues)
 
-	values.ResourceClass = ptr.To(resourcemanagerconfigv1alpha1.AllResourceClass)
+	values.ResourceClass = ptr.To(resourcemanagerconfigv1alpha1.SelfHostedShootResourceClass)
 	values.ResponsibilityMode = resourcemanager.ForSelfHostedShoot
 
 	return values

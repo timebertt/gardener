@@ -7,12 +7,14 @@ package predicate
 import (
 	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 )
@@ -42,7 +44,7 @@ func NewClassFilter(class string) *ClassFilter {
 	}
 
 	finalizer := FinalizerName + "-" + class
-	if class == resourcemanagerconfigv1alpha1.DefaultResourceClass || class == resourcemanagerconfigv1alpha1.AllResourceClass {
+	if class == resourcemanagerconfigv1alpha1.DefaultResourceClass || class == resourcemanagerconfigv1alpha1.AllResourceClass || class == resourcemanagerconfigv1alpha1.SelfHostedShootResourceClass {
 		finalizer = FinalizerName
 	}
 
@@ -68,9 +70,16 @@ func (f *ClassFilter) Responsible(o runtime.Object) bool {
 		return true
 	}
 
-	r := o.(*resourcesv1alpha1.ManagedResource)
-	c := ptr.Deref(r.Spec.Class, "")
-	return c == f.resourceClass || (c == "" && f.resourceClass == resourcemanagerconfigv1alpha1.DefaultResourceClass)
+	var (
+		managedResource = o.(*resourcesv1alpha1.ManagedResource)
+		class           = ptr.Deref(managedResource.Spec.Class, "")
+	)
+
+	if f.resourceClass == resourcemanagerconfigv1alpha1.SelfHostedShootResourceClass {
+		return managedResource.Namespace == metav1.NamespaceSystem || class == v1beta1constants.SeedResourceManagerClass
+	}
+
+	return class == f.resourceClass || (class == "" && f.resourceClass == resourcemanagerconfigv1alpha1.DefaultResourceClass)
 }
 
 // IsTransferringResponsibility checks if a Managed Resource has changed its class and should have its resources cleaned by the given controller instance.
