@@ -87,6 +87,7 @@ func (r *Reconciler) reconcile(
 	garden *operatorv1alpha1.Garden,
 	secretsManager secretsmanager.Interface,
 	targetVersion *semver.Version,
+	gardenRuntimeIsSelfHostedShoot bool,
 ) (
 	reconcile.Result,
 	error,
@@ -161,7 +162,7 @@ func (r *Reconciler) reconcile(
 		return reconcile.Result{}, err
 	}
 
-	if err := r.runRuntimeSetupFlow(ctx, log, garden, c, extensionList); err != nil {
+	if err := r.runRuntimeSetupFlow(ctx, log, garden, c, extensionList, gardenRuntimeIsSelfHostedShoot); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -223,8 +224,9 @@ func (r *Reconciler) reconcile(
 			Fn:   c.verticalPodAutoscaler.Deploy,
 		})
 		deployEtcdDruid = g.Add(flow.Task{
-			Name: "Deploying ETCD Druid",
-			Fn:   c.etcdDruid.Deploy,
+			Name:   "Deploying ETCD Druid",
+			Fn:     c.etcdDruid.Deploy,
+			SkipIf: gardenRuntimeIsSelfHostedShoot,
 		})
 		deployIstio = g.Add(flow.Task{
 			Name: "Deploying Istio",
@@ -244,6 +246,7 @@ func (r *Reconciler) reconcile(
 			Name:         "Waiting for ETCD Druid to be ready",
 			Fn:           c.etcdDruid.Wait,
 			Dependencies: flow.NewTaskIDs(deployEtcdDruid),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Reconciling DNSRecords for virtual garden cluster and ingress controller",
@@ -666,7 +669,14 @@ func (r *Reconciler) reconcile(
 }
 
 // runRuntimeSetupFlow deploys the most basic components and resources in the garden runtime cluster, which are later required by the reconciliation flow.
-func (r *Reconciler) runRuntimeSetupFlow(ctx context.Context, log logr.Logger, garden *operatorv1alpha1.Garden, c components, extensionList *operatorv1alpha1.ExtensionList) error {
+func (r *Reconciler) runRuntimeSetupFlow(
+	ctx context.Context,
+	log logr.Logger,
+	garden *operatorv1alpha1.Garden,
+	c components,
+	extensionList *operatorv1alpha1.ExtensionList,
+	gardenRuntimeIsSelfHostedShoot bool,
+) error {
 	var (
 		g = flow.NewGraph("Garden runtime setup")
 
@@ -683,12 +693,14 @@ func (r *Reconciler) runRuntimeSetupFlow(ctx context.Context, log logr.Logger, g
 			Fn:   c.persesCRD.Deploy,
 		})
 		deployExtensionCRDs = g.Add(flow.Task{
-			Name: "Deploying custom resource definitions for extensions",
-			Fn:   c.extensionCRD.Deploy,
+			Name:   "Deploying custom resource definitions for extensions",
+			Fn:     c.extensionCRD.Deploy,
+			SkipIf: gardenRuntimeIsSelfHostedShoot,
 		})
 		deployEtcdCRD = g.Add(flow.Task{
-			Name: "Deploying ETCD-related custom resource definitions",
-			Fn:   c.etcdCRD.Deploy,
+			Name:   "Deploying ETCD-related custom resource definitions",
+			Fn:     c.etcdCRD.Deploy,
+			SkipIf: gardenRuntimeIsSelfHostedShoot,
 		})
 		deployVPACRD = g.Add(flow.Task{
 			Name:   "Deploying custom resource definitions for VPA",
@@ -714,12 +726,14 @@ func (r *Reconciler) runRuntimeSetupFlow(ctx context.Context, log logr.Logger, g
 			Name:         "Waiting for custom resource definitions for extensions",
 			Fn:           c.extensionCRD.Wait,
 			Dependencies: flow.NewTaskIDs(deployExtensionCRDs),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 
 		waitForEtcdCRD = g.Add(flow.Task{
 			Name:         "Waiting for ETCD-related custom resource definitions",
 			Fn:           c.etcdCRD.Wait,
 			Dependencies: flow.NewTaskIDs(deployEtcdCRD),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 
 		waitForVPACRD = g.Add(flow.Task{
@@ -753,11 +767,13 @@ func (r *Reconciler) runRuntimeSetupFlow(ctx context.Context, log logr.Logger, g
 			Name:         "Deploying gardener-resource-manager",
 			Fn:           c.gardenerResourceManager.Deploy,
 			Dependencies: flow.NewTaskIDs(waitForEtcdCRD, waitForVPACRD, waitForIstioCRD, waitForOpenTelemetryCRD),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Waiting for gardener-resource-manager to be healthy",
 			Fn:           c.gardenerResourceManager.Wait,
 			Dependencies: flow.NewTaskIDs(deployGardenerResourceManager),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		deploySystemResources = g.Add(flow.Task{
 			Name:         "Deploying runtime system resources",

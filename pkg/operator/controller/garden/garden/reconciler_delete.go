@@ -48,6 +48,7 @@ func (r *Reconciler) delete(
 	garden *operatorv1alpha1.Garden,
 	secretsManager secretsmanager.Interface,
 	targetVersion *semver.Version,
+	gardenRuntimeIsSelfHostedShoot bool,
 ) (
 	reconcile.Result,
 	error,
@@ -297,6 +298,7 @@ func (r *Reconciler) delete(
 			Name:         "Destroying ETCD Druid",
 			Fn:           component.OpDestroyAndWait(c.etcdDruid).Destroy,
 			Dependencies: flow.NewTaskIDs(syncPointVirtualGardenControlPlaneDestroyed),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		destroyIstio = g.Add(flow.Task{
 			Name:         "Destroying Istio",
@@ -380,11 +382,13 @@ func (r *Reconciler) delete(
 			Name:         "Destroying and waiting for gardener-resource-manager to be deleted",
 			Fn:           component.OpWait(c.gardenerResourceManager).Destroy,
 			Dependencies: flow.NewTaskIDs(ensureNoManagedResourcesExistAnymore),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for extensions",
 			Fn:           component.OpWait(c.extensionCRD).Destroy,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for prometheus-operator",
@@ -416,6 +420,7 @@ func (r *Reconciler) delete(
 			Name:         "Destroying ETCD-related custom resource definitions",
 			Fn:           component.OpWait(c.etcdCRD).Destroy,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
+			SkipIf:       gardenRuntimeIsSelfHostedShoot,
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for perses-operator",

@@ -37,6 +37,7 @@ import (
 	"github.com/gardener/gardener/pkg/features"
 	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/flow"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	"github.com/gardener/gardener/pkg/utils/gardener/tokenrequest"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
@@ -112,14 +113,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, r.updateStatusOperationError(ctx, garden, err, operationType)
 	}
 
+	gardenRuntimeIsSelfHostedShoot, err := gardenletutils.SeedIsSelfHostedShoot(ctx, r.RuntimeClientSet.Client())
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
 	if garden.DeletionTimestamp != nil {
-		if result, err := r.delete(ctx, log, garden, secretsManager, targetVersion); err != nil {
+		if result, err := r.delete(ctx, log, garden, secretsManager, targetVersion, gardenRuntimeIsSelfHostedShoot); err != nil {
 			return result, r.updateStatusOperationError(ctx, garden, err, operationType)
 		}
 		return reconcile.Result{}, nil
 	}
 
-	if result, err := r.reconcile(ctx, log, garden, secretsManager, targetVersion); err != nil {
+	if result, err := r.reconcile(ctx, log, garden, secretsManager, targetVersion, gardenRuntimeIsSelfHostedShoot); err != nil {
 		return result, r.updateStatusOperationError(ctx, garden, err, operationType)
 	} else if result.Requeue {
 		return result, nil
