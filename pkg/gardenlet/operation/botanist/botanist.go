@@ -38,10 +38,12 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 		err error
 
 		identity   = v1beta1constants.SecretManagerIdentityGardenlet
+		namespaces = []string{b.Shoot.ControlPlaneNamespace}
 	)
 
 	if o.Shoot.IsSelfHosted() {
 		identity = v1beta1constants.SecretManagerIdentitySelfHostedShoot
+		namespaces = append(namespaces, v1beta1constants.GardenNamespace)
 	}
 
 	o.SecretsManager, err = secretsmanager.New(
@@ -54,7 +56,7 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 			CASecretAutoRotation: false,
 			SecretNamesToTimes:   b.lastSecretRotationStartTimes(),
 		},
-		b.Shoot.ControlPlaneNamespace,
+		namespaces...,
 	)
 	if err != nil {
 		return nil, err
