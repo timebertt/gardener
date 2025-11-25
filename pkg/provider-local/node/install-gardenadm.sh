@@ -17,8 +17,7 @@ echo "> Pull gardenadm image and mount it to the temporary directory"
 ctr images pull --hosts-dir "/etc/containerd/certs.d" "$image"
 ctr images mount "$image" "$tmp_dir"
 
-echo "> Copy gardenadm binary to host (/gardenadm) and make it executable"
-mkdir -p "/gardenadm"
-# TODO: use /opt/bin instead
-cp -f "$tmp_dir/ko-app/gardenadm" "/gardenadm"
-chmod +x "/gardenadm/gardenadm"
+echo "> Copy gardenadm binary to host (/opt/bin) and make it executable"
+mkdir -p "/opt/bin"
+cp -f "$tmp_dir/ko-app/gardenadm" "/opt/bin/gardenadm"
+chmod +x "/opt/bin/gardenadm"

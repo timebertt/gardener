@@ -11,7 +11,7 @@ services:
     - /var
     - ../gardenadm/resources/generated:/gardenadm
     environment:
-      PATH: /gardenadm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PATH: /opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       IMAGEVECTOR_OVERWRITE: /gardenadm/.imagevector-overwrite.yaml
       IMAGEVECTOR_OVERWRITE_CHARTS: /gardenadm/.imagevector-overwrite-charts.yaml
     privileged: true
