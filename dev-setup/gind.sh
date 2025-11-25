@@ -19,7 +19,7 @@ case "$COMMAND" in
 
     make gardenadm-up SCENARIO=gind SKAFFOLD_PLATFORM="linux/$(go env GOARCH)" SKAFFOLD_CHECK_CLUSTER_NODE_PLATFORMS=false
 
-    docker compose -f "$COMPOSE_FILE" exec control-plane bash -c '/install-gardenadm.sh $(cat /gardenadm/.skaffold-image) && gardenadm init -d /gardenadm/gind --skip-etcd-druid'
+    docker compose -f "$COMPOSE_FILE" exec control-plane bash -c '/install-gardenadm.sh $(cat /gardenadm/.skaffold-image) && gardenadm init -d /gardenadm/gind --skip-etcd-druid --skip-redeploy-into-pod-network'
 
     # add "172.18.255.5 api.root.garden.local.gardener.cloud" to /etc/hosts on your host
     docker compose -f "$COMPOSE_FILE" cp control-plane:/etc/kubernetes/admin.conf dev/kubeconfig-gind
