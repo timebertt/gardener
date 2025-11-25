@@ -5,7 +5,8 @@ services:
       context: ../../pkg/provider-local/node
       dockerfile: Dockerfile
     ports:
-    - "6443:443"
+    - "172.18.255.5:443:443" # self-hosted shoot API server
+    - "172.18.255.3:443:31443" # virtual garden istio ingress gateway
     volumes:
     - /lib/modules:/lib/modules:ro
     - /var
