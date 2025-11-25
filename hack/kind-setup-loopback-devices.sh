@@ -66,6 +66,14 @@ elif [[ "$CLUSTER_NAME" == "gardener-local2" || "$CLUSTER_NAME" == "gardener-loc
   fi
 fi
 
+# TODO: document adding this IP to /etc/hosts
+if [[ "$CLUSTER_NAME" == "gind" ]]; then
+  LOOPBACK_IP_ADDRESSES+=(172.18.255.5)
+  if [[ "$IPFAMILY" == "ipv6" ]] || [[ "$IPFAMILY" == "dual" ]]; then
+    LOOPBACK_IP_ADDRESSES+=(::5)
+  fi
+fi
+
 if ! command -v ip &>/dev/null; then
   if [[ "$OSTYPE" == "darwin"* ]]; then
     echo "'ip' command not found. Please install 'ip' command, refer https://github.com/gardener/gardener/blob/master/docs/development/local_setup.md#installing-iproute2" 1>&2
