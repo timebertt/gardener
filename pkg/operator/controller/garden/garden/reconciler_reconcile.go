@@ -30,7 +30,6 @@ import (
 	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	"k8s.io/component-base/version"
-	podsecurityadmissionapi "k8s.io/pod-security-admission/api"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -56,6 +55,7 @@ import (
 	gardenerapiserver "github.com/gardener/gardener/pkg/component/gardener/apiserver"
 	gardenerdashboard "github.com/gardener/gardener/pkg/component/gardener/dashboard"
 	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
+	"github.com/gardener/gardener/pkg/component/gardennamespace"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	kubeapiserverexposure "github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
 	"github.com/gardener/gardener/pkg/component/networking/istio"
@@ -106,17 +106,9 @@ func (r *Reconciler) reconcile(
 		}
 	}
 
-	// create + label garden namespace
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: r.GardenNamespace}}
-	log.Info("Labeling and annotating namespace", "namespaceName", namespace.Name)
-	if _, err := controllerutils.CreateOrGetAndMergePatch(ctx, r.RuntimeClientSet.Client(), namespace, func() error {
-		metav1.SetMetaDataLabel(&namespace.ObjectMeta, podsecurityadmissionapi.EnforceLevelLabel, string(podsecurityadmissionapi.LevelPrivileged))
-		metav1.SetMetaDataLabel(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigConsider, "true")
-		metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.GardenRole, v1beta1constants.GardenRoleGarden)
-		metav1.SetMetaDataAnnotation(&namespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZones, strings.Join(garden.Spec.RuntimeCluster.Provider.Zones, ","))
-		return nil
-	}); err != nil {
-		return reconcile.Result{}, err
+	log.Info("Labeling and annotating namespace", "namespaceName", r.GardenNamespace)
+	if err := gardennamespace.ReconcileGardenNamespace(ctx, r.RuntimeClientSet.Client(), r.GardenNamespace, garden.Spec.RuntimeCluster.Provider.Zones); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed to reconcile garden namespace %q: %w", r.GardenNamespace, err)
 	}
 
 	log.Info("Generating CA certificates for runtime and virtual clusters")
