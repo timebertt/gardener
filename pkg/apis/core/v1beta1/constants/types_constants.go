@@ -13,6 +13,9 @@ const (
 	SecretManagerIdentityControllerManager = "controller-manager"
 	// SecretManagerIdentityGardenlet is the identity for the secret manager used inside gardenlet.
 	SecretManagerIdentityGardenlet = "gardenlet"
+	// SecretManagerIdentitySelfHostedShoot is the identity for the secret manager used inside gardenadm or the shoot
+	// gardenlet.
+	SecretManagerIdentitySelfHostedShoot = "self-hosted-shoot"
 
 	// SecretNameCACluster is a constant for the name of a Kubernetes secret object that contains the CA
 	// certificate of a shoot cluster.
