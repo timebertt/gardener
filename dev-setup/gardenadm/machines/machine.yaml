@@ -24,7 +24,7 @@ spec:
           privileged: true
         env:
           - name: PATH
-            value: /gardenadm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            value: /opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           - name: IMAGEVECTOR_OVERWRITE
             value: /gardenadm/imagevector-overwrite.yaml
           - name: IMAGEVECTOR_OVERWRITE_CHARTS
