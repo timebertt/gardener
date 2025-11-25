@@ -31,6 +31,7 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	"github.com/gardener/gardener/pkg/component/extensions/bastion"
+	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	"github.com/gardener/gardener/pkg/gardenadm"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
@@ -58,6 +59,8 @@ type GardenadmBotanist struct {
 	Extensions []Extension
 	Resources  gardenadm.Resources
 
+	Components Components
+
 	// Bastion is only set for `gardenadm bootstrap`.
 	Bastion *bastion.Bastion
 
@@ -71,6 +74,12 @@ type GardenadmBotanist struct {
 	// sshConnection is the SSH connection to the first control plane machine. It is set by ConnectToControlPlaneMachine
 	// during `gardenadm bootstrap`.
 	sshConnection *sshutils.Connection
+}
+
+type Components struct {
+	RuntimeResourceManager resourcemanager.Interface
+
+	// TODO: move Bastion component here
 }
 
 // Extension contains the resources needed for an extension registration.
@@ -151,7 +160,12 @@ func NewGardenadmBotanist(
 		return nil, fmt.Errorf("failed creating botanist: %w", err)
 	}
 
-	if !gardenadmBotanist.Shoot.RunsControlPlane() {
+	if gardenadmBotanist.Shoot.RunsControlPlane() {
+		gardenadmBotanist.Components.RuntimeResourceManager, err = gardenadmBotanist.NewRuntimeGardenerResourceManager()
+		if err != nil {
+			return nil, fmt.Errorf("failed creating runtime gardener resource manager: %w", err)
+		}
+	} else {
 		gardenadmBotanist.Bastion = gardenadmBotanist.DefaultBastion()
 
 		// For `gardenadm bootstrap`, we don't initialize the control plane machines with a "full OSC".
