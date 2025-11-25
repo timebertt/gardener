@@ -393,6 +393,14 @@ import custom/*.server
 						{Port: &portDNSServerHost, Protocol: &protocolTCP}, // Lookup DNS due to cache miss
 						{Port: &portDNSServerHost, Protocol: &protocolUDP}, // Lookup DNS due to cache miss
 					},
+				}, {
+					// allow coredns to talk to docker embedded dns server
+					// there is an iptables rule translating the 192.168.65.254:53 address to something like 127.0.0.11:45097
+					// Hence, we need to allow the loopback address range here.
+					// TODO: consider moving this to provider-local
+					To: []networkingv1.NetworkPolicyPeer{
+						{IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.0/8"}},
+					},
 				}},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
 					Ports: []networkingv1.NetworkPolicyPort{
