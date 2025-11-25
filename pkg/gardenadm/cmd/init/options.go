@@ -14,6 +14,8 @@ import (
 type Options struct {
 	*cmd.Options
 	cmd.ManifestOptions
+
+	SkipEtcdDruid bool
 }
 
 // ParseArgs parses the arguments to the options.
@@ -33,4 +35,5 @@ func (o *Options) Complete() error {
 
 func (o *Options) addFlags(fs *pflag.FlagSet) {
 	o.ManifestOptions.AddFlags(fs)
+	fs.BoolVar(&o.SkipEtcdDruid, "skip-etcd-druid", false, "")
 }
