@@ -43,12 +43,12 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 		b.Logger.WithName("secretsmanager"),
 		clock.RealClock{},
 		b.SeedClientSet.Client(),
-		b.Shoot.ControlPlaneNamespace,
 		v1beta1constants.SecretManagerIdentityGardenlet,
 		secretsmanager.Config{
 			CASecretAutoRotation: false,
 			SecretNamesToTimes:   b.lastSecretRotationStartTimes(),
 		},
+		b.Shoot.ControlPlaneNamespace,
 	)
 	if err != nil {
 		return nil, err
