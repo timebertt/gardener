@@ -110,6 +110,7 @@ func (r *Reconciler) runReconcileSeedFlow(
 		if !seedIsGarden {
 			metav1.SetMetaDataLabel(&gardenNamespace.ObjectMeta, podsecurityadmissionapi.EnforceLevelLabel, string(podsecurityadmissionapi.LevelPrivileged))
 			metav1.SetMetaDataLabel(&gardenNamespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigConsider, "true")
+			metav1.SetMetaDataLabel(&gardenNamespace.ObjectMeta, v1beta1constants.GardenRole, v1beta1constants.GardenRoleGarden)
 			metav1.SetMetaDataAnnotation(&gardenNamespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZones, strings.Join(seed.GetInfo().Spec.Provider.Zones, ","))
 		}
 		return nil
