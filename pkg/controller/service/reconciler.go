@@ -36,7 +36,7 @@ const (
 	nodePortIstioIngressGatewayZone1 int32 = 30445
 	nodePortIstioIngressGatewayZone2 int32 = 30446
 
-	nodePortVirtualGardenKubeAPIServer int32 = 31443
+	nodePortVirtualGardenIstioIngressGateway int32 = 31443
 
 	nodePortHTTPProxyIstioIngressGateway      int32 = 32443
 	nodePortHTTPProxyIstioIngressGatewayZone0 int32 = 32444
@@ -56,12 +56,13 @@ const (
 
 // Reconciler is a reconciler for Service resources.
 type Reconciler struct {
-	Client    client.Client
-	HostIP    string
-	Zone0IP   string
-	Zone1IP   string
-	Zone2IP   string
-	BastionIP string
+	Client          client.Client
+	HostIP          string
+	VirtualGardenIP string
+	Zone0IP         string
+	Zone1IP         string
+	Zone2IP         string
+	BastionIP       string
 }
 
 // Reconcile reconciles Service resources.
@@ -134,12 +135,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		nodePortHTTPProxy = nodePortHTTPProxyIstioIngressGatewayZone2
 		ips = append(ips, r.Zone2IP)
 	case keyVirtualGardenIstioIngressGateway:
-		nodePort = nodePortVirtualGardenKubeAPIServer
-		nodes, err := r.getNodesInternalIPs(ctx, client.MatchingLabels{"node-role.kubernetes.io/control-plane": ""})
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		ips = append(ips, nodes...)
+		nodePort = nodePortVirtualGardenIstioIngressGateway
+		ips = append(ips, r.VirtualGardenIP)
 	}
 
 	if isBastion {
