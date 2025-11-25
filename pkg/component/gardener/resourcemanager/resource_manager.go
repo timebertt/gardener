@@ -320,7 +320,7 @@ type Values struct {
 	Zones []string
 	// TopologyAwareRoutingEnabled indicates whether topology-aware routing is enabled for the gardener-resource-manager
 	// service. This value is only applicable for the GRM that is deployed in the Shoot control plane (when
-	// ResponsibilityMode=ForTarget).
+	// ResponsibilityMode=ForShootOrVirtualGarden).
 	TopologyAwareRoutingEnabled bool
 	// IsWorkerless specifies whether the cluster has workers.
 	IsWorkerless bool
@@ -355,17 +355,17 @@ type PodKubeAPIServerLoadBalancingWebhookConfig struct {
 type ResponsibilityMode string
 
 const (
-	// ForSource is a deployment mode for a gardener-resource-manager deployed in a source cluster,
-	// taking over responsibilities for the source cluster only (e.g., GRM in a garden runtime or seed cluster).
-	ForSource ResponsibilityMode = "source"
-	// ForTarget is a deployment mode for a gardener-resource-manager deployed in a source cluster,
-	// taking over responsibilities for a target cluster (e.g., GRM in a garden runtime cluster, being responsible for
-	// the virtual garden cluster, or GRM in a seed cluster, being responsible for a shoot cluster).
-	ForTarget ResponsibilityMode = "target"
-	// ForSourceAndTarget is a deployment mode for a gardener-resource-manager deployed in a source cluster,
-	// taking over responsibilities for both the source and a target cluster (e.g., GRM in a self-hosted shoot cluster
-	// where the control plane is running in the cluster itself).
-	ForSourceAndTarget ResponsibilityMode = "both"
+	// ForSeedOrGardenRuntime is a deployment mode for a gardener-resource-manager deployed in a seed or in the garden
+	// runtime cluster, taking over responsibilities for the runtime cluster only.
+	ForSeedOrGardenRuntime ResponsibilityMode = "seed-or-garden-runtime"
+	// ForShootOrVirtualGarden is a deployment mode for a gardener-resource-manager deployed in a seed or garden runtime
+	// cluster, taking over responsibilities for a target cluster (e.g., GRM for the virtual garden cluster, or GRM for
+	// a shoot cluster).
+	ForShootOrVirtualGarden ResponsibilityMode = "shoot-or-virtual-garden"
+	// ForSelfHostedShoot is a deployment mode for a gardener-resource-manager deployed in a self-hosted shoot cluster
+	// (where the control plane is running in the cluster itself), taking over responsibilities for both the runtime and
+	// a target cluster.
+	ForSelfHostedShoot ResponsibilityMode = "self-hosted-shoot"
 )
 
 func (r *resourceManager) Deploy(ctx context.Context) error {
@@ -373,7 +373,7 @@ func (r *resourceManager) Deploy(ctx context.Context) error {
 		return err
 	}
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		r.secrets.shootAccess = r.newShootAccessSecret()
 		if err := r.secrets.shootAccess.WithTokenExpirationDuration("24h").Reconcile(ctx, r.client); err != nil {
 			return err
@@ -399,7 +399,7 @@ func (r *resourceManager) Deploy(ctx context.Context) error {
 		r.ensureServiceMonitor,
 	}
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		fns = append(fns, r.ensureShootResources)
 	} else {
 		fns = append(fns, r.ensureMutatingWebhookConfiguration)
@@ -419,7 +419,7 @@ func (r *resourceManager) Destroy(ctx context.Context) error {
 		r.emptyServiceMonitor(),
 	}
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		if err := managedresources.DeleteForShoot(ctx, r.client, r.namespace, ManagedResourceName); err != nil {
 			return err
 		}
@@ -489,7 +489,7 @@ func (r *resourceManager) ensureCustomResourceDefinition(ctx context.Context) er
 }
 
 func (r *resourceManager) ensureRBAC(ctx context.Context) error {
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		if r.values.WatchedNamespace == nil {
 			if err := r.ensureClusterRole(ctx, allowManagedResources(r.values.NamePrefix)); err != nil {
 				return err
@@ -631,7 +631,7 @@ func (r *resourceManager) ensureConfigMap(ctx context.Context, configMap *corev1
 		config.SourceClientConnection.Namespaces = []string{*r.values.WatchedNamespace}
 	}
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		config.TargetClientConnection = &resourcemanagerconfigv1alpha1.ClientConnection{
 			ClientConnectionConfiguration: componentbaseconfigv1alpha1.ClientConnectionConfiguration{
 				Kubeconfig: gardenerutils.PathGenericKubeconfig,
@@ -654,7 +654,7 @@ func (r *resourceManager) ensureConfigMap(ctx context.Context, configMap *corev1
 		}
 	}
 
-	if r.values.ResponsibilityMode == ForSource || r.values.ResponsibilityMode == ForSourceAndTarget {
+	if r.values.ResponsibilityMode == ForSeedOrGardenRuntime || r.values.ResponsibilityMode == ForSelfHostedShoot {
 		config.Webhooks.CRDDeletionProtection.Enabled = true
 		config.Webhooks.ExtensionValidation.Enabled = true
 	}
@@ -685,7 +685,7 @@ func (r *resourceManager) ensureConfigMap(ctx context.Context, configMap *corev1
 		config.Controllers.NodeAgentReconciliationDelay.MaxDelay = r.values.NodeAgentReconciliationMaxDelay
 	}
 
-	if r.values.ResponsibilityMode == ForTarget || r.values.ResponsibilityMode == ForSourceAndTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden || r.values.ResponsibilityMode == ForSelfHostedShoot {
 		config.Webhooks.SystemComponentsConfig = resourcemanagerconfigv1alpha1.SystemComponentsConfigWebhookConfig{
 			Enabled: true,
 			NodeSelector: map[string]string{
@@ -774,7 +774,7 @@ func (r *resourceManager) ensureService(ctx context.Context) error {
 			Protocol: ptr.To(corev1.ProtocolTCP),
 		}
 
-		if r.values.ResponsibilityMode != ForTarget {
+		if r.values.ResponsibilityMode != ForShootOrVirtualGarden {
 			utilruntime.Must(gardenerutils.InjectNetworkPolicyAnnotationsForSeedScrapeTargets(service, portMetrics))
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, resourcesv1alpha1.NetworkingFromWorldToPorts, fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, r.port))
 		} else {
@@ -785,7 +785,8 @@ func (r *resourceManager) ensureService(ctx context.Context) error {
 			}))
 		}
 
-		topologyAwareRoutingEnabled := r.values.TopologyAwareRoutingEnabled && r.values.ResponsibilityMode == ForTarget
+		// TODO: Consider enabling TAR even for seed/garden runtime/self-hosted shoots.
+		topologyAwareRoutingEnabled := r.values.TopologyAwareRoutingEnabled && r.values.ResponsibilityMode == ForShootOrVirtualGarden
 		gardenerutils.ReconcileTopologyAwareRoutingSettings(service, topologyAwareRoutingEnabled, r.values.RuntimeKubernetesVersion)
 
 		service.Spec.Selector = r.appLabel()
@@ -1039,7 +1040,7 @@ func (r *resourceManager) ensureDeployment(ctx context.Context, configMap *corev
 			},
 		}
 
-		if r.values.ResponsibilityMode == ForTarget {
+		if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 			clusterCASecret, found := r.secretsManager.Get(v1beta1constants.SecretNameCACluster)
 			if !found {
 				return fmt.Errorf("secret %q not found", v1beta1constants.SecretNameCACluster)
@@ -1087,7 +1088,7 @@ func (r *resourceManager) ensureDeployment(ctx context.Context, configMap *corev
 
 		utilruntime.Must(references.InjectAnnotations(deployment))
 
-		if r.values.ResponsibilityMode == ForTarget {
+		if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 			deployment.Labels = utils.MergeStringMaps(deployment.Labels, map[string]string{
 				resourcesv1alpha1.HighAvailabilityConfigType: resourcesv1alpha1.HighAvailabilityConfigTypeServer,
 			})
@@ -1210,7 +1211,7 @@ func (r *resourceManager) emptyPodDisruptionBudget() *policyv1.PodDisruptionBudg
 }
 
 func (r *resourceManager) getPrometheusLabel() string {
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		return shoot.Label
 	}
 	return seed.Label
@@ -1266,7 +1267,7 @@ func (r *resourceManager) ensureMutatingWebhookConfiguration(ctx context.Context
 
 func (r *resourceManager) emptyMutatingWebhookConfiguration() *admissionregistrationv1.MutatingWebhookConfiguration {
 	suffix := ""
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		suffix = "-shoot"
 	}
 	return &admissionregistrationv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: r.values.NamePrefix + v1beta1constants.DeploymentNameGardenerResourceManager + suffix, Namespace: r.namespace}}
@@ -1354,7 +1355,7 @@ func (r *resourceManager) newMutatingWebhookConfigurationWebhooks(
 		objectSelector    *metav1.LabelSelector
 	)
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		objectSelector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{
 				resourcesv1alpha1.ManagedBy: resourcesv1alpha1.GardenerManager,
@@ -1389,7 +1390,7 @@ func (r *resourceManager) newMutatingWebhookConfigurationWebhooks(
 		}
 	}
 
-	if r.values.ResponsibilityMode == ForTarget || r.values.ResponsibilityMode == ForSourceAndTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden || r.values.ResponsibilityMode == ForSelfHostedShoot {
 		webhooks = append(webhooks, NewSystemComponentsConfigMutatingWebhook(namespaceSelector, objectSelector, secretServerCA, buildClientConfigFn))
 	}
 
@@ -2023,7 +2024,7 @@ func NewEndpointSliceHintsMutatingWebhook(
 }
 
 func (r *resourceManager) buildWebhookNamespaceSelector() *metav1.LabelSelector {
-	if r.values.ResponsibilityMode == ForSourceAndTarget {
+	if r.values.ResponsibilityMode == ForSelfHostedShoot {
 		return &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{{
 				Key:      v1beta1constants.GardenRole,
@@ -2033,7 +2034,7 @@ func (r *resourceManager) buildWebhookNamespaceSelector() *metav1.LabelSelector 
 	}
 
 	operator := metav1.LabelSelectorOpIn
-	if r.values.ResponsibilityMode != ForTarget {
+	if r.values.ResponsibilityMode != ForShootOrVirtualGarden {
 		operator = metav1.LabelSelectorOpNotIn
 	}
 
@@ -2049,7 +2050,7 @@ func (r *resourceManager) buildWebhookNamespaceSelector() *metav1.LabelSelector 
 func (r *resourceManager) buildWebhookClientConfig(secretServerCA *corev1.Secret, path string) admissionregistrationv1.WebhookClientConfig {
 	clientConfig := admissionregistrationv1.WebhookClientConfig{CABundle: secretServerCA.Data[secrets.DataKeyCertificateBundle]}
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		clientConfig.URL = ptr.To(fmt.Sprintf("https://%s.%s:%d%s", r.values.NamePrefix+resourcemanagerconstants.ServiceName, r.namespace, serverServicePort, path))
 	} else {
 		clientConfig.Service = &admissionregistrationv1.ServiceReference{
@@ -2063,7 +2064,7 @@ func (r *resourceManager) buildWebhookClientConfig(secretServerCA *corev1.Secret
 }
 
 func (r *resourceManager) getLabels() map[string]string {
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		return utils.MergeStringMaps(r.appLabel(), map[string]string{
 			v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
 		})
@@ -2074,7 +2075,7 @@ func (r *resourceManager) getLabels() map[string]string {
 
 func (r *resourceManager) getDeploymentTemplateLabels() map[string]string {
 	role := v1beta1constants.GardenRoleSeed
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		role = v1beta1constants.GardenRoleControlPlane
 	}
 
@@ -2089,7 +2090,7 @@ func (r *resourceManager) getNetworkPolicyLabels() map[string]string {
 		v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer: v1beta1constants.LabelNetworkPolicyAllowed,
 	}
 
-	if r.values.ResponsibilityMode == ForTarget {
+	if r.values.ResponsibilityMode == ForShootOrVirtualGarden {
 		labels[gardenerutils.NetworkPolicyLabel(r.values.NamePrefix+v1beta1constants.DeploymentNameKubeAPIServer, kubeapiserverconstants.Port)] = v1beta1constants.LabelNetworkPolicyAllowed
 	}
 
@@ -2118,7 +2119,7 @@ func (r *resourceManager) Wait(ctx context.Context) error {
 	timeoutCtx, cancel := context.WithTimeout(ctx, TimeoutWaitForDeployment)
 	defer cancel()
 
-	if r.values.ResponsibilityMode != ForTarget {
+	if r.values.ResponsibilityMode != ForShootOrVirtualGarden {
 		desiredCRD, err := r.emptyCustomResourceDefinition()
 		if err != nil {
 			return err
@@ -2154,7 +2155,7 @@ func (r *resourceManager) SetBootstrapControlPlaneNode(b bool) {
 }
 
 func (r *resourceManager) skipStaticPods(webhooks []admissionregistrationv1.MutatingWebhook) {
-	if r.values.ResponsibilityMode != ForSourceAndTarget {
+	if r.values.ResponsibilityMode != ForSelfHostedShoot {
 		return
 	}
 

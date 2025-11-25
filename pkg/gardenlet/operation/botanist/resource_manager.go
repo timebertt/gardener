@@ -66,7 +66,7 @@ func (b *Botanist) DefaultResourceManager() (resourcemanager.Interface, error) {
 		values.KubernetesServiceHost = nil
 
 		if b.Shoot.RunsControlPlane() {
-			newFunc = shared.NewCombinedGardenerResourceManager
+			newFunc = shared.NewSelfHostedShootGardenerResourceManager
 			values.TargetNamespaces = nil
 		} else {
 			newFunc = shared.NewRuntimeGardenerResourceManager
