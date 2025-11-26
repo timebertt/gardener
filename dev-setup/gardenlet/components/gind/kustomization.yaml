@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - patch: |
+      # Those CIDRs must match those specified in the kind Cluster configuration.
+      - op: replace
+        path: /spec/config/seedConfig/spec/networks/nodes
+        value: 10.0.0.0/16
+      - op: replace
+        path: /spec/config/seedConfig/spec/networks/pods
+        value: 10.3.0.0/16
+      - op: replace
+        path: /spec/config/seedConfig/spec/networks/services
+        value: 10.4.0.0/16
+      - op: replace
+        path: /spec/config/seedConfig/spec/networks/shootDefaults
+        value:
+          pods: 10.5.0.0/16
+          services: 10.6.0.0/16
+    target:
+      group: seedmanagement.gardener.cloud
+      kind: Gardenlet
+      name: local
+      namespace: garden
