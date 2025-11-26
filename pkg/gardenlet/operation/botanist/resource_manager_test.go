@@ -88,7 +88,7 @@ var _ = Describe("ResourceManager", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(resourceManager.GetValues().PodTopologySpreadConstraintsEnabled).To(BeFalse())
-			Expect(resourceManager.GetValues().NodeAgentAuthorizerMachineNamespace).To(HaveValue(Equal("shoot--foo--bar")))
+			Expect(resourceManager.GetValues().MachineNamespace).To(HaveValue(Equal("shoot--foo--bar")))
 		})
 
 		It("should consider node toleration configuration", func() {
@@ -169,7 +169,7 @@ var _ = Describe("ResourceManager", func() {
 					Expect(resourceManager).NotTo(BeNil())
 					Expect(err).NotTo(HaveOccurred())
 
-					Expect(resourceManager.GetValues().NodeAgentAuthorizerMachineNamespace).To(HaveValue(Equal("kube-system")))
+					Expect(resourceManager.GetValues().MachineNamespace).To(HaveValue(Equal("kube-system")))
 				})
 			})
 
@@ -185,7 +185,7 @@ var _ = Describe("ResourceManager", func() {
 					Expect(resourceManager).NotTo(BeNil())
 					Expect(err).NotTo(HaveOccurred())
 
-					Expect(resourceManager.GetValues().NodeAgentAuthorizerMachineNamespace).To(BeNil())
+					Expect(resourceManager.GetValues().MachineNamespace).To(BeNil())
 				})
 			})
 		})

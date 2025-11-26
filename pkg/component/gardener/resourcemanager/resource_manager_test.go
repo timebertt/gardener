@@ -345,7 +345,7 @@ var _ = Describe("ResourceManager", func() {
 			ManagedResourceLabels:                     map[string]string{"foo": "bar"},
 			NodeAgentAuthorizerEnabled:                true,
 			NodeAgentAuthorizerAuthorizeWithSelectors: ptr.To(true),
-			NodeAgentAuthorizerMachineNamespace:       ptr.To(watchedNamespace),
+			MachineNamespace:                          ptr.To(watchedNamespace),
 			PodKubeAPIServerLoadBalancingWebhook: PodKubeAPIServerLoadBalancingWebhook{
 				Enabled: false,
 				Configs: []PodKubeAPIServerLoadBalancingWebhookConfig{
@@ -467,7 +467,7 @@ var _ = Describe("ResourceManager", func() {
 					NodeAgentAuthorizer: resourcemanagerconfigv1alpha1.NodeAgentAuthorizerWebhookConfig{
 						Enabled:                true,
 						AuthorizeWithSelectors: ptr.To(true),
-						MachineNamespace:       cfg.NodeAgentAuthorizerMachineNamespace,
+						MachineNamespace:       cfg.MachineNamespace,
 					},
 				},
 			}
