@@ -25,6 +25,9 @@ case "$COMMAND" in
     docker compose -f "$COMPOSE_FILE" cp control-plane:/etc/kubernetes/admin.conf dev/kubeconfig-gind
 
     export KUBECONFIG=dev/kubeconfig-gind
+    kubectl config unset "contexts.$(kubectl config current-context).namespace"
+    cp $KUBECONFIG "$(dirname $0)/gardenlet/components/kubeconfigs/seed-local/kubeconfig"
+
     kubectl taint node --all node-role.kubernetes.io/control-plane- || true
     # TODO(acumino): Remove when gardenadm supports setting zone labels
     kubectl label node --all topology.kubernetes.io/zone=0 --overwrite

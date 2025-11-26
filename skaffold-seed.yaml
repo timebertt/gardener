@@ -695,6 +695,11 @@ profiles:
       kustomize:
         paths:
           - dev-setup/gardenlet/overlays/single-node-dual
+  - name: single-node-gind
+    manifests:
+      kustomize:
+        paths:
+          - dev-setup/gardenlet/overlays/single-node-gind
   - name: multi-node
     manifests:
       kustomize:

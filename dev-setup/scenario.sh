@@ -41,6 +41,9 @@ function skaffold_profile() {
     single-node)
       export SKAFFOLD_PROFILE="single-node"
       ;;
+    single-node-gind)
+      export SKAFFOLD_PROFILE="single-node-gind"
+      ;;
     multi-node)
       export SKAFFOLD_PROFILE="multi-node"
       ;;
