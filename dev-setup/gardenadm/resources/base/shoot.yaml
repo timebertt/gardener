@@ -38,6 +38,7 @@ spec:
   kubernetes:
     version: 1.33.0
     kubelet:
+      maxPods: 250
       seccompDefault: true
       serializeImagePulls: false
       registryPullQPS: 10
