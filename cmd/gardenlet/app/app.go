@@ -178,11 +178,20 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *g
 	}
 
 	var selfHostedShootMeta *types.NamespacedName
-	if gardenlet.IsResponsibleForSelfHostedShoot() {
-		configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.ConfigMapNameShootInfo, Namespace: metav1.NamespaceSystem}}
-		if err := mgr.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
+	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.ConfigMapNameShootInfo, Namespace: metav1.NamespaceSystem}}
+	if err := mgr.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
+		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed reading ConfigMap %s: %w", client.ObjectKeyFromObject(configMap), err)
 		}
+
+		seedIsSelfHostedShoot, err := gardenlet.SeedIsSelfHostedShoot(ctx, mgr.GetAPIReader())
+		if err != nil {
+			return fmt.Errorf("failed checking if cluster is self-hosted shoot: %w", err)
+		}
+		if seedIsSelfHostedShoot {
+			return fmt.Errorf("ConfigMap %s for self-hosted shoot does not exist but is required", client.ObjectKeyFromObject(configMap))
+		}
+	} else {
 		selfHostedShootMeta = &types.NamespacedName{Namespace: configMap.Data["shootNamespace"], Name: configMap.Data["shootName"]}
 		log.Info("Fetched information about self-hosted shoot", "shootMeta", selfHostedShootMeta)
 	}
@@ -401,6 +410,13 @@ func (g *garden) Start(ctx context.Context) error {
 	log.Info("Perform Gardener version verification")
 	if err := bootstrappers.VerifyGardenerVersion(ctx, g.mgr.GetLogger(), gardenCluster.GetAPIReader()); err != nil {
 		return fmt.Errorf("failed verifying Gardener version: %w", err)
+	}
+
+	if !gardenlet.IsResponsibleForSelfHostedShoot() && g.selfHostedShootMeta != nil {
+		log.Info("Perform verification if self-hosted Shoot is connected to Gardener")
+		if err := bootstrappers.VerifySelfHostedShootIsConnected(ctx, gardenCluster.GetAPIReader(), g.mgr.GetAPIReader(), *g.selfHostedShootMeta); err != nil {
+			return fmt.Errorf("failed verifying Gardener version: %w", err)
+		}
 	}
 
 	log.Info("Adding field indexes to informers")
