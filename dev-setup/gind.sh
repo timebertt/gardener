@@ -32,7 +32,7 @@ case "$COMMAND" in
     # TODO(acumino): Remove when gardenadm supports setting zone labels
     kubectl label node --all topology.kubernetes.io/zone=0 --overwrite
 
-#    make operator-up garden-up KUBECONFIG=$KUBECONFIG
+    make operator-up garden-up KUBECONFIG=$KUBECONFIG
     ;;
 
   down)
