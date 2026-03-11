@@ -81,6 +81,9 @@ spec:
         - --service-zone-1-ip={{ .Values.controllers.service.zone1IP }}
         - --service-zone-2-ip={{ .Values.controllers.service.zone2IP }}
         - --service-bastion-ip={{ .Values.controllers.service.bastionIP }}
+        - --loadbalancer-max-concurrent-reconciles={{ .Values.controllers.loadbalancer.concurrentSyncs }}
+        - --loadbalancer-network={{ .Values.controllers.loadbalancer.network }}
+        - --loadbalancer-envoy-image={{ .Values.controllers.loadbalancer.envoyImage }}
         - --backupbucket-local-dir={{ .Values.controllers.backupbucket.localDir }}
         - --backupbucket-container-mount-path={{ .Values.controllers.backupbucket.containerMountPath }}
         - --heartbeat-namespace={{ .Release.Namespace }}
@@ -155,6 +158,10 @@ spec:
         {{- end }}
         - name: backup-path
           mountPath: {{ .Values.controllers.backupbucket.localDir }}
+        {{- if not (contains "managedseed" (default "" .Values.gardener.seed.name)) }}
+        - name: container-runtime-socket
+          mountPath: /var/run/docker.sock
+        {{- end }}
       securityContext:
         runAsUser: 0 # Need root permissions to clean files (created by etcd-backup-restore also via root user).
         # add provider-local process to root group to allow accessing the local backupbuckets directory
@@ -171,3 +178,9 @@ spec:
         hostPath:
           path: {{ .Values.controllers.backupbucket.containerMountPath }}
           type: DirectoryOrCreate
+      {{- if not (contains "managedseed" (default "" .Values.gardener.seed.name)) }}
+      - name: container-runtime-socket
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      {{- end }}

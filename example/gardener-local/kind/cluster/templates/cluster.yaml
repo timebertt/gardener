@@ -16,6 +16,7 @@ nodes:
 {{ include "extraMounts.gardener.controlPlane" . | indent 2 }}
 {{ include "extraMounts.backupBucket" . | indent 2 }}
 {{ include "extraMounts.resolveConfig" . | indent 2 }}
+{{ include "extraMounts.containerRuntimeSocket" . | indent 2 }}
   kubeadmConfigPatches:
 {{ include "kubeadmConfigPatches" . | indent 2 }}
 

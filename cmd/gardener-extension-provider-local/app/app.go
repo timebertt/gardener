@@ -45,6 +45,7 @@ import (
 	localextensionshootcontroller "github.com/gardener/gardener/pkg/provider-local/controller/extension/shoot"
 	localhealthcheck "github.com/gardener/gardener/pkg/provider-local/controller/healthcheck"
 	localinfrastructure "github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
+	localloadbalancer "github.com/gardener/gardener/pkg/provider-local/controller/loadbalancer"
 	localoperatingsystemconfig "github.com/gardener/gardener/pkg/provider-local/controller/operatingsystemconfig"
 	localservice "github.com/gardener/gardener/pkg/provider-local/controller/service"
 	localworker "github.com/gardener/gardener/pkg/provider-local/controller/worker"
@@ -114,6 +115,13 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			HostIP:                  hostIP,
 		}
 
+		// options for the loadbalancer controller
+		loadbalancerCtrlOpts = &localloadbalancer.ControllerOptions{
+			MaxConcurrentReconciles: 5,
+			Network:                 localloadbalancer.DefaultNetwork,
+			EnvoyImage:              localloadbalancer.DefaultEnvoyImage,
+		}
+
 		// options for the local backupbucket controller
 		localBackupBucketOptions = &backupoptions.ControllerOptions{
 			BackupBucketPath:   backupoptions.DefaultBackupPath,
@@ -172,6 +180,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			extensionscmdcontroller.PrefixOption("infrastructure-", infraCtrlOpts),
 			extensionscmdcontroller.PrefixOption("worker-", workerCtrlOpts),
 			extensionscmdcontroller.PrefixOption("service-", serviceCtrlOpts),
+			extensionscmdcontroller.PrefixOption("loadbalancer-", loadbalancerCtrlOpts),
 			extensionscmdcontroller.PrefixOption("backupbucket-", localBackupBucketOptions),
 			extensionscmdcontroller.PrefixOption("operatingsystemconfig-", operatingSystemConfigCtrlOpts),
 			extensionscmdcontroller.PrefixOption("healthcheck-", healthCheckCtrlOpts),
@@ -272,6 +281,7 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			infraCtrlOpts.Completed().Apply(&localinfrastructure.DefaultAddOptions.Controller)
 			operatingSystemConfigCtrlOpts.Completed().Apply(&localoperatingsystemconfig.DefaultAddOptions.Controller)
 			serviceCtrlOpts.Completed().Apply(&localservice.DefaultAddOptions)
+			loadbalancerCtrlOpts.Completed().Apply(&localloadbalancer.DefaultAddOptions)
 			workerCtrlOpts.Completed().Apply(&localworker.DefaultAddOptions.Controller)
 			localworker.DefaultAddOptions.GardenCluster = gardenCluster
 			localworker.DefaultAddOptions.SelfHostedShootCluster = generalOpts.Completed().SelfHostedShootCluster

@@ -39,6 +39,11 @@ controllers:
     zone1IP: "172.18.255.11"
     zone2IP: "172.18.255.12"
     bastionIP: "172.18.255.22"
+  loadbalancer:
+    concurrentSyncs: 5
+    cidr: "172.18.255.0/24"
+    network: "kind"
+    envoyImage: "envoyproxy/envoy:v1.33.2"
   backupbucket:
     localDir: "/dev/local-backupbuckets"
     containerMountPath: "/etc/gardener/local-backupbuckets"
