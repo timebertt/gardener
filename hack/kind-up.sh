@@ -102,7 +102,7 @@ bind-interfaces
 
 # Configure conditional forwarding for local.gardener.cloud but use the resolv.conf from Kubernetes (coredns) as
 # upstream for all other requests, which is required for resolving the registry cache services in the Prow cluster.
-server=/local.gardener.cloud/$dns_ip
+server=/local.gardener.cloud/$dns_ip#8053
 resolv-file=/etc/resolv-default.conf
 
 # Export dnsmasq logs to a file for debugging purposes
@@ -130,25 +130,25 @@ EOF
   fi
 
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    local desired_resolver_config="nameserver $dns_ip"
+    local desired_resolver_config="nameserver $dns_ip.8053"
     if ! grep -q "$desired_resolver_config" /etc/resolver/local.gardener.cloud ; then
       echo "Configuring macOS to resolve the local.gardener.cloud zone using the local setup's DNS server"
       ${SUDO}mkdir -p /etc/resolver
       echo "$desired_resolver_config" | ${SUDO}tee /etc/resolver/local.gardener.cloud
     fi
   elif [[ "$OSTYPE" == "linux"* && -d /etc/systemd/resolved.conf.d ]]; then
-    if ! grep -q "$dns_ip" /etc/systemd/resolved.conf.d/gardener-local.conf || ! grep -q "$dns_ipv6" /etc/systemd/resolved.conf.d/gardener-local.conf ; then
+    if ! grep -q "$dns_ip:8053" /etc/systemd/resolved.conf.d/gardener-local.conf || ! grep -q "$dns_ipv6:8053" /etc/systemd/resolved.conf.d/gardener-local.conf ; then
       echo "Configuring systemd-resolved to resolve the local.gardener.cloud zone using the local setup's DNS server"
       cat <<EOF | ${SUDO}tee /etc/systemd/resolved.conf.d/gardener-local.conf
 [Resolve]
-DNS=$dns_ip $dns_ipv6
+DNS=$dns_ip:8053 $dns_ipv6:8053
 Domains=~local.gardener.cloud
 EOF
       echo "restarting systemd-resolved"
       ${SUDO}systemctl restart systemd-resolved
     fi
   elif ! nslookup -type=ns local.gardener.cloud >/dev/null 2>/dev/null ; then
-    echo "Warning: Unknown OS. Make sure your host resolves the local.gardener.cloud zone using the local setup's DNS server at $dns_ip or $dns_ipv6 respectively."
+    echo "Warning: Unknown OS. Make sure your host resolves the local.gardener.cloud zone using the local setup's DNS server at $dns_ip:8053 or $dns_ipv6:8053 respectively."
     return 0
   fi
 }

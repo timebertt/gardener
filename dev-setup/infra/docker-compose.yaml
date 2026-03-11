@@ -4,10 +4,10 @@ services:
     image: europe-docker.pkg.dev/gardener-project/releases/3rd/ubuntu/bind9:9.18-24.04_beta
     restart: unless-stopped
     ports:
-      - "172.18.255.53:53:53/tcp"
-      - "172.18.255.53:53:53/udp"
-      - "[fd00:ff::53]:53:53/tcp"
-      - "[fd00:ff::53]:53:53/udp"
+      - "172.18.255.53:8053:53/tcp"
+      - "172.18.255.53:8053:53/udp"
+      - "[fd00:ff::53]:8053:53/tcp"
+      - "[fd00:ff::53]:8053:53/udp"
     volumes:
       # Mount the config as read-only.
       - ./bind:/etc/bind:ro
