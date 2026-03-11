@@ -1,0 +1,37 @@
+apiVersion: skaffold/v4beta12
+kind: Config
+metadata:
+  name: cloud-provider-local
+build:
+  artifacts:
+    - image: local-skaffold/cloud-controller-manager-local
+      ko:
+        ldflags:
+          - '{{.LD_FLAGS}}'
+        main: ./cmd/cloud-controller-manager-local
+        dependencies:
+          paths:
+            - cmd/cloud-controller-manager-local
+            - VERSION
+  insecureRegistries:
+    - registry.local.gardener.cloud:5001
+  tagPolicy:
+    customTemplate:
+      template: '{{.version}}-{{.sha}}'
+      components:
+        - name: version
+          envTemplate:
+            template: '{{.GARDENER_VERSION}}'
+        - name: sha
+          gitCommit:
+            variant: AbbrevCommitSha
+manifests:
+  kustomize:
+    paths:
+      - dev-setup/kind/cloud-provider-local
+deploy:
+  kubectl:
+    flags:
+      apply:
+        - --server-side
+        - --force-conflicts

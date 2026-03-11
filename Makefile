@@ -374,6 +374,18 @@ gardenlet-kind2-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
 	$(SKAFFOLD) delete -m $(SKAFFOLD_PREFIX_NAME)-env -p $(SKAFFOLD_PREFIX_NAME) --kubeconfig=$(SKAFFOLD_COMMAND_KUBECONFIG)
 	$(SKAFFOLD) delete -m gardenlet,$(SKAFFOLD_PREFIX_NAME)-env -p $(SKAFFOLD_PREFIX_NAME)
 
+# TODO(timebertt): call this in kind-up. Is this the right way for this?
+# cloud-provider-local-{up,dev,debug,down}
+cloud-provider-local-%: export SKAFFOLD_FILENAME = skaffold-kind.yaml
+cloud-provider-local-up: $(SKAFFOLD) $(HELM) $(KUBECTL) $(YQ)
+	$(SKAFFOLD) run
+cloud-provider-local-dev: $(SKAFFOLD) $(HELM) $(KUBECTL) $(YQ)
+	$(SKAFFOLD) dev
+cloud-provider-local-debug: $(SKAFFOLD) $(HELM) $(KUBECTL) $(YQ)
+	$(SKAFFOLD) debug
+cloud-provider-local-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
+	$(SKAFFOLD) delete
+
 # operator-{up,dev,debug,down}
 operator-%: export SKAFFOLD_FILENAME = skaffold-operator.yaml
 operator-up: $(SKAFFOLD) $(HELM) $(KUBECTL)
