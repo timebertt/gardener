@@ -38,12 +38,3 @@
   listenAddress: {{ .Values.gardener.garden.virtualGarden.listenAddress }}
 {{- end -}}
 {{- end -}}
-
-{{- define "extraPortMappings.gardener.seed.dns" -}}
-{{- if .Values.gardener.controlPlane.deployed -}}
-- containerPort: 30053
-  hostPort: 5353
-  protocol: TCP
-  listenAddress: 172.18.255.1
-{{- end -}}
-{{- end -}}
