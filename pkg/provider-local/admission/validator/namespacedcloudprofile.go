@@ -30,7 +30,7 @@ import (
 func NewNamespacedCloudProfileValidator(mgr manager.Manager) extensionswebhook.Validator {
 	return &namespacedCloudProfileValidator{
 		client:  mgr.GetClient(),
-		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(),
+		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(v1alpha1.SchemeGroupVersion),
 	}
 }
 

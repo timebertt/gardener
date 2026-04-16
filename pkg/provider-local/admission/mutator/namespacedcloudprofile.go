@@ -26,7 +26,7 @@ import (
 func NewNamespacedCloudProfileMutator(mgr manager.Manager) extensionswebhook.Mutator {
 	return &namespacedCloudProfile{
 		client:  mgr.GetClient(),
-		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(),
+		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(v1alpha1.SchemeGroupVersion),
 	}
 }
 

@@ -26,7 +26,7 @@ func init() {
 	Scheme = runtime.NewScheme()
 	utilruntime.Must(api.AddToScheme(Scheme))
 
-	decoder = serializer.NewCodecFactory(Scheme, serializer.EnableStrict).UniversalDecoder()
+	decoder = serializer.NewCodecFactory(Scheme, serializer.EnableStrict).UniversalDecoder(api.SchemeGroupVersion)
 }
 
 // CloudProfileConfigFromCluster decodes the provider specific cloud profile configuration for a cluster

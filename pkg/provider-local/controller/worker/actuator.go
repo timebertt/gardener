@@ -49,7 +49,7 @@ type actuator struct {
 func NewActuator(mgr manager.Manager, gardenCluster cluster.Cluster) worker.Actuator {
 	workerDelegate := &delegateFactory{
 		seedClient: mgr.GetClient(),
-		decoder:    serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(),
+		decoder:    serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(localv1alpha1.SchemeGroupVersion),
 		restConfig: mgr.GetConfig(),
 	}
 

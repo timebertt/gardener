@@ -50,7 +50,7 @@ var _ = Describe("NamespacedCloudProfile Mutator", func() {
 			Scheme: scheme,
 		}
 		namespace = "garden-dev"
-		decoder = serializer.NewCodecFactory(fakeManager.GetScheme(), serializer.EnableStrict).UniversalDecoder()
+		decoder = serializer.NewCodecFactory(fakeManager.GetScheme(), serializer.EnableStrict).UniversalDecoder(v1alpha1.SchemeGroupVersion)
 
 		namespacedCloudProfileMutator = mutator.NewNamespacedCloudProfileMutator(fakeManager)
 		namespacedCloudProfile = &gardencorev1beta1.NamespacedCloudProfile{

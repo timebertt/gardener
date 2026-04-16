@@ -18,13 +18,14 @@ import (
 	"github.com/gardener/gardener/pkg/apis/core"
 	"github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/provider-local/admission"
+	"github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 	"github.com/gardener/gardener/pkg/provider-local/apis/local/validation"
 )
 
 // NewCloudProfileValidator returns a new instance of a cloud profile validator.
 func NewCloudProfileValidator(mgr manager.Manager) extensionswebhook.Validator {
 	return &cloudProfileValidator{
-		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(),
+		decoder: serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(v1alpha1.SchemeGroupVersion),
 	}
 }
 
