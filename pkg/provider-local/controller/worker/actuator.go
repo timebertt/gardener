@@ -29,8 +29,8 @@ import (
 	"github.com/gardener/gardener/extensions/pkg/util"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	kubernetesclient "github.com/gardener/gardener/pkg/client/kubernetes"
-	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
 	"github.com/gardener/gardener/pkg/provider-local/apis/local/helper"
+	"github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
@@ -182,12 +182,12 @@ type workerDelegate struct {
 	seedChartApplier    kubernetesclient.ChartApplier
 	podExecutor         kubernetesclient.PodExecutor
 	serverVersion       string
-	cloudProfileConfig  *api.CloudProfileConfig
+	cloudProfileConfig  *v1alpha1.CloudProfileConfig
 	cluster             *extensionscontroller.Cluster
 	worker              *extensionsv1alpha1.Worker
 	machineClassSecrets []*corev1.Secret
 	machineClasses      []*machinev1alpha1.MachineClass
-	machineImages       []api.MachineImage
+	machineImages       []v1alpha1.MachineImage
 	machineDeployments  worker.MachineDeployments
 }
 

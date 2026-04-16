@@ -49,3 +49,8 @@ type MachineImageFlavor struct {
 	// Capabilities that are supported by the identifier in this set.
 	Capabilities gardencorev1beta1.Capabilities `json:"capabilities,omitempty"`
 }
+
+// GetCapabilities returns the Capabilities of a MachineImageFlavor.
+func (m MachineImageFlavor) GetCapabilities() gardencorev1beta1.Capabilities {
+	return m.Capabilities
+}

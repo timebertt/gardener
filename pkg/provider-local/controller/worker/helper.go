@@ -12,12 +12,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
 	"github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 )
 
-func (w *workerDelegate) decodeWorkerProviderStatus() (*api.WorkerStatus, error) {
-	workerStatus := &api.WorkerStatus{}
+func (w *workerDelegate) decodeWorkerProviderStatus() (*v1alpha1.WorkerStatus, error) {
+	workerStatus := &v1alpha1.WorkerStatus{}
 
 	if w.worker.Status.ProviderStatus == nil {
 		return workerStatus, nil
@@ -30,16 +29,13 @@ func (w *workerDelegate) decodeWorkerProviderStatus() (*api.WorkerStatus, error)
 	return workerStatus, nil
 }
 
-func (w *workerDelegate) updateWorkerProviderStatus(ctx context.Context, workerStatus *api.WorkerStatus) error {
-	workerStatusV1alpha1 := &v1alpha1.WorkerStatus{
-		TypeMeta: metav1.TypeMeta{
+func (w *workerDelegate) updateWorkerProviderStatus(ctx context.Context, workerStatus *v1alpha1.WorkerStatus) error {
+	workerStatusV1alpha1 := workerStatus.DeepCopy()
+	if workerStatusV1alpha1.TypeMeta.APIVersion == "" || workerStatusV1alpha1.TypeMeta.Kind == "" {
+		workerStatusV1alpha1.TypeMeta = metav1.TypeMeta{
 			APIVersion: v1alpha1.SchemeGroupVersion.String(),
 			Kind:       "WorkerStatus",
-		},
-	}
-
-	if err := w.scheme.Convert(workerStatus, workerStatusV1alpha1, nil); err != nil {
-		return err
+		}
 	}
 
 	patch := client.MergeFrom(w.worker.DeepCopy())

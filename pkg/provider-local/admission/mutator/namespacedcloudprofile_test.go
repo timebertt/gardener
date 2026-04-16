@@ -19,12 +19,9 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/gardener/gardener/extensions/pkg/util"
 	extensionswebhook "github.com/gardener/gardener/extensions/pkg/webhook"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/provider-local/admission/mutator"
-	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
-	"github.com/gardener/gardener/pkg/provider-local/apis/local/install"
 	"github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -44,7 +41,7 @@ var _ = Describe("NamespacedCloudProfile Mutator", func() {
 
 	BeforeEach(func() {
 		scheme := runtime.NewScheme()
-		utilruntime.Must(install.AddToScheme(scheme))
+		utilruntime.Must(v1alpha1.AddToScheme(scheme))
 		utilruntime.Must(gardencorev1beta1.AddToScheme(scheme))
 		fakeClient = fakeclient.NewClientBuilder().WithScheme(scheme).Build()
 		fakeManager = &test.FakeManager{
@@ -175,13 +172,13 @@ var _ = Describe("NamespacedCloudProfile Mutator", func() {
 				MatchFields(IgnoreExtras, Fields{
 					"Name": Equal("image-1"),
 					"Versions": ContainElements(
-						api.MachineImageVersion{Version: "1.0", Image: "local/image:1.0"},
-						api.MachineImageVersion{Version: "1.1", Image: "local/image:1.1"},
+						v1alpha1.MachineImageVersion{Version: "1.0", Image: "local/image:1.0"},
+						v1alpha1.MachineImageVersion{Version: "1.1", Image: "local/image:1.1"},
 					),
 				}),
 				MatchFields(IgnoreExtras, Fields{
 					"Name":     Equal("image-2"),
-					"Versions": ContainElements(api.MachineImageVersion{Version: "2.0", Image: "local/image:2.0"}),
+					"Versions": ContainElements(v1alpha1.MachineImageVersion{Version: "2.0", Image: "local/image:2.0"}),
 				}),
 			))
 		})
@@ -210,7 +207,7 @@ var _ = Describe("NamespacedCloudProfile Mutator", func() {
 				MatchFields(IgnoreExtras, Fields{
 					"Name": Equal("image-1"),
 					"Versions": ContainElements(
-						api.MachineImageVersion{Version: "1.0", Image: "local/image:1.0-nscpfl"},
+						v1alpha1.MachineImageVersion{Version: "1.0", Image: "local/image:1.0-nscpfl"},
 					),
 				}),
 			))
@@ -218,9 +215,9 @@ var _ = Describe("NamespacedCloudProfile Mutator", func() {
 	})
 })
 
-func decodeCloudProfileConfig(decoder runtime.Decoder, config *runtime.RawExtension) (*api.CloudProfileConfig, error) {
-	cloudProfileConfig := &api.CloudProfileConfig{}
-	if err := util.Decode(decoder, config.Raw, cloudProfileConfig); err != nil {
+func decodeCloudProfileConfig(decoder runtime.Decoder, config *runtime.RawExtension) (*v1alpha1.CloudProfileConfig, error) {
+	cloudProfileConfig := &v1alpha1.CloudProfileConfig{}
+	if _, _, err := decoder.Decode(config.Raw, nil, cloudProfileConfig); err != nil {
 		return nil, err
 	}
 	return cloudProfileConfig, nil
