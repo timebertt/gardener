@@ -31,7 +31,7 @@ func (w *workerDelegate) decodeWorkerProviderStatus() (*v1alpha1.WorkerStatus, e
 
 func (w *workerDelegate) updateWorkerProviderStatus(ctx context.Context, workerStatus *v1alpha1.WorkerStatus) error {
 	workerStatusV1alpha1 := workerStatus.DeepCopy()
-	if workerStatusV1alpha1.TypeMeta.APIVersion == "" || workerStatusV1alpha1.TypeMeta.Kind == "" {
+	if workerStatusV1alpha1.APIVersion == "" || workerStatusV1alpha1.Kind == "" {
 		workerStatusV1alpha1.TypeMeta = metav1.TypeMeta{
 			APIVersion: v1alpha1.SchemeGroupVersion.String(),
 			Kind:       "WorkerStatus",
