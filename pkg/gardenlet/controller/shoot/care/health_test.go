@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
@@ -36,7 +37,6 @@ import (
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/care"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	shootpkg "github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
 )
@@ -271,15 +271,18 @@ var _ = Describe("health check", func() {
 		})
 
 		DescribeTable("#CheckClusterNodes",
-			func(k8sversion *semver.Version, nodes []corev1.Node, workerPools []gardencorev1beta1.Worker, oscSecretMeta map[string]metav1.ObjectMeta, conditionMatcher types.GomegaMatcher) {
+			func(k8sversion *semver.Version, nodes []corev1.Node, workerPools []gardencorev1beta1.Worker, oscSecretMeta map[string]metav1.ObjectMeta, desiredMachines int32, leases []coordinationv1.Lease, conditionMatcher types.GomegaMatcher) {
 				c.EXPECT().List(ctx, gomock.AssignableToTypeOf(&corev1.NodeList{})).DoAndReturn(func(_ context.Context, list *corev1.NodeList, _ ...client.ListOption) error {
 					*list = corev1.NodeList{Items: nodes}
 					return nil
 				})
 
+				if desiredMachines == 0 {
+					desiredMachines = int32(len(nodes))
+				}
 				Expect(fakeClient.Create(ctx, &machinev1alpha1.MachineDeployment{
 					ObjectMeta: metav1.ObjectMeta{GenerateName: "deploy", Namespace: controlPlaneNamespace},
-					Spec:       machinev1alpha1.MachineDeploymentSpec{Replicas: int32(len(nodes))},
+					Spec:       machinev1alpha1.MachineDeploymentSpec{Replicas: desiredMachines},
 				})).To(Succeed())
 
 				secretListOptions := []client.ListOption{
@@ -297,6 +300,13 @@ var _ = Describe("health check", func() {
 					return nil
 				})
 
+				if leases != nil {
+					c.EXPECT().List(ctx, gomock.AssignableToTypeOf(&coordinationv1.LeaseList{}), client.InNamespace(metav1.NamespaceSystem)).DoAndReturn(func(_ context.Context, list *coordinationv1.LeaseList, _ ...client.ListOption) error {
+						*list = coordinationv1.LeaseList{Items: leases}
+						return nil
+					})
+				}
+
 				shootObj := &shootpkg.Shoot{
 					ControlPlaneNamespace: controlPlaneNamespace,
 					KubernetesVersion:     k8sversion,
@@ -309,7 +319,15 @@ var _ = Describe("health check", func() {
 					},
 				})
 				seedObj := &seedpkg.Seed{}
-				seedObj.SetInfo(&gardencorev1beta1.Seed{})
+				seedObj.SetInfo(&gardencorev1beta1.Seed{
+					Spec: gardencorev1beta1.SeedSpec{
+						Settings: &gardencorev1beta1.SeedSettings{
+							DependencyWatchdog: &gardencorev1beta1.SeedSettingDependencyWatchdog{
+								Prober: &gardencorev1beta1.SeedSettingDependencyWatchdogProber{Enabled: false},
+							},
+						},
+					},
+				})
 
 				health := NewHealth(
 					logr.Discard(),
@@ -341,6 +359,8 @@ var _ = Describe("health check", func() {
 					},
 				},
 				nil,
+				int32(0),
+				nil,
 				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "OperatingSystemConfigOutdated", fmt.Sprintf("missing operating system config secret metadata for worker pool %q", workerPoolName1)))),
 			Entry("missing OSC secret checksum for a worker pool when shoot has not been reconciled yet",
 				kubernetesVersion,
@@ -354,6 +374,8 @@ var _ = Describe("health check", func() {
 						Minimum: 1,
 					},
 				},
+				nil,
+				int32(0),
 				nil,
 				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "OperatingSystemConfigOutdated", fmt.Sprintf("missing operating system config secret metadata for worker pool %q", workerPoolName1)))),
 			Entry("no OSC node checksum for a worker pool",
@@ -369,6 +391,8 @@ var _ = Describe("health check", func() {
 					},
 				},
 				oscSecretMeta,
+				int32(0),
+				nil,
 				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "OperatingSystemConfigOutdated", fmt.Sprintf("the last successfully applied operating system config on node %q hasn't been reported yet", nodeName)))),
 			Entry("no OSC node checksum for a worker pool when shoot has not been reconciled yet",
 				kubernetesVersion,
@@ -383,6 +407,8 @@ var _ = Describe("health check", func() {
 					},
 				},
 				oscSecretMeta,
+				int32(0),
+				nil,
 				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "OperatingSystemConfigOutdated", fmt.Sprintf("the last successfully applied operating system config on node %q hasn't been reported yet", nodeName)))),
 			Entry("outdated OSC secret checksum for a worker pool",
 				kubernetesVersion,
@@ -403,6 +429,8 @@ var _ = Describe("health check", func() {
 						Labels:      map[string]string{"worker.gardener.cloud/pool": workerPoolName1},
 					},
 				},
+				int32(0),
+				nil,
 				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "OperatingSystemConfigOutdated", fmt.Sprintf("the last successfully applied operating system config on node %q is outdated", nodeName)))),
 			Entry("outdated OSC secret checksum for a worker pool when shoot has not been reconciled yet",
 				kubernetesVersion,
@@ -423,7 +451,60 @@ var _ = Describe("health check", func() {
 						Labels:      map[string]string{"worker.gardener.cloud/pool": workerPoolName1},
 					},
 				},
+				int32(0),
+				nil,
 				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "OperatingSystemConfigOutdated", fmt.Sprintf("the last successfully applied operating system config on node %q is outdated", nodeName)))),
+			Entry("should not report NodeAgentUnhealthy for nodes not managed by MCM",
+				kubernetesVersion,
+				[]corev1.Node{
+					newNode(
+						labels.Set{"worker.gardener.cloud/pool": workerPoolName1, "worker.gardener.cloud/kubernetes-version": kubernetesVersion.Original()},
+						map[string]string{nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig: cloudConfigSecretChecksum1},
+						kubernetesVersion.Original(),
+					),
+					{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "non-mcm-node",
+							Annotations: map[string]string{
+								"node.machine.sapcloud.io/not-managed-by-mcm": "1",
+							},
+						},
+					},
+				},
+				[]gardencorev1beta1.Worker{{Name: workerPoolName1, Maximum: 10, Minimum: 1}},
+				map[string]metav1.ObjectMeta{
+					workerPoolName1: {
+						Name:        operatingsystemconfig.KeyV1(workerPoolName1, kubernetesVersion, nil),
+						Annotations: map[string]string{"checksum/data-script": cloudConfigSecretChecksum1},
+						Labels:      map[string]string{"worker.gardener.cloud/pool": workerPoolName1},
+					},
+				},
+				int32(1),
+				[]coordinationv1.Lease{{
+					ObjectMeta: metav1.ObjectMeta{Name: "gardener-node-agent-" + nodeName},
+					Spec:       coordinationv1.LeaseSpec{RenewTime: &metav1.MicroTime{Time: time.Now()}, LeaseDurationSeconds: ptr.To[int32](40)},
+				}},
+				BeNil()),
+			Entry("should report NodeAgentUnhealthy for managed node without lease",
+				kubernetesVersion,
+				[]corev1.Node{
+					newNode(
+						labels.Set{"worker.gardener.cloud/pool": workerPoolName1, "worker.gardener.cloud/kubernetes-version": kubernetesVersion.Original()},
+						map[string]string{nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig: cloudConfigSecretChecksum1},
+						kubernetesVersion.Original(),
+					),
+				},
+				[]gardencorev1beta1.Worker{{Name: workerPoolName1, Maximum: 10, Minimum: 1}},
+				map[string]metav1.ObjectMeta{
+					workerPoolName1: {
+						Name:        operatingsystemconfig.KeyV1(workerPoolName1, kubernetesVersion, nil),
+						Annotations: map[string]string{"checksum/data-script": cloudConfigSecretChecksum1},
+						Labels:      map[string]string{"worker.gardener.cloud/pool": workerPoolName1},
+					},
+				},
+				int32(0),
+				[]coordinationv1.Lease{},
+				PointTo(beConditionWithStatusAndMsg(gardencorev1beta1.ConditionFalse, "NodeAgentUnhealthy", fmt.Sprintf("gardener-node-agent is not running on node %q", nodeName)))),
 		)
 	})
 
@@ -994,12 +1075,10 @@ var _ = Describe("health check", func() {
 				},
 			}
 
-			nodeList = corev1.NodeList{
-				Items: []corev1.Node{
-					{
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "node1",
-						},
+			nodeList = []*corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "node1",
 					},
 				},
 			}
@@ -1012,12 +1091,111 @@ var _ = Describe("health check", func() {
 				},
 			}
 
-			Expect(CheckNodeAgentLeases(&nodeList, &leaseList, fakeClock)).To(expected)
+			Expect(CheckNodeAgentLeases(nodeList, &leaseList, fakeClock)).To(expected)
 		},
 			Entry("should return nil if there is a matching lease for node", validLease, BeNil()),
 			Entry("should return Error that node agent is not running if no matching lease could be found for node", unrelatedLease, MatchError(ContainSubstring("not running"))),
 			Entry("should return Error that node agent stopped running if the lease for the node is not valid anymore", expiredLease, MatchError(ContainSubstring("stopped running"))),
 		)
+	})
+
+	Describe("#CheckSystemdUnitsReady", func() {
+		It("should return nil when no nodes have the condition", func() {
+			nodes := []*corev1.Node{
+				{ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+			}
+
+			Expect(CheckSystemdUnitsReady(nodes)).To(Succeed())
+		})
+
+		It("should return nil when all nodes report healthy systemd units", func() {
+			nodes := []*corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node1"},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:   "SystemdUnitsReady",
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				},
+			}
+
+			Expect(CheckSystemdUnitsReady(nodes)).To(Succeed())
+		})
+
+		It("should return error when a node reports unhealthy systemd units", func() {
+			nodes := []*corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node1"},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:    "SystemdUnitsReady",
+								Status:  corev1.ConditionFalse,
+								Message: "bad.service: failed",
+							},
+						},
+					},
+				},
+			}
+
+			Expect(CheckSystemdUnitsReady(nodes)).To(MatchError(ContainSubstring("bad.service: failed")))
+		})
+
+		It("should return error when a node reports unknown systemd units status", func() {
+			nodes := []*corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node1"},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:    "SystemdUnitsReady",
+								Status:  corev1.ConditionUnknown,
+								Message: "unable to determine status",
+							},
+						},
+					},
+				},
+			}
+
+			Expect(CheckSystemdUnitsReady(nodes)).To(MatchError(ContainSubstring("unable to determine status")))
+		})
+
+		It("should aggregate all unhealthy nodes", func() {
+			nodes := []*corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node1"},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:    "SystemdUnitsReady",
+								Status:  corev1.ConditionFalse,
+								Message: "bad.service: failed",
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node2"},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:    "SystemdUnitsReady",
+								Status:  corev1.ConditionFalse,
+								Message: "other.service: inactive but should be enabled",
+							},
+						},
+					},
+				},
+			}
+
+			err := CheckSystemdUnitsReady(nodes)
+			Expect(err).To(MatchError(ContainSubstring("node1")))
+			Expect(err).To(MatchError(ContainSubstring("node2")))
+		})
 	})
 
 	Describe("ShootConditions", func() {

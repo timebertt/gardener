@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/logger"
 )
 
@@ -481,6 +482,8 @@ type GeneralOptions struct {
 	GardenerVersion string
 	// SelfHostedShootCluster indicates whether the extension runs in a self-hosted shoot cluster.
 	SelfHostedShootCluster bool
+	// ExtensionClasses defines the extension classes this controller is responsible for.
+	ExtensionClasses []string
 
 	config *GeneralConfig
 }
@@ -491,11 +494,20 @@ type GeneralConfig struct {
 	GardenerVersion string
 	// SelfHostedShootCluster indicates whether the extension runs in a self-hosted shoot cluster.
 	SelfHostedShootCluster bool
+	// ExtensionClasses defines the extension classes this extension is responsible for.
+	ExtensionClasses []extensionsv1alpha1.ExtensionClass
 }
 
 // Complete implements Complete.
 func (r *GeneralOptions) Complete() error {
-	r.config = &GeneralConfig{r.GardenerVersion, r.SelfHostedShootCluster}
+	r.config = &GeneralConfig{
+		GardenerVersion:        r.GardenerVersion,
+		SelfHostedShootCluster: r.SelfHostedShootCluster,
+	}
+	for _, class := range r.ExtensionClasses {
+		r.config.ExtensionClasses = append(r.config.ExtensionClasses, extensionsv1alpha1.ExtensionClass(class))
+	}
+
 	return nil
 }
 
@@ -506,6 +518,15 @@ func (r *GeneralOptions) Completed() *GeneralConfig {
 
 // AddFlags implements Flagger.AddFlags.
 func (r *GeneralOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&r.GardenerVersion, GardenerVersionFlag, "", "Version of the gardenlet.")
-	fs.BoolVar(&r.SelfHostedShootCluster, SelfHostedShootClusterFlag, false, "Does the extension run in a self-hosted shoot cluster?")
+	// GeneralOptions is used in various places and AddFlags might be called multiple times.
+	// Hence, flag registration must only happen once.
+	if fs.Lookup(GardenerVersionFlag) == nil {
+		fs.StringVar(&r.GardenerVersion, GardenerVersionFlag, "", "Version of the gardenlet / gardener-operator.")
+	}
+	if fs.Lookup(SelfHostedShootClusterFlag) == nil {
+		fs.BoolVar(&r.SelfHostedShootCluster, SelfHostedShootClusterFlag, false, "Does the extension run in a self-hosted shoot cluster?")
+	}
+	if fs.Lookup(ExtensionClassesFlag) == nil {
+		fs.StringSliceVar(&r.ExtensionClasses, ExtensionClassesFlag, r.ExtensionClasses, "Extension classes this extension is responsible for.")
+	}
 }

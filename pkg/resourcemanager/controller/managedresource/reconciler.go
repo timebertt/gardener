@@ -44,12 +44,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	resourcesv1alpha1helper "github.com/gardener/gardener/pkg/api/resources/v1alpha1/helper"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
-	resourcesv1alpha1helper "github.com/gardener/gardener/pkg/apis/resources/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	resourcemanagerpredicate "github.com/gardener/gardener/pkg/resourcemanager/predicate"
 	errorsutils "github.com/gardener/gardener/pkg/utils/errors"
@@ -112,7 +112,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// must be delayed, until the deletion is finished.
 	if r.ClassFilter.IsWaitForCleanupRequired(mr) {
 		log.Info("Waiting for previous handler to clean resources created by ManagedResource")
-		return reconcile.Result{Requeue: true}, nil
+		return reconcile.Result{}, nil
 	}
 	return r.reconcile(ctx, log, mr)
 }
@@ -843,10 +843,8 @@ func eventsForObject(ctx context.Context, scheme *runtime.Scheme, c client.Clien
 		eventLimit = 5
 	)
 
-	for _, gk := range relevantGKs {
-		if gk == obj.GetObjectKind().GroupVersionKind().GroupKind() {
-			return kubernetesutils.FetchEventMessages(ctx, scheme, c, obj, corev1.EventTypeWarning, eventLimit)
-		}
+	if slices.Contains(relevantGKs, obj.GetObjectKind().GroupVersionKind().GroupKind()) {
+		return kubernetesutils.FetchEventMessages(ctx, scheme, c, obj, corev1.EventTypeWarning, eventLimit)
 	}
 	return "", nil
 }

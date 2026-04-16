@@ -106,7 +106,7 @@ In case of `Shoot`s, the `gardener` finalizer can only be removed if the last op
 
 ## `ManagedSeed`
 
-**Type**: Mutating. **Enabled by default**: Yes.
+**Type**: Validating and Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `ManagedSeeds`s.
 It validates certain configuration values in the specification against the referred `Shoot`, for example Seed provider, network ranges, DNS domain, etc.
@@ -182,7 +182,7 @@ However, it also has some special behaviours for certain resources:
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Seed`s.
 It maintains the `name.seed.gardener.cloud/<name>` labels for it.
-More specifically, it adds that the `name.seed.gardener.cloud/<name>=true` label where `<name>` is
+More specifically, it adds the `name.seed.gardener.cloud/<name>=true` label where `<name>` is
 - the name of the `Seed` resource (a `Seed` named `foo` will get label `name.seed.gardener.cloud/foo=true`).
 - the name of the parent `Seed` resource in case it is a `ManagedSeed` (a `Seed` named `foo` that is created by a `ManagedSeed` which references a `Shoot` running a `Seed` called `bar` will get label `name.seed.gardener.cloud/bar=true`).
 
@@ -197,7 +197,7 @@ When the seed is using `WorkloadIdentity` as backup credentials, the plugin ensu
 
 ## `ShootDNS`
 
-**Type**: Mutating. **Enabled by default**: Yes.
+**Type**: Validating and Mutating. **Enabled by default**: Yes.
 
 This admission controller reacts on `CREATE` and `UPDATE` operations for `Shoot`s.
 It tries to assign a default domain to the `Shoot`.
@@ -300,7 +300,7 @@ Generally, it performs validations that cannot be handled by the static API vali
 
 ## `ValidatingAdmissionPolicy`
 
-**Type**: Validating. **Enabled by default**: No.
+**Type**: Validating. **Enabled by default**: Yes.
 
 This admission controller is defined in the generic API server library (`k8s.io/apiserver`). See the [ValidatingAdmissionPolicy section](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#validatingadmissionpolicy).
 

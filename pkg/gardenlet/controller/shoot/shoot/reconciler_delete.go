@@ -16,8 +16,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
@@ -192,11 +192,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(deployKubeAPIServerService),
 		})
-		_ = g.Add(flow.Task{
-			Name:         "Ensuring advertised addresses for the Shoot",
-			Fn:           botanist.UpdateAdvertisedAddresses,
-			Dependencies: flow.NewTaskIDs(waitUntilKubeAPIServerServiceIsReady),
-		})
 		reconcileIstioInternalLoadbalancingConfigMap = g.Add(flow.Task{
 			Name:         "Reconcile Istio internal load balancing ConfigMap",
 			Fn:           flow.TaskFn(botanist.ReconcileIstioInternalLoadBalancingConfigMap).RetryUntilTimeout(defaultInterval, defaultTimeout),
@@ -208,6 +203,11 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			Fn:           flow.TaskFn(botanist.InitializeSecretsManagement).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			SkipIf:       !nonTerminatingNamespace,
 			Dependencies: flow.NewTaskIDs(deployNamespace, reconcileIstioInternalLoadbalancingConfigMap),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Ensuring advertised addresses for the Shoot",
+			Fn:           botanist.UpdateAdvertisedAddresses,
+			Dependencies: flow.NewTaskIDs(initializeSecretsManagement, waitUntilKubeAPIServerServiceIsReady),
 		})
 		deployReferencedResources = g.Add(flow.Task{
 			Name:         "Deploying referenced resources",
@@ -353,21 +353,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(deployKubeControllerManager),
 		})
-		deleteAlertmanager = g.Add(flow.Task{
-			Name:         "Deleting Shoot Alertmanager",
-			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.Alertmanager.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(initializeShootClients),
-		})
-		deletePrometheus = g.Add(flow.Task{
-			Name:         "Deleting Shoot Prometheus",
-			Fn:           flow.TaskFn(botanist.DestroyPrometheus).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(initializeShootClients),
-		})
-		deleteBlackboxExporter = g.Add(flow.Task{
-			Name:         "Destroying control plane blackbox-exporter",
-			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.BlackboxExporter.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(initializeShootClients),
-		})
 		deleteClusterAutoscaler = g.Add(flow.Task{
 			Name: "Deleting cluster autoscaler",
 			Fn: flow.TaskFn(func(ctx context.Context) error {
@@ -490,7 +475,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		deleteManagedResources = g.Add(flow.Task{
 			Name:         "Deleting managed resources",
 			Fn:           flow.TaskFn(botanist.DeleteManagedResources).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(syncPointCleanedKubernetesResources, waitUntilWorkerDeleted),
 		})
 		deleteDWDResources = g.Add(flow.Task{
@@ -504,7 +488,6 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		waitUntilManagedResourcesDeleted = g.Add(flow.Task{
 			Name:         "Waiting until managed resources have been deleted",
 			Fn:           flow.TaskFn(botanist.WaitUntilManagedResourcesDeleted).Timeout(10 * time.Minute),
-			SkipIf:       !cleanupShootResources,
 			Dependencies: flow.NewTaskIDs(deleteDWDResources),
 		})
 		deleteExtensionResourcesBeforeKubeAPIServer = g.Add(flow.Task{
@@ -652,23 +635,8 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			SkipIf:       !nonTerminatingNamespace,
 			Dependencies: flow.NewTaskIDs(syncPointCleaned, waitUntilKubeAPIServerDeleted),
 		})
-		deletePlutono = g.Add(flow.Task{
-			Name:         "Deleting Plutono in Seed",
-			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.Plutono.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(waitUntilInfrastructureDeleted),
-		})
-		destroySeedLogging = g.Add(flow.Task{
-			Name:         "Deleting logging stack in Seed",
-			Fn:           flow.TaskFn(botanist.DestroySeedLogging).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(waitUntilInfrastructureDeleted),
-		})
 
-		syncPoint = flow.NewTaskIDs(
-			deleteAlertmanager,
-			deletePrometheus,
-			deleteBlackboxExporter,
-			deletePlutono,
-			destroySeedLogging,
+		syncPointControlPlaneDown = flow.NewTaskIDs(
 			waitUntilKubeAPIServerDeleted,
 			waitUntilControlPlaneDeleted,
 			waitUntilExtensionResourcesAfterKubeAPIServerDeleted,
@@ -678,31 +646,71 @@ func (r *Reconciler) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			waitUntilInfrastructureDeleted,
 		)
 
+		deleteAlertmanager = g.Add(flow.Task{
+			Name:         "Deleting Shoot Alertmanager",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.Alertmanager.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(syncPointControlPlaneDown),
+		})
+		deletePrometheus = g.Add(flow.Task{
+			Name:         "Deleting Shoot Prometheus",
+			Fn:           flow.TaskFn(botanist.DestroyPrometheus).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(syncPointControlPlaneDown),
+		})
+		deleteBlackboxExporter = g.Add(flow.Task{
+			Name:         "Destroying control plane blackbox-exporter",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.BlackboxExporter.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(syncPointControlPlaneDown),
+		})
+		deletePlutono = g.Add(flow.Task{
+			Name:         "Deleting Plutono in Seed",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.Plutono.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(syncPointControlPlaneDown),
+		})
+		deleteIstioBasicAuthServer = g.Add(flow.Task{
+			Name:         "Deleting istio-basic-auth-server in Seed",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.IstioBasicAuthServer.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(deletePlutono),
+		})
+		destroySeedLogging = g.Add(flow.Task{
+			Name:         "Deleting logging stack in Seed",
+			Fn:           flow.TaskFn(botanist.DestroySeedLogging).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(syncPointControlPlaneDown),
+		})
+
+		syncPointObservabilityDown = flow.NewTaskIDs(
+			deleteAlertmanager,
+			deletePrometheus,
+			deleteBlackboxExporter,
+			deletePlutono,
+			deleteIstioBasicAuthServer,
+			destroySeedLogging,
+		)
+
 		destroyInternalDomainDNSRecord = g.Add(flow.Task{
 			Name:         "Destroying internal domain DNS record",
 			Fn:           botanist.DestroyInternalDNSRecord,
 			SkipIf:       !nonTerminatingNamespace,
-			Dependencies: flow.NewTaskIDs(syncPoint),
+			Dependencies: flow.NewTaskIDs(syncPointObservabilityDown),
 		})
 		destroyReferencedResources = g.Add(flow.Task{
 			Name:         "Deleting referenced resources",
 			Fn:           flow.TaskFn(botanist.DestroyReferencedResources).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(syncPoint),
+			Dependencies: flow.NewTaskIDs(syncPointObservabilityDown),
 		})
 		destroyEtcd = g.Add(flow.Task{
 			Name:         "Destroying main and events etcd",
 			Fn:           flow.TaskFn(botanist.DestroyEtcd).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(syncPoint),
+			Dependencies: flow.NewTaskIDs(syncPointObservabilityDown),
 		})
 		waitUntilEtcdDeleted = g.Add(flow.Task{
 			Name:         "Waiting until main and event etcd have been destroyed",
 			Fn:           flow.TaskFn(botanist.WaitUntilEtcdsDeleted).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(syncPoint, destroyEtcd),
+			Dependencies: flow.NewTaskIDs(syncPointObservabilityDown, destroyEtcd),
 		})
 		deleteNamespace = g.Add(flow.Task{
 			Name:         "Deleting shoot namespace in Seed",
 			Fn:           flow.TaskFn(botanist.DeleteSeedNamespace).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(syncPoint, destroyInternalDomainDNSRecord, destroyReferencedResources, waitUntilEtcdDeleted),
+			Dependencies: flow.NewTaskIDs(syncPointObservabilityDown, destroyInternalDomainDNSRecord, destroyReferencedResources, waitUntilEtcdDeleted),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Waiting until shoot namespace in Seed has been deleted",

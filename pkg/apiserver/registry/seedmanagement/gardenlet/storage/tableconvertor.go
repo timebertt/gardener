@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/rest"
 
-	"github.com/gardener/gardener/pkg/apis/core/helper"
+	"github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
 )
 
@@ -53,10 +53,10 @@ func (c *convertor) ConvertToTable(_ context.Context, obj runtime.Object, _ runt
 		}
 	}
 
-	table.Rows, err = metatable.MetaToTableRow(obj, func(obj runtime.Object, _ metav1.Object, _, _ string) ([]interface{}, error) {
+	table.Rows, err = metatable.MetaToTableRow(obj, func(obj runtime.Object, _ metav1.Object, _, _ string) ([]any, error) {
 		var (
 			gardenlet = obj.(*seedmanagement.Gardenlet)
-			cells     = []interface{}{}
+			cells     = []any{}
 		)
 		cells = append(cells, gardenlet.Name)
 		cells = append(cells, gardenlet.Spec.Deployment.Helm.OCIRepository.GetURL())

@@ -7,6 +7,7 @@ package matchers
 import (
 	"context"
 
+	"github.com/google/go-cmp/cmp"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
 	"github.com/onsi/gomega/types"
@@ -42,74 +43,47 @@ func DeepDerivativeEqual(expected any) types.GomegaMatcher {
 
 // BeNotFoundError checks if error is NotFound.
 func BeNotFoundError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: apierrors.IsNotFound,
-		message:   "NotFound",
-	}
+	return MatchError(apierrors.IsNotFound, "NotFound")
 }
 
 // BeNotRegisteredError checks if error is NotRegistered.
 func BeNotRegisteredError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: runtime.IsNotRegisteredError,
-		message:   "NotRegistered",
-	}
+	return MatchError(runtime.IsNotRegisteredError, "NotRegistered")
 }
 
 // BeAlreadyExistsError checks if error is AlreadyExists.
 func BeAlreadyExistsError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: apierrors.IsAlreadyExists,
-		message:   "AlreadyExists",
-	}
+	return MatchError(apierrors.IsAlreadyExists, "AlreadyExists")
 }
 
 // BeForbiddenError checks if error is Forbidden.
 func BeForbiddenError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: apierrors.IsForbidden,
-		message:   "Forbidden",
-	}
+	return MatchError(apierrors.IsForbidden, "Forbidden")
 }
 
 // BeBadRequestError checks if error is BadRequest.
 func BeBadRequestError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: apierrors.IsBadRequest,
-		message:   "BadRequest",
-	}
+	return MatchError(apierrors.IsBadRequest, "BadRequest")
 }
 
 // BeNoMatchError checks if error is a NoMatchError.
 func BeNoMatchError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: meta.IsNoMatchError,
-		message:   "NoMatch",
-	}
+	return MatchError(meta.IsNoMatchError, "NoMatch")
 }
 
 // BeMissingKindError checks if error is a MissingKindError.
 func BeMissingKindError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: runtime.IsMissingKind,
-		message:   "Object 'Kind' is missing",
-	}
+	return MatchError(runtime.IsMissingKind, "Object 'Kind' is missing")
 }
 
 // BeInternalServerError checks if error is a InternalServerError.
 func BeInternalServerError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: apierrors.IsInternalError,
-		message:   "",
-	}
+	return MatchError(apierrors.IsInternalError, "")
 }
 
 // BeInvalidError checks if error is an InvalidError.
 func BeInvalidError() types.GomegaMatcher {
-	return &kubernetesErrors{
-		checkFunc: apierrors.IsInvalid,
-		message:   "Invalid",
-	}
+	return MatchError(apierrors.IsInvalid, "Invalid")
 }
 
 // ShareSameReferenceAs checks if objects shares the same underlying reference as the passed object.
@@ -124,13 +98,15 @@ func ShareSameReferenceAs(expected any) types.GomegaMatcher {
 // NewManagedResourceContainsObjectsMatcher returns a function for a matcher that checks
 // if the given objects are handled by the given managed resource.
 // It is expected that the data keys of referenced secret(s) follow the semantics of `managedresources.Registry`.
-func NewManagedResourceContainsObjectsMatcher(c client.Client) func(...client.Object) types.GomegaMatcher {
+// It allows to pass additional options to the underlying comparison, e.g. to ignore certain fields.
+func NewManagedResourceContainsObjectsMatcher(c client.Client, compareOptions ...cmp.Option) func(...client.Object) types.GomegaMatcher {
 	return func(objs ...client.Object) types.GomegaMatcher {
 		return &managedResourceObjectsMatcher{
 			ctx:             context.Background(),
 			client:          c,
 			decoder:         serializer.NewCodecFactory(c.Scheme()).UniversalDeserializer(),
 			expectedObjects: expectedObjects(objs, c.Scheme()),
+			compareOptions:  compareOptions,
 		}
 	}
 }
@@ -139,7 +115,8 @@ func NewManagedResourceContainsObjectsMatcher(c client.Client) func(...client.Ob
 // if the exact list of given objects are handled by the given managed resource.
 // Any extra objects found through the ManagedResource let the matcher fail.
 // It is expected that the data keys of referenced secret(s) follow the semantics of `managedresources.Registry`.
-func NewManagedResourceConsistOfObjectsMatcher(c client.Client) func(...client.Object) types.GomegaMatcher {
+// It allows to pass additional options to the underlying comparison, e.g. to ignore certain fields.
+func NewManagedResourceConsistOfObjectsMatcher(c client.Client, compareOptions ...cmp.Option) func(...client.Object) types.GomegaMatcher {
 	return func(objs ...client.Object) types.GomegaMatcher {
 		return &managedResourceObjectsMatcher{
 			ctx:               context.Background(),
@@ -147,6 +124,7 @@ func NewManagedResourceConsistOfObjectsMatcher(c client.Client) func(...client.O
 			decoder:           serializer.NewCodecFactory(c.Scheme()).UniversalDeserializer(),
 			expectedObjects:   expectedObjects(objs, c.Scheme()),
 			extraObjectsCheck: true,
+			compareOptions:    compareOptions,
 		}
 	}
 }

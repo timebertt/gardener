@@ -71,7 +71,7 @@ func createIstio(testValues istioTestValues) istio.Interface {
 		testValues.priorityClassName,
 		testValues.istiodEnabled,
 		testValues.labels,
-		testValues.kubeAPIServerPolicyLabel,
+		[]string{testValues.kubeAPIServerPolicyLabel},
 		testValues.lbAnnotations,
 		testValues.loadBalancerClass,
 		testValues.externalTrafficPolicy,
@@ -89,15 +89,9 @@ func createIstio(testValues istioTestValues) istio.Interface {
 }
 
 func checkIstio(istioDeploy istio.Interface, testValues istioTestValues) {
-	var minReplicas, maxReplicas *int
-
-	if zoneSize := len(testValues.zones); zoneSize > 1 {
-		minReplicas = ptr.To(zoneSize * 2)
-		maxReplicas = ptr.To(zoneSize * 6)
-		if features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) {
-			maxReplicas = ptr.To(zoneSize * 8)
-		}
-	}
+	zoneSize := len(testValues.zones)
+	minReplicas := ptr.To(max(1, zoneSize) * 2)
+	maxReplicas := ptr.To(max(1, zoneSize) * 16)
 
 	networkPolicyLabels := map[string]string{
 		"networking.gardener.cloud/to-dns":                                     "allowed",
@@ -107,10 +101,10 @@ func checkIstio(istioDeploy istio.Interface, testValues istioTestValues) {
 	}
 
 	if testValues.vpnEnabled {
+		networkPolicyLabels["networking.resources.gardener.cloud/to-all-shoots-istio-basic-auth-server-tcp-10000"] = "allowed"
 		networkPolicyLabels["networking.resources.gardener.cloud/to-all-shoots-vpn-seed-server-tcp-1194"] = "allowed"
 		networkPolicyLabels["networking.resources.gardener.cloud/to-all-shoots-vpn-seed-server-0-tcp-1194"] = "allowed"
 		networkPolicyLabels["networking.resources.gardener.cloud/to-all-shoots-vpn-seed-server-1-tcp-1194"] = "allowed"
-		networkPolicyLabels["networking.resources.gardener.cloud/to-garden-nginx-ingress-controller-tcp-443"] = "allowed"
 	}
 
 	Expect(istioDeploy.GetValues()).To(Equal(istio.Values{
@@ -160,21 +154,24 @@ func checkAdditionalIstioGateway(cl client.Client,
 	dualstack bool) {
 	var (
 		zones                    []string
-		minReplicas              *int
-		maxReplicas              *int
 		enforceSpreadAcrossHosts bool
 		err                      error
 
 		ingressValues = istioDeploy.GetValues().IngressGateway
 	)
 
-	if zone == nil {
-		minReplicas = ingressValues[0].MinReplicas
-		maxReplicas = ingressValues[0].MaxReplicas
-	} else {
+	minReplicas := ingressValues[0].MinReplicas
+	maxReplicas := ingressValues[0].MaxReplicas
+
+	enforceSpreadAcrossHosts = ingressValues[0].EnforceSpreadAcrossHosts
+
+	if zone != nil {
 		zones = []string{*zone}
 
-		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(context.Background(), cl, []string{*zone})
+		minReplicas = ptr.To(2)
+		maxReplicas = ptr.To(16)
+
+		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(context.Background(), cl, zones)
 		Expect(err).ToNot(HaveOccurred())
 	}
 

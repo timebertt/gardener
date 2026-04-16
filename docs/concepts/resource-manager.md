@@ -535,7 +535,9 @@ Otherwise, once approved, the `kube-controller-manager`'s `csrsigner` controller
 ### [`NetworkPolicy` Controller](../../pkg/resourcemanager/controller/networkpolicy)
 
 This controller reconciles `Service`s with a non-empty `.spec.podSelector`.
-It creates two `NetworkPolicy`s for each port in the `.spec.ports[]` list.
+It creates two `NetworkPolicy`s for each port in the `.spec.ports[]` list, but only if there are pods in the target namespace carrying the corresponding `networking.resources.gardener.cloud/to-*` label.
+When no matching pods exist, the policies are not created (or are deleted if they existed before).
+Pods appearing or disappearing with these labels trigger re-reconciliation of the affected services.
 For example:
 
 ```yaml
@@ -851,6 +853,109 @@ spec:
 > ℹ️ Note that `Ingress` resources reference the service port while `NetworkPolicy`s reference the target port/container port.
 > The controller automatically translates this when reconciling the `NetworkPolicy` resources.
 
+#### Services Exposed via Istio `VirtualService` Resources
+
+The controller watches Istio `VirtualService` resources and automatically creates `NetworkPolicy` resources allowing the respective ingress/egress traffic for the backends exposed by the `VirtualService`s.
+This way, neither custom `NetworkPolicy`s nor custom labels must be provided.
+
+As an example, let's assume that istio ingress gateway is running in namespace `istio-ingress` and  above `gardener-resource-manager` `Service` was exposed via the following `VirtualService` and `Gateway` resources:
+
+```yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: grm-gateway
+  namespace: a
+spec:
+  selector:
+    foo: bar
+  servers:
+  - hosts:
+    - grm.foo.example.com
+    port:
+      name: tls
+      number: 443
+      protocol: HTTPS
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: gardener-resource-manager
+  namespace: a
+spec:
+  hosts:
+  - grm.foo.example.com
+  gateways:
+  - grm-gateway
+  http:
+  - route:
+    - destination:
+        host: gardener-resource-manager.a.svc.cluster.local
+        port:
+          number: 443
+```
+
+As a result, the controller would automatically create the following `NetworkPolicy`s:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  annotations:
+    gardener.cloud/description: Allows ingress TCP traffic to port 10250 for pods
+      selected by the a/gardener-resource-manager service selector from
+      pods running in namespace istio-ingress labeled with map[foo:bar].
+  name: ingress-to-gardener-resource-manager-tcp-10250-from-istio-ingress
+  namespace: a
+spec:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              foo: bar
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-ingress
+      ports:
+        - port: 10250
+          protocol: TCP
+  podSelector:
+    matchLabels:
+      app: gardener-resource-manager
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  annotations:
+    gardener.cloud/description: Allows egress TCP traffic to port 10250 from pods
+      running in namespace istio-ingress labeled with map[foo:bar] to pods selected by
+      the a/gardener-resource-manager service selector.
+  name: egress-to-a-gardener-resource-manager-tcp-10250-from-istio
+  namespace: istio-ingress
+spec:
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: gardener-resource-manager
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: a
+    ports:
+    - port: 10250
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      foo: bar
+  policyTypes:
+  - Egress
+```
+
+> ℹ️ Note that `VirtualService` resources reference the service port while `NetworkPolicy`s reference the target port/container port.
+> The controller automatically translates this when reconciling the `NetworkPolicy` resources.
+
 ### [`Node` Controller](../../pkg/resourcemanager/controller/node)
 
 #### [Critical Components Controller](../../pkg/resourcemanager/controller/node/criticalcomponents)
@@ -873,6 +978,10 @@ Consider increasing the maximum delay by annotating the `Shoot` with `shoot.gard
 The highest possible value is `1800`.
 
 The controller adds the `node-agent.gardener.cloud/reconciliation-delay` annotation to nodes whose value is read by the [node-agent](node-agent.md)s.
+
+> [!NOTE]
+> Nodes which should never be updated in parallel and are marked for 'serial reconciliation' (e.g., control plane nodes for self-hosted shoot clusters) are excluded by this controller.
+> Read more about it [here](node-agent.md#serial-reconciliation).
 
 ## Webhooks
 
@@ -1053,6 +1162,18 @@ Gardener enables this webhook to schedule pods of deployments across nodes and z
 
 Please note that the `gardener-resource-manager` itself as well as pods labelled with `topology-spread-constraints.resources.gardener.cloud/skip` are excluded from any mutations.
 
+#### Pod Scheduler Name
+
+This webhook mutates `Pod`s to set a custom scheduler name in `.spec.schedulerName`.
+It only overwrites the scheduler name when no custom scheduler name is already specified (i.e., when `.spec.schedulerName` is empty or set to `default-scheduler`).
+This webhook is useful when a custom scheduler (e.g., `bin-packing-scheduler`) should be used by default for all pods in certain namespaces.
+
+#### Seccomp Profile
+
+This webhook mutates `Pod`s to set a default seccomp profile in `.spec.securityContext.seccompProfile`.
+If the pod does not already have a seccomp profile specified, this webhook adds the `RuntimeDefault` seccomp profile type.
+This enhances security by ensuring that pods run with a seccomp profile that restricts the system calls they can make, reducing the attack surface.
+
 #### System Components Webhook
 
 If enabled, this webhook handles scheduling concerns for system components `Pod`s (except those managed by `DaemonSet`s).
@@ -1149,6 +1270,13 @@ vpa-in-place-updates.resources.gardener.cloud/skip
 ```
 
 could be appended to the resource metadata. With the _label_ specified, the webhook will filter out the resources, leaving its current `updateMode` configuration.
+To indicate that a `vpa` resource has already been mutated by the _webhook_, an additional
+
+```
+vpa-in-place-updates.resources.gardener.cloud/mutated
+```
+
+_label_ gets added to the resource metadata.
 
 Available for deployment with both [gardenlet](https://github.com/gardener/gardener/blob/master/docs/concepts/gardenlet.md) and [gardener-operator](https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md), enabling the webhook happens by activating a dedicated _feature gate_ within the respective component manifest:
 

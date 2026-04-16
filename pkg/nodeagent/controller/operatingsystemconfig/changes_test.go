@@ -32,22 +32,7 @@ var _ = Describe("Changes", func() {
 		Entry("changed kubeReserved CPU", &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "static", KubeReserved: map[string]string{"cpu": "100m"}}, &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "none", KubeReserved: map[string]string{"cpu": "200m"}}, true, true, BeNil()),
 		Entry("changed kubeReserved memory", &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"memory": "100Mi"}}, &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"memory": "200Mi"}}, false, true, BeNil()),
 		Entry("changed kubeReserved ephemeral-storage", &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"ephemeral-storage": "100Gi"}}, &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"ephemeral-storage": "200Gi"}}, false, true, BeNil()),
-		Entry("changed kubeReserved PID", &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"pids": "10k"}}, &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"pids": "20k"}}, false, true, BeNil()),
-
-		Entry("invalid systemReserved CPU", &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "static", KubeReserved: map[string]string{"cpu": "100m"}, SystemReserved: map[string]string{"cpu": "aoeu"}}, &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "none", KubeReserved: map[string]string{"cpu": "100m"}}, true, false, MatchError(ContainSubstring("failed to parse"))),
-		Entry("changed systemReserved CPU", &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "static", SystemReserved: map[string]string{"cpu": "100m"}}, &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "none", SystemReserved: map[string]string{"cpu": "200m"}}, true, true, BeNil()),
-		Entry("changed systemReserved memory", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"memory": "100Mi"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"memory": "200Mi"}}, false, true, BeNil()),
-		Entry("changed systemReserved ephemeral-storage", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"ephemeral-storage": "100Gi"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"ephemeral-storage": "200Gi"}}, false, true, BeNil()),
-		Entry("changed systemReserved PID", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"pids": "10k"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"pids": "20k"}}, false, true, BeNil()),
-
-		Entry("sum of systemReserved and kubeReserved cpu changed", &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "static", SystemReserved: map[string]string{"cpu": "100m"}, KubeReserved: map[string]string{"cpu": "100m"}}, &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "none", SystemReserved: map[string]string{"cpu": "200m"}, KubeReserved: map[string]string{"cpu": "200m"}}, true, true, BeNil()),
-		Entry("sum of systemReserved and kubeReserved cpu remains same", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"cpu": "100m"}, KubeReserved: map[string]string{"cpu": "50m"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"cpu": "50m"}, KubeReserved: map[string]string{"cpu": "100m"}}, false, false, BeNil()),
-		Entry("sum of systemReserved and kubeReserved memory changed", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"memory": "100Mi"}, KubeReserved: map[string]string{"memory": "100Mi"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"memory": "200Mi"}, KubeReserved: map[string]string{"memory": "200Mi"}}, false, true, BeNil()),
-		Entry("sum of systemReserved and kubeReserved memory remains same", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"memory": "100Mi"}, KubeReserved: map[string]string{"memory": "50Mi"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"memory": "50Mi"}, KubeReserved: map[string]string{"memory": "100Mi"}}, false, false, BeNil()),
-		Entry("sum of systemReserved and kubeReserved ephemeral-storage changed", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"ephemeral-storage": "100Gi"}, KubeReserved: map[string]string{"ephemeral-storage": "100Gi"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"ephemeral-storage": "200Gi"}, KubeReserved: map[string]string{"ephemeral-storage": "200Gi"}}, false, true, BeNil()),
-		Entry("sum of systemReserved and kubeReserved ephemeral-storage remains same", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"ephemeral-storage": "100Gi"}, KubeReserved: map[string]string{"ephemeral-storage": "50Gi"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"ephemeral-storage": "50Gi"}, KubeReserved: map[string]string{"ephemeral-storage": "100Gi"}}, false, false, BeNil()),
-		Entry("sum of systemReserved and kubeReserved PID changed", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"pid": "10k"}, KubeReserved: map[string]string{"pid": "10k"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"pid": "20k"}, KubeReserved: map[string]string{"pid": "20k"}}, false, true, BeNil()),
-		Entry("sum of systemReserved and kubeReserved PID remains same", &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"pid": "10k"}, KubeReserved: map[string]string{"pid": "5k"}}, &kubeletconfigv1beta1.KubeletConfiguration{SystemReserved: map[string]string{"pid": "5k"}, KubeReserved: map[string]string{"pid": "10k"}}, false, false, BeNil()),
+		Entry("changed kubeReserved PID", &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"pid": "10k"}}, &kubeletconfigv1beta1.KubeletConfiguration{KubeReserved: map[string]string{"pid": "20k"}}, false, true, BeNil()),
 
 		Entry("changed evictionHard memory.available", &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "static", EvictionHard: map[string]string{"memory.available": "100Mi"}}, &kubeletconfigv1beta1.KubeletConfiguration{CPUManagerPolicy: "none", EvictionHard: map[string]string{"memory.available": "200Mi"}}, true, true, BeNil()),
 		Entry("changed evictionHard imagefs.available", &kubeletconfigv1beta1.KubeletConfiguration{EvictionHard: map[string]string{"imagefs.available": "100Mi"}}, &kubeletconfigv1beta1.KubeletConfiguration{EvictionHard: map[string]string{"imagefs.available": "200Mi"}}, false, true, BeNil()),
@@ -175,6 +160,54 @@ var _ = Describe("Changes", func() {
 			caRotation, saKeyRotation := ComputeCredentialsRotationChanges(oldOSC, newOSC)
 			Expect(caRotation).To(BeFalse())
 			Expect(saKeyRotation).To(BeFalse())
+		})
+	})
+
+	Describe("CollectAllFiles", func() {
+		It("should return all files when NodeName is empty", func() {
+			osc := &extensionsv1alpha1.OperatingSystemConfig{
+				Spec: extensionsv1alpha1.OperatingSystemConfigSpec{
+					Files: []extensionsv1alpha1.File{
+						{Path: "/etc/foo", HostName: nil},
+						{Path: "/etc/bar", HostName: nil},
+					},
+				},
+				Status: extensionsv1alpha1.OperatingSystemConfigStatus{
+					ExtensionFiles: []extensionsv1alpha1.File{
+						{Path: "/etc/baz", HostName: nil},
+					},
+				},
+			}
+			Expect(CollectAllFiles(osc, "node-1")).To(ConsistOf(
+				extensionsv1alpha1.File{Path: "/etc/foo", HostName: nil},
+				extensionsv1alpha1.File{Path: "/etc/bar", HostName: nil},
+				extensionsv1alpha1.File{Path: "/etc/baz", HostName: nil},
+			))
+		})
+
+		It("should filter files by NodeName", func() {
+			osc := &extensionsv1alpha1.OperatingSystemConfig{
+				Spec: extensionsv1alpha1.OperatingSystemConfigSpec{
+					Files: []extensionsv1alpha1.File{
+						{Path: "/etc/foo", HostName: ptr.To("node-1")},
+						{Path: "/etc/bar", HostName: ptr.To("node-2")},
+						{Path: "/etc/all", HostName: nil},
+					},
+				},
+				Status: extensionsv1alpha1.OperatingSystemConfigStatus{
+					ExtensionFiles: []extensionsv1alpha1.File{
+						{Path: "/etc/baz", HostName: ptr.To("node-1")},
+						{Path: "/etc/qux", HostName: ptr.To("node-3")},
+						{Path: "/etc/sts", HostName: nil},
+					},
+				},
+			}
+			Expect(CollectAllFiles(osc, "node-1")).To(ConsistOf(
+				extensionsv1alpha1.File{Path: "/etc/foo", HostName: ptr.To("node-1")},
+				extensionsv1alpha1.File{Path: "/etc/baz", HostName: ptr.To("node-1")},
+				extensionsv1alpha1.File{Path: "/etc/all", HostName: nil},
+				extensionsv1alpha1.File{Path: "/etc/sts", HostName: nil},
+			))
 		})
 	})
 })

@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
@@ -28,7 +29,6 @@ import (
 	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	mockresourcemanager "github.com/gardener/gardener/pkg/component/gardener/resourcemanager/mock"
 	. "github.com/gardener/gardener/pkg/component/shared"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
@@ -74,7 +74,7 @@ var _ = Describe("ResourceManager", func() {
 				VPAInPlaceUpdatesEnabled:            false,
 				Replicas:                            ptr.To[int32](2),
 				ResourceClass:                       ptr.To("seed"),
-				ResponsibilityMode:                  resourcemanager.ForSource,
+				ResponsibilityMode:                  resourcemanager.ForRuntime,
 			}))
 		})
 
@@ -93,7 +93,7 @@ var _ = Describe("ResourceManager", func() {
 				MaxConcurrentCSRApproverWorkers:    ptr.To(5),
 				MaxConcurrentHealthWorkers:         ptr.To(10),
 				MaxConcurrentTokenRequestorWorkers: ptr.To(5),
-				ResponsibilityMode:                 resourcemanager.ForTarget,
+				ResponsibilityMode:                 resourcemanager.ForShootOrVirtualGarden,
 				TargetNamespaces:                   []string{},
 				WatchedNamespace:                   &namespace,
 			}))
@@ -224,13 +224,6 @@ var _ = Describe("ResourceManager", func() {
 								{Type: "ResourcesApplied", Status: gardencorev1beta1.ConditionTrue},
 								{Type: "ResourcesHealthy", Status: gardencorev1beta1.ConditionTrue},
 							}
-							return nil
-						}),
-
-						// delete bootstrap kubeconfig
-						c.EXPECT().Delete(ctx, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, obj *corev1.Secret, _ ...client.DeleteOption) error {
-							Expect(obj.Name).To(Equal(bootstrapKubeconfigSecret.Name))
-							Expect(obj.Namespace).To(Equal(bootstrapKubeconfigSecret.Namespace))
 							return nil
 						}),
 
@@ -388,45 +381,6 @@ var _ = Describe("ResourceManager", func() {
 
 						Expect(DeployGardenerResourceManager(ctx, k8sSeedClient.Client(), sm, resourceManager, namespace, setReplicas, getAPIServerAddress).Error()).To(ContainSubstring(fmt.Sprintf("managed resource %s/%s is not healthy", namespace, managedResource.Name)))
 					})
-				})
-
-				It("fails because the bootstrap kubeconfig cannot be deleted", func() {
-					gomock.InOrder(
-						// create bootstrap kubeconfig
-						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, s *corev1.Secret, _ ...client.CreateOption) error {
-							Expect(s.Data["kubeconfig"]).NotTo(BeNil())
-							return nil
-						}),
-
-						// set secrets and deploy with bootstrap kubeconfig
-						resourceManager.EXPECT().SetSecrets(&secretMatcher{
-							bootstrapKubeconfigName: &bootstrapKubeconfigSecret.Name,
-						}),
-						resourceManager.EXPECT().Deploy(ctx),
-
-						// wait for shoot access secret to be reconciled and managed resource to be healthy
-						c.EXPECT().Get(gomock.Any(), client.ObjectKeyFromObject(shootAccessSecret), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, obj *corev1.Secret, _ ...client.GetOption) error {
-							obj.Annotations = map[string]string{"serviceaccount.resources.gardener.cloud/token-renew-timestamp": time.Now().Add(time.Hour).Format(time.RFC3339)}
-							return nil
-						}),
-						c.EXPECT().Get(gomock.Any(), client.ObjectKeyFromObject(managedResource), gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, obj *resourcesv1alpha1.ManagedResource, _ ...client.GetOption) error {
-							obj.Status.ObservedGeneration = obj.Generation
-							obj.Status.Conditions = []gardencorev1beta1.Condition{
-								{Type: "ResourcesApplied", Status: gardencorev1beta1.ConditionTrue},
-								{Type: "ResourcesHealthy", Status: gardencorev1beta1.ConditionTrue},
-							}
-							return nil
-						}),
-
-						// delete bootstrap kubeconfig
-						c.EXPECT().Delete(ctx, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, obj *corev1.Secret, _ ...client.DeleteOption) error {
-							Expect(obj.Name).To(Equal(bootstrapKubeconfigSecret.Name))
-							Expect(obj.Namespace).To(Equal(bootstrapKubeconfigSecret.Namespace))
-							return fakeErr
-						}),
-					)
-
-					Expect(DeployGardenerResourceManager(ctx, k8sSeedClient.Client(), sm, resourceManager, namespace, setReplicas, getAPIServerAddress)).To(MatchError(fakeErr))
 				})
 			})
 		})

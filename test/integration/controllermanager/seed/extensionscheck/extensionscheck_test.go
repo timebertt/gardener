@@ -48,9 +48,21 @@ var _ = Describe("Seed ExtensionsCheck controller tests", func() {
 				DNS: gardencorev1beta1.SeedDNS{
 					Provider: &gardencorev1beta1.SeedDNSProvider{
 						Type: "providerType",
-						SecretRef: corev1.SecretReference{
-							Name:      "some-secret",
-							Namespace: "some-namespace",
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
+						},
+					},
+					Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+						Type:   "providerType",
+						Domain: "internal.example.com",
+						CredentialsRef: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
 						},
 					},
 				},
@@ -87,7 +99,7 @@ var _ = Describe("Seed ExtensionsCheck controller tests", func() {
 				Labels:       map[string]string{testID: testRunID},
 			},
 			Spec: gardencorev1beta1.ControllerInstallationSpec{
-				SeedRef: corev1.ObjectReference{
+				SeedRef: &corev1.ObjectReference{
 					Name: seed.Name,
 				},
 				RegistrationRef: corev1.ObjectReference{

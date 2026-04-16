@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/onsi/gomega/format"
-	"golang.org/x/exp/maps"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,6 +26,7 @@ type managedResourceObjectsMatcher struct {
 	decoder           runtime.Decoder
 	expectedObjects   map[string]client.Object
 	extraObjectsCheck bool
+	compareOptions    []cmp.Option
 
 	extraObjects             []string
 	missingObjects           []string
@@ -99,7 +99,7 @@ func (m *managedResourceObjectsMatcher) Match(actual any) (bool, error) {
 	}
 
 	// Use early returns for the following checks to not overwhelm Gomega output.
-	m.mismatchExpectedToActual = findMismatchObjects(availableObjects, m.expectedObjects)
+	m.mismatchExpectedToActual = findMismatchObjects(availableObjects, m.expectedObjects, m.compareOptions...)
 	if len(m.mismatchExpectedToActual) > 0 {
 		return false, nil
 	}
@@ -119,13 +119,13 @@ func (m *managedResourceObjectsMatcher) Match(actual any) (bool, error) {
 	return true, nil
 }
 
-func findMismatchObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) map[client.Object]*mismatch {
+func findMismatchObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object, compareOptions ...cmp.Option) map[client.Object]*mismatch {
 	mismatches := make(map[client.Object]*mismatch)
 
 	for expectedObjKey, expectedObj := range expectedObjects {
 		actualObject, ok := availableObjects[expectedObjKey]
 		if ok {
-			diff := cmp.Diff(actualObject, expectedObj, cmpopts.EquateEmpty())
+			diff := cmp.Diff(actualObject, expectedObj, append(compareOptions, cmpopts.EquateEmpty())...)
 			if diff != "" {
 				mismatches[expectedObj] = &mismatch{diff: diff, obj: actualObject}
 			}
@@ -136,11 +136,11 @@ func findMismatchObjects(availableObjects map[string]client.Object, expectedObje
 }
 
 func findMissingObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) []string {
-	return sets.New(maps.Keys(expectedObjects)...).Difference(sets.New(maps.Keys(availableObjects)...)).UnsortedList()
+	return sets.KeySet(expectedObjects).Difference(sets.KeySet(availableObjects)).UnsortedList()
 }
 
 func findExtraObjects(availableObjects map[string]client.Object, expectedObjects map[string]client.Object) []string {
-	return sets.New(maps.Keys(availableObjects)...).Difference(sets.New(maps.Keys(expectedObjects)...)).UnsortedList()
+	return sets.KeySet(availableObjects).Difference(sets.KeySet(expectedObjects)).UnsortedList()
 }
 
 func objectKey(obj client.Object, scheme *runtime.Scheme) string {

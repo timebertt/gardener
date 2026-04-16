@@ -59,7 +59,7 @@ var labels = map[string]string{"e2e-test": "in-cluster-client"}
 // - one pod uses the injected env var
 // - one pod disables injection and relies on the default service link env vars
 // - one pod explicitly overwrites the env var
-// See docs/usage/networking/shoot_kubernetes_service_host_injection.md and docs/proposals/08-shoot-apiserver-via-sni.md
+// See docs/usage/networking/shoot_kubernetes_service_host_injection.md and https://github.com/gardener/enhancements/tree/main/geps/0008-shoot-apiserver-via-sni
 func VerifyInClusterAccessToAPIServer(s *ShootContext) {
 	GinkgoHelper()
 
@@ -125,7 +125,7 @@ func VerifyInClusterAccessToAPIServer(s *ShootContext) {
 					g.Expect(health.IsPodReady(pod)).To(BeTrue())
 				}).Should(Succeed(), "pod %q should get ready", client.ObjectKeyFromObject(pod))
 			}
-		}, SpecTimeout(time.Minute))
+		}, SpecTimeout(3*time.Minute))
 
 		It("should access the API server via direct path", func(ctx SpecContext) {
 			// this pod connects to the API server directly, i.e., uses the KUBERNETES_SERVICE_HOST env var injected by gardener

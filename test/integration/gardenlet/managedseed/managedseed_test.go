@@ -16,11 +16,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement/encoding"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
@@ -264,9 +264,6 @@ var _ = Describe("ManagedSeed controller test", func() {
 				APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
 				Kind:       "GardenletConfiguration",
 			},
-			FeatureGates: map[string]bool{
-				"DoNotCopyBackupCredentials": true,
-			},
 			GardenClientConnection: &gardenletconfigv1alpha1.GardenClientConnection{
 				KubeconfigSecret: &corev1.SecretReference{
 					Name:      "gardenlet-kubeconfig",
@@ -289,6 +286,18 @@ var _ = Describe("ManagedSeed controller test", func() {
 								Kind:       "Secret",
 								Name:       backupSecret.Name,
 								Namespace:  backupSecret.Namespace,
+							},
+						},
+						DNS: gardencorev1beta1.SeedDNS{
+							Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+								Type:   "provider",
+								Domain: "internal.example.com",
+								CredentialsRef: corev1.ObjectReference{
+									APIVersion: "v1",
+									Kind:       "Secret",
+									Name:       "some-secret",
+									Namespace:  "some-namespace",
+								},
 							},
 						},
 					},

@@ -37,5 +37,5 @@ func (w *workerDelegate) updateWorkerProviderStatus(ctx context.Context, workerS
 
 	patch := client.MergeFrom(w.worker.DeepCopy())
 	w.worker.Status.ProviderStatus = &runtime.RawExtension{Object: workerStatus}
-	return w.client.Status().Patch(ctx, w.worker, patch)
+	return w.runtimeClient.Status().Patch(ctx, w.worker, patch)
 }

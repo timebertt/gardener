@@ -8,7 +8,7 @@ spec:
     kind: CloudProfile
     name: local
   dns:
-    domain: root.garden.local.gardener.cloud
+    domain: root.garden.external.local.gardener.cloud
   region: local
   provider:
     type: local
@@ -34,7 +34,10 @@ spec:
         image:
           name: local
       minimum: 1
-      maximum: 1
+      # Setting max > min triggers the deployment of the cluster-autoscaler
+      maximum: 2
+      systemComponents:
+        allow: false
   kubernetes:
     version: 1.33.0
     kubelet:

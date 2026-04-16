@@ -65,7 +65,7 @@ func ComputeExtensions(resources gardenadm.Resources, runsControlPlane, managedI
 				Spec: gardencorev1beta1.ControllerInstallationSpec{
 					RegistrationRef: corev1.ObjectReference{Name: controllerRegistration.Name},
 					DeploymentRef:   &corev1.ObjectReference{Name: controllerDeployment.Name},
-					SeedRef:         corev1.ObjectReference{Name: resources.Shoot.Name},
+					SeedRef:         &corev1.ObjectReference{Name: resources.Shoot.Name},
 				},
 			}
 		)
@@ -92,7 +92,7 @@ func wantedExtensionKinds(runsControlPlane, managedInfrastructure bool) sets.Set
 		// When running `gardenadm bootstrap` against the bootstrap cluster, we create Infrastructure, OSC, Worker, and
 		// DNSRecord for the control plane of the self-hosted shoot cluster, so we only need to deploy a subset of the
 		// extensions required for the shoot.
-		return sets.New[string](extensionsv1alpha1.InfrastructureResource, extensionsv1alpha1.OperatingSystemConfigResource, extensionsv1alpha1.WorkerResource, extensionsv1alpha1.DNSRecordResource)
+		return sets.New(extensionsv1alpha1.InfrastructureResource, extensionsv1alpha1.OperatingSystemConfigResource, extensionsv1alpha1.WorkerResource, extensionsv1alpha1.DNSRecordResource)
 	}
 
 	// In the "unmanaged infrastructure" scenario, we don't deploy Infrastructure, Worker, and DNSRecord extensions
@@ -163,15 +163,22 @@ func controllerRegistrationSliceToList(controllerRegistrations []*gardencorev1be
 // ReconcileExtensionControllerInstallations reconciles the ControllerInstallation resources necessary to deploy the
 // extension controllers.
 func (b *GardenadmBotanist) ReconcileExtensionControllerInstallations(ctx context.Context, bootstrapMode bool) error {
-	reconciler := controllerinstallation.Reconciler{
-		GardenClient:              b.GardenClient,
-		SeedClientSet:             b.SeedClientSet,
-		HelmRegistry:              oci.NewHelmRegistry(b.SeedClientSet.Client()),
-		Clock:                     b.Clock,
-		Identity:                  &b.Shoot.GetInfo().Status.Gardener,
-		GardenNamespace:           b.Shoot.ControlPlaneNamespace,
-		BootstrapControlPlaneNode: bootstrapMode,
-	}
+	var (
+		shoot      = b.Shoot.GetInfo()
+		reconciler = controllerinstallation.Reconciler{
+			GardenClient:              b.GardenClient,
+			SeedClientSet:             b.SeedClientSet,
+			HelmRegistry:              oci.NewHelmRegistry(b.SeedClientSet.Client()),
+			Clock:                     b.Clock,
+			Identity:                  &shoot.Status.Gardener,
+			GardenNamespace:           b.Shoot.ControlPlaneNamespace,
+			BootstrapControlPlaneNode: bootstrapMode,
+			SelfHostedShootMeta: &types.NamespacedName{
+				Namespace: shoot.Namespace,
+				Name:      shoot.Name,
+			},
+		}
+	)
 
 	for _, extension := range b.Extensions {
 		b.Logger.Info("Reconciling ControllerInstallation using gardenlet's reconciliation logic", "controllerInstallationName", extension.ControllerInstallation.Name)

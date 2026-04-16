@@ -22,12 +22,6 @@ const (
 	// alpha: v1.54.0
 	DefaultSeccompProfile featuregate.Feature = "DefaultSeccompProfile"
 
-	// ShootCredentialsBinding enables the usage of the CredentialsBindingName API in shoot spec.
-	// owner: @vpnachev @dimityrmirchev
-	// alpha: v1.98.0
-	// beta: v1.107.0
-	ShootCredentialsBinding featuregate.Feature = "ShootCredentialsBinding"
-
 	// NewWorkerPoolHash enables a new calculation method for the worker pool hash. The new
 	// calculation supports rolling worker pools if `kubeReserved`, `systemReserved`, `evictionHard` or `cpuManagerPolicy`
 	// in the `kubelet` configuration are changed. All provider extensions must be upgraded
@@ -35,6 +29,7 @@ const (
 	// owner: @MichaelEischer
 	// alpha: v1.98.0
 	// beta: v1.126.0
+	// GA: v1.141.0
 	NewWorkerPoolHash featuregate.Feature = "NewWorkerPoolHash"
 
 	// InPlaceNodeUpdates enables setting the update strategy of worker pools to `AutoInPlaceUpdate` or `ManualInPlaceUpdate` in the Shoot API.
@@ -55,36 +50,69 @@ const (
 	// alpha: v1.117.0
 	CloudProfileCapabilities featuregate.Feature = "CloudProfileCapabilities"
 
+	// VersionClassificationLifecycle enables the features introduced by GEP-0032,
+	// including lifecycle-based classification for Kubernetes and machine image versions.
+	// owner: @rapsnx
+	// alpha: v1.137.0
+	VersionClassificationLifecycle featuregate.Feature = "VersionClassificationLifecycle"
+
 	// DoNotCopyBackupCredentials disables the copying of Shoot infrastructure credentials as backup credentials when the Shoot is used as a ManagedSeed.
 	// Operators are responsible for providing the credentials for backup explicitly.
 	// Credentials that were already copied will be labeled with "secret.backup.gardener.cloud/status=previously-managed" and would have to be cleaned up by operators.
 	// owner: @dimityrmirchev
 	// alpha: v1.121.0
 	// beta: v1.123.0
+	// GA: v1.134.0
 	DoNotCopyBackupCredentials featuregate.Feature = "DoNotCopyBackupCredentials"
 
 	// OpenTelemetryCollector enables the usage of an OpenTelemetry Collector instance in the Control Plane of Shoot clusters.
 	// All logs will be routed through the Collector before they reach the Vali instance.
 	// owner: @rrhubenov
 	// alpha: v1.124.0
+	// beta: v1.136.0
 	OpenTelemetryCollector featuregate.Feature = "OpenTelemetryCollector"
 
-	// UseUnifiedHTTPProxyPort enables the gardenlet to set up the unified HTTP proxy network infrastructure.
-	// Gardenlet will also reconfigure the API server proxy and shoot VPN client to connect to the unified port using the new X-Gardener-Destination header.
+	// VictoriaLogsBackend enables the deployment of VictoriaLogs instance in the Control Plane of Shoot clusters.
+	// VictoriaLogs will replace Vali as the log aggregation system.
+	// owner: @rrhubenov
+	// alpha: v1.137.0
+	VictoriaLogsBackend featuregate.Feature = "VictoriaLogsBackend"
+
+	// UseUnifiedHTTPProxyPort enables the API server proxy and shoot VPN client to connect to the unified port using the new X-Gardener-Destination header.
 	// owner: @hown3d
 	// alpha: v1.130.0
+	// beta: v1.140.0
 	UseUnifiedHTTPProxyPort featuregate.Feature = "UseUnifiedHTTPProxyPort"
 
 	// VPAInPlaceUpdates enables the usage of in-place Pod resource updates in the Vertical Pod Autoscaler resources
 	// to perform in-place Pod resource updates.
 	// owner: @vitanovs @ialidzhikov
 	// alpha: v1.133.0
+	// beta: v1.138.0
 	VPAInPlaceUpdates featuregate.Feature = "VPAInPlaceUpdates"
 
 	// CustomDNSServerInNodeLocalDNS enables custom server block support for NodeLocalDNS in the custom CoreDNS configuration of Shoot clusters.
 	// owner: @docktofuture
 	// beta: v1.133.0
 	CustomDNSServerInNodeLocalDNS featuregate.Feature = "CustomDNSServerInNodeLocalDNS"
+
+	// VPNBondingModeRoundRobin enables the usage of the "balance-rr" bonding mode for the HA VPN setup.
+	// owner: @domdom82
+	// alpha: v1.135.0
+	VPNBondingModeRoundRobin featuregate.Feature = "VPNBondingModeRoundRobin"
+
+	// PrometheusHealthChecks enables care controllers to query Prometheus for enhanced health checks of monitoring components. Detected health issues
+	// are reported in the respective `Shoot`, `Seed`, or `Garden` resource.
+	// owner: @vicwicker @istvanballok
+	// alpha: v1.135.0
+	PrometheusHealthChecks featuregate.Feature = "PrometheusHealthChecks"
+
+	// RemoveVali enables the automatic removal of Vali log aggregation components once VictoriaLogs has been deployed
+	// for a sufficient period. Requires VictoriaLogsBackend to be enabled. When both feature gates are enabled,
+	// Vali will be destroyed after VictoriaLogs has been running for 2 weeks.
+	// owner: @rrhubenov
+	// alpha: v1.140.0
+	RemoveVali featuregate.Feature = "RemoveVali"
 )
 
 // DefaultFeatureGate is the central feature gate map used by all gardener components.
@@ -112,17 +140,21 @@ var DefaultFeatureGate = utilfeature.DefaultMutableFeatureGate
 
 // AllFeatureGates is the list of all feature gates.
 var AllFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
-	DefaultSeccompProfile:         {Default: false, PreRelease: featuregate.Alpha},
-	ShootCredentialsBinding:       {Default: true, PreRelease: featuregate.Beta},
-	NewWorkerPoolHash:             {Default: true, PreRelease: featuregate.Beta},
-	InPlaceNodeUpdates:            {Default: false, PreRelease: featuregate.Alpha},
-	IstioTLSTermination:           {Default: false, PreRelease: featuregate.Alpha},
-	CloudProfileCapabilities:      {Default: false, PreRelease: featuregate.Alpha},
-	DoNotCopyBackupCredentials:    {Default: true, PreRelease: featuregate.Beta},
-	OpenTelemetryCollector:        {Default: false, PreRelease: featuregate.Alpha},
-	UseUnifiedHTTPProxyPort:       {Default: false, PreRelease: featuregate.Alpha},
-	VPAInPlaceUpdates:             {Default: false, PreRelease: featuregate.Alpha},
-	CustomDNSServerInNodeLocalDNS: {Default: true, PreRelease: featuregate.Beta},
+	DefaultSeccompProfile:          {Default: false, PreRelease: featuregate.Alpha},
+	NewWorkerPoolHash:              {Default: true, PreRelease: featuregate.GA, LockToDefault: true},
+	InPlaceNodeUpdates:             {Default: false, PreRelease: featuregate.Alpha},
+	IstioTLSTermination:            {Default: false, PreRelease: featuregate.Alpha},
+	CloudProfileCapabilities:       {Default: false, PreRelease: featuregate.Alpha},
+	DoNotCopyBackupCredentials:     {Default: true, PreRelease: featuregate.GA, LockToDefault: true},
+	OpenTelemetryCollector:         {Default: true, PreRelease: featuregate.Beta},
+	VictoriaLogsBackend:            {Default: false, PreRelease: featuregate.Alpha},
+	UseUnifiedHTTPProxyPort:        {Default: true, PreRelease: featuregate.Beta},
+	VPAInPlaceUpdates:              {Default: true, PreRelease: featuregate.Beta},
+	CustomDNSServerInNodeLocalDNS:  {Default: true, PreRelease: featuregate.Beta},
+	VPNBondingModeRoundRobin:       {Default: false, PreRelease: featuregate.Alpha},
+	PrometheusHealthChecks:         {Default: false, PreRelease: featuregate.Alpha},
+	VersionClassificationLifecycle: {Default: false, PreRelease: featuregate.Alpha},
+	RemoveVali:                     {Default: false, PreRelease: featuregate.Alpha},
 }
 
 // GetFeatures returns a feature gate map with the respective specifications. Non-existing feature gates are ignored.

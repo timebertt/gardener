@@ -81,12 +81,12 @@ type OperatingSystemConfigSpec struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	Units []Unit `json:"units,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+	Units []Unit `json:"units,omitempty" patchMergeKey:"name" patchStrategy:"merge"`
 	// Files is a list of files that should get written to the host's file system.
 	// +patchMergeKey=path
 	// +patchStrategy=merge
 	// +optional
-	Files []File `json:"files,omitempty" patchStrategy:"merge" patchMergeKey:"path"`
+	Files []File `json:"files,omitempty" patchMergeKey:"path" patchStrategy:"merge"`
 	// InPlaceUpdates contains the configuration for in-place updates.
 	// +optional
 	InPlaceUpdates *InPlaceUpdates `json:"inPlaceUpdates,omitempty"`
@@ -109,7 +109,7 @@ type Unit struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	DropIns []DropIn `json:"dropIns,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+	DropIns []DropIn `json:"dropIns,omitempty" patchMergeKey:"name" patchStrategy:"merge"`
 	// FilePaths is a list of files the unit depends on. If any file changes a restart of the dependent unit will be
 	// triggered. For each FilePath there must exist a File with matching Path in OperatingSystemConfig.Spec.Files.
 	FilePaths []string `json:"filePaths,omitempty"`
@@ -146,6 +146,11 @@ type File struct {
 	Permissions *uint32 `json:"permissions,omitempty"`
 	// Content describe the file's content.
 	Content FileContent `json:"content"`
+	// HostName contains the name of the host for host-specific configurations.
+	// If HostName is not empty the corresponding file will only be rolled out to the host with the specified name.
+	// Duplicate paths are only allowed if HostName is specified for all of them, none is nil and all values differ.
+	// +optional
+	HostName *string `json:"hostName,omitempty"`
 }
 
 // FileContent can either reference a secret or contain inline configuration.
@@ -198,12 +203,12 @@ type OperatingSystemConfigStatus struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	ExtensionUnits []Unit `json:"extensionUnits,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+	ExtensionUnits []Unit `json:"extensionUnits,omitempty" patchMergeKey:"name" patchStrategy:"merge"`
 	// ExtensionFiles is a list of additional files provided by the extension.
 	// +patchMergeKey=path
 	// +patchStrategy=merge
 	// +optional
-	ExtensionFiles []File `json:"extensionFiles,omitempty" patchStrategy:"merge" patchMergeKey:"path"`
+	ExtensionFiles []File `json:"extensionFiles,omitempty" patchMergeKey:"path" patchStrategy:"merge"`
 	// CloudConfig is a structure for containing the generated output for the given operating system
 	// config spec. It contains a reference to a secret as the result may contain confidential data.
 	// After Gardener v1.112, this will be only set for OperatingSystemConfigs with purpose 'provision'.

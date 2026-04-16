@@ -334,20 +334,32 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 								},
 							},
 						},
+						{
+							Name:  "OPENVPN_STATUS_PATH",
+							Value: filepath.Join(volumeMountPathStatusDir, "openvpn.status"),
+						},
 					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
-							TCPSocket: &corev1.TCPSocketAction{
-								Port: intstr.FromInt32(OpenVPNPort),
+							Exec: &corev1.ExecAction{
+								Command: []string{
+									"/bin/vpn-server",
+									"readiness",
+								},
 							},
 						},
+						InitialDelaySeconds: 15,
 					},
 					LivenessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
-							TCPSocket: &corev1.TCPSocketAction{
-								Port: intstr.FromInt32(OpenVPNPort),
+							Exec: &corev1.ExecAction{
+								Command: []string{
+									"/bin/vpn-server",
+									"liveness",
+								},
 							},
 						},
+						InitialDelaySeconds: 5,
 					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
@@ -376,6 +388,10 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 						{
 							Name:      volumeNameTLSAuth,
 							MountPath: volumeMountPathTLSAuth,
+						},
+						{
+							Name:      volumeNameStatusDir,
+							MountPath: volumeMountPathStatusDir,
 						},
 					},
 				},
@@ -438,6 +454,12 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 						},
 					},
 				},
+				{
+					Name: volumeNameStatusDir,
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
 			},
 		},
 	}
@@ -459,10 +481,6 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 			template.Spec.Containers[0].Env,
 			[]corev1.EnvVar{
 				{
-					Name:  "OPENVPN_STATUS_PATH",
-					Value: filepath.Join(volumeMountPathStatusDir, "openvpn.status"),
-				},
-				{
 					Name: "POD_NAME",
 					ValueFrom: &corev1.EnvVarSource{
 						FieldRef: &corev1.ObjectFieldSelector{
@@ -479,16 +497,6 @@ func (v *vpnSeedServer) podTemplate(configMap *corev1.ConfigMap, secretCAVPN, se
 					Value: strconv.Itoa(v.values.HighAvailabilityNumberOfShootClients),
 				},
 			}...)
-		template.Spec.Containers[0].VolumeMounts = append(template.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
-			Name:      volumeNameStatusDir,
-			MountPath: volumeMountPathStatusDir,
-		})
-		template.Spec.Volumes = append(template.Spec.Volumes, corev1.Volume{
-			Name: volumeNameStatusDir,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
 
 		exporterContainer := corev1.Container{
 			Name:            openVPNExporterContainerName,
@@ -665,6 +673,10 @@ func (v *vpnSeedServer) deployService(ctx context.Context, idx *int) error {
 			}
 		}
 
+		// We need to publish the service even if no pod is ready yet to allow vpn clients to connect before regular traffic.
+		// The readiness check of the vpn server container only passes once vpn clients have connected and traffic can flow.
+		service.Spec.PublishNotReadyAddresses = true
+
 		return nil
 	})
 	return err
@@ -736,6 +748,8 @@ func (v *vpnSeedServer) deployScrapeConfig(ctx context.Context) error {
 			"openvpn_server_route_last_reference_time_seconds",
 			"openvpn_status_update_time_seconds",
 			"openvpn_up",
+			"openvpn_netstat_Tcp_OutSegs",
+			"openvpn_netstat_Tcp_RetransSegs",
 		}
 	}
 
@@ -852,25 +866,19 @@ func (v *vpnSeedServer) deployVPA(ctx context.Context) error {
 			UpdateMode: vpaUpdateMode,
 		}
 		vpa.Spec.ResourcePolicy = &vpaautoscalingv1.PodResourcePolicy{
-			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
-				{
-					ContainerName: deploymentName,
-					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-				},
-			},
+			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{},
 		}
 
-		if v.values.HighAvailabilityEnabled {
-			vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
-				ContainerName: openVPNExporterContainerName,
-				Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-			})
-		} else {
+		if !v.values.HighAvailabilityEnabled {
 			vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
 				ContainerName:    envoyProxyContainerName,
 				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 			})
 		}
+		vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
+			ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+			Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+		})
 		return nil
 	})
 	return err

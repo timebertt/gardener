@@ -26,6 +26,7 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/retry"
+	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
 // ShootSeedNamespace gets the shoot namespace in the seed
@@ -151,6 +152,8 @@ func CreateShootTestArtifacts(cfg *ShootCreationConfig, projectNamespace string,
 
 	setShootGeneralSettings(shoot, cfg, clearExtensions)
 
+	setKubernetesVersionDependentSettings(shoot)
+
 	setShootNetworkingSettings(shoot, cfg, clearDNS)
 
 	setShootTolerations(shoot)
@@ -167,8 +170,8 @@ func parseAnnotationCfg(cfg string) (map[string]string, error) {
 		return nil, nil
 	}
 	result := make(map[string]string)
-	annotations := strings.Split(cfg, ",")
-	for _, annotation := range annotations {
+	annotations := strings.SplitSeq(cfg, ",")
+	for annotation := range annotations {
 		annotation = strings.TrimSpace(annotation)
 		if !StringSet(annotation) {
 			continue
@@ -218,6 +221,31 @@ func setConfiguredShootAnnotations(shoot *gardencorev1beta1.Shoot, cfg *ShootCre
 		metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, k, v)
 	}
 	return nil
+}
+
+// setKubernetesVersionDependentSettings sets the Shoot's settings depending on the used Kubernetes version.
+func setKubernetesVersionDependentSettings(shoot *gardencorev1beta1.Shoot) {
+	// TODO(timuthy): Drop this handling when support for Kubernetes 1.34 is dropped.
+	if versionutils.ConstraintK8sLess135.CheckVersion(shoot.Spec.Kubernetes.Version) {
+		if shoot.Spec.Addons == nil {
+			shoot.Spec.Addons = &gardencorev1beta1.Addons{}
+		}
+		if shoot.Spec.Addons.NginxIngress == nil {
+			shoot.Spec.Addons.NginxIngress = &gardencorev1beta1.NginxIngress{
+				Addon: gardencorev1beta1.Addon{
+					Enabled: true,
+				},
+			}
+		}
+		if shoot.Spec.Addons.KubernetesDashboard == nil {
+			shoot.Spec.Addons.KubernetesDashboard = &gardencorev1beta1.KubernetesDashboard{
+				Addon: gardencorev1beta1.Addon{
+					Enabled: true,
+				},
+				AuthenticationMode: ptr.To(gardencorev1beta1.KubernetesDashboardAuthModeToken),
+			}
+		}
+	}
 }
 
 // setShootGeneralSettings sets the Shoot's general settings from the given config
@@ -281,7 +309,7 @@ func setShootNetworkingSettings(shoot *gardencorev1beta1.Shoot, cfg *ShootCreati
 
 	if strings.Contains(cfg.ipFamilies, ",") {
 		shoot.Spec.Networking.IPFamilies = nil
-		for _, part := range strings.Split(cfg.ipFamilies, ",") {
+		for part := range strings.SplitSeq(cfg.ipFamilies, ",") {
 			shoot.Spec.Networking.IPFamilies = append(shoot.Spec.Networking.IPFamilies, gardencorev1beta1.IPFamily(part))
 		}
 	} else if StringSet(cfg.ipFamilies) {

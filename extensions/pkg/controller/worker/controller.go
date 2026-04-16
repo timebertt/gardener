@@ -7,6 +7,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"time"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
@@ -51,8 +52,8 @@ type AddArgs struct {
 	// If the annotation is not ignored, the extension controller will only reconcile
 	// with a present operation annotation typically set during a reconcile (e.g. in the maintenance time) by the Gardenlet
 	IgnoreOperationAnnotation bool
-	// ExtensionClass defines the extension class this extension is responsible for.
-	ExtensionClass extensionsv1alpha1.ExtensionClass
+	// ExtensionClasses defines the extension classes this controller is responsible for.
+	ExtensionClasses []extensionsv1alpha1.ExtensionClass
 	// SelfHostedShootCluster indicates whether the extension runs in a self-hosted shoot cluster.
 	SelfHostedShootCluster bool
 }
@@ -65,7 +66,11 @@ func DefaultPredicates(ctx context.Context, mgr manager.Manager, ignoreOperation
 // Add creates a new Worker Controller and adds it to the Manager.
 // and Start it when the Manager is Started.
 func Add(ctx context.Context, mgr manager.Manager, args AddArgs) error {
-	predicates := predicateutils.AddTypeAndClassPredicates(args.Predicates, args.ExtensionClass, args.Type)
+	predicates := predicateutils.AddTypeAndClassPredicates(args.Predicates, args.ExtensionClasses, args.Type)
+
+	if args.ControllerOptions.ReconciliationTimeout == 0 {
+		args.ControllerOptions.ReconciliationTimeout = 20 * time.Minute
+	}
 
 	c, err := builder.
 		ControllerManagedBy(mgr).

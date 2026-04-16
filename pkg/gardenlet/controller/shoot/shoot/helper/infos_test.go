@@ -15,12 +15,12 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/shoot/shoot/helper"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
 )
 
 // Note: similar to the tested code itself, these tests are super verbose.
@@ -253,7 +253,6 @@ var _ = Describe("CalculateControllerInfos", func() {
 
 			It("should requeue with the general sync period", func() {
 				requeueAfter := infos.RequeueAfter
-				Expect(requeueAfter.Requeue).To(BeFalse())
 				Expect(requeueAfter.RequeueAfter).To(Equal(cfg.SyncPeriod.Duration))
 			})
 
@@ -269,7 +268,6 @@ var _ = Describe("CalculateControllerInfos", func() {
 
 				It("should requeue with the shoot's sync period", func() {
 					requeueAfter := infos.RequeueAfter
-					Expect(requeueAfter.Requeue).To(BeFalse())
 					Expect(requeueAfter.RequeueAfter).To(Equal(shootSyncPeriod))
 				})
 			})
@@ -294,7 +292,6 @@ var _ = Describe("CalculateControllerInfos", func() {
 
 					It("should requeue the shoot during its next maintenance time window", func() {
 						requeueAfter := infos.RequeueAfter
-						Expect(requeueAfter.Requeue).To(BeFalse())
 						Expect(requeueAfter.RequeueAfter).To(BeNumerically(">", 0))
 						Expect(requeueAfter.RequeueAfter).To(BeNumerically("<", 23*time.Hour))
 
@@ -350,7 +347,6 @@ var _ = Describe("CalculateControllerInfos", func() {
 
 						It("should requeue the shoot during its next maintenance time window", func() {
 							requeueAfter := infos.RequeueAfter
-							Expect(requeueAfter.Requeue).To(BeFalse())
 							Expect(requeueAfter.RequeueAfter).To(BeNumerically(">", 23*time.Hour))
 							Expect(requeueAfter.RequeueAfter).To(BeNumerically("<", 47*time.Hour))
 

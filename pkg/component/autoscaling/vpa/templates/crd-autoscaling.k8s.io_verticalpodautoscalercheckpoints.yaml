@@ -5,7 +5,7 @@ metadata:
   annotations:
     resources.gardener.cloud/keep-object: "true"
     api-approved.kubernetes.io: https://github.com/kubernetes/kubernetes/pull/63797
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: verticalpodautoscalercheckpoints.autoscaling.k8s.io
 spec:
   group: autoscaling.k8s.io
@@ -77,7 +77,7 @@ spec:
                     type: number
                 type: object
               firstSampleStart:
-                description: Timestamp of the fist sample from the histograms.
+                description: Timestamp of the first sample from the histograms.
                 format: date-time
                 nullable: true
                 type: string
@@ -178,7 +178,7 @@ spec:
                     type: number
                 type: object
               firstSampleStart:
-                description: Timestamp of the fist sample from the histograms.
+                description: Timestamp of the first sample from the histograms.
                 format: date-time
                 nullable: true
                 type: string

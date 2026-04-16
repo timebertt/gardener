@@ -28,7 +28,7 @@
 
 ### Gardener
 
-* [Gardener Info `ConfigMap`](usage/gardener/gardener_info_configmap.md)
+* [Gardener Info `ConfigMap`](operations/configmap.md)
 
 ### Project
 
@@ -97,7 +97,7 @@
 
 ### Observability
 
-* [Logging](usage/observability/logging.md)
+* [Logging](usage/logging.md)
 
 ### Advanced
 
@@ -108,6 +108,10 @@
 * [Readiness of Shoot Worker Nodes](usage/advanced/node-readiness.md)
 * [Cleanup of Shoot clusters in deletion](usage/advanced/shoot_cleanup.md)
 * [Tolerations](usage/advanced/tolerations.md)
+
+### Reference
+
+* [Well-known labels and annotations](operations/well-known-labels-annotations.md) 
 
 ## [API Reference](api-reference/README.md)
 
@@ -123,44 +127,6 @@
 ## [CLI Reference](cli-reference/README.md)
 
 * [`gardenadm`](cli-reference/gardenadm/gardenadm.md)
-
-## Gardener Enhancement Proposals
-
-* [GEP: Gardener Enhancement Proposal Description](proposals/README.md)
-* [GEP: Template](proposals/00-template.md)
-* [GEP-1: Gardener extensibility and extraction of cloud-specific/OS-specific knowledge](proposals/01-extensibility.md)
-* [GEP-2: `BackupInfrastructure` CRD and Controller Redesign](proposals/02-backupinfra.md)
-* [GEP-3: Network extensibility](proposals/03-networking-extensibility.md)
-* [GEP-4: New `core.gardener.cloud/v1beta1` APIs required to extract cloud-specific/OS-specific knowledge out of Gardener core](proposals/04-new-core-gardener-cloud-apis.md)
-* [GEP-5: Gardener Versioning Policy](proposals/05-versioning-policy.md)
-* [GEP-6: Integrating etcd-druid with Gardener](proposals/06-etcd-druid.md)
-* [GEP-7: Shoot Control Plane Migration](proposals/07-shoot-control-plane-migration.md)
-* [GEP-8: SNI Passthrough proxy for kube-apiservers](proposals/08-shoot-apiserver-via-sni.md)
-* [GEP-9: Gardener integration test framework](proposals/09-test-framework.md)
-* [GEP-10: Support additional container runtimes](proposals/10-shoot-additional-container-runtimes.md)
-* [GEP-11: Utilize API Server Network Proxy to Invert Seed-to-Shoot Connectivity](proposals/11-apiserver-network-proxy.md)
-* [GEP-12: OIDC Webhook Authenticator](proposals/12-oidc-webhook-authenticator.md)
-* [GEP-13: Automated Seed Management](proposals/13-automated-seed-management.md)
-* [GEP-14: Reversed Cluster VPN](proposals/14-reversed-cluster-vpn.md)
-* [GEP-15: Manage Bastions and SSH Key Pair Rotation](proposals/15-manage-bastions-and-ssh-key-pair-rotation.md)
-* [GEP-16: Dynamic kubeconfig generation for Shoot clusters](proposals/16-adminkubeconfig-subresource.md)
-* [GEP-17: Shoot Control Plane Migration "Bad Case" Scenario](proposals/17-shoot-control-plane-migration-bad-case.md)
-* [GEP-18: Automated Shoot CA Rotation](proposals/18-shoot-CA-rotation.md)
-* [GEP-19: Observability Stack - Migrating to the prometheus-operator and fluent-bit operator](proposals/19-migrating-observability-stack-to-operators.md)
-* [GEP-20: Highly Available Shoot Control Planes](proposals/20-ha-control-planes.md)
-* [GEP-21: IPv6 Single-Stack Support in Local Gardener](proposals/21-ipv6-singlestack-local.md)
-* [GEP-22: Improved Usage of the `ShootState` API](proposals/22-improved-usage-of-shootstate-api.md)
-* [GEP-23: Autoscaling Shoot kube-apiserver via Independently Driven HPA and VPA](proposals/23-autoscaling-kube-apiserver-via-independent-hpa-and-vpa.md)
-* [GEP-24: Shoot OIDC Issuer](proposals/24-shoot-oidc-issuer.md)
-* [GEP-25: Namespaced Cloud Profiles](proposals/25-namespaced-cloud-profiles.md)
-* [GEP-26: Workload Identity - Trust Based Authentication](proposals/26-workload-identity.md)
-* [GEP-27: Add Optional Bastion Section To CloudProfile](proposals/27-cloudprofile-bastion-section.md)
-* [GEP-28: Self-Hosted Shoot Clusters](proposals/28-self-hosted-shoot-clusters.md)
-* [GEP-30: Rework API Server Proxy to Drop Proxy Protocol](proposals/30-apiserver-proxy.md)
-* [GEP-31: In-Place Node Updates of Shoot Clusters](proposals/31-inplace-node-update.md)
-* [GEP-32: Cloud Profile Version Classification Lifecycles](proposals/32-version-classification-lifecycles.md)
-* [GEP-33: Machine Image Capabilities](proposals/33-machine-image-capabilities.md)
-* [GEP-34: Introducing OpenTelemetry Operator and Collectors in Shoot Control Planes](proposals/34-observability2.0-opentelemetry-operator-and-collectors.md)
 
 ## Development
 
@@ -214,6 +180,7 @@
     * [`Bastion` resource](extensions/resources/bastion.md)
     * [`ControlPlane` resource](extensions/resources/controlplane.md)
     * [`Infrastructure` resource](extensions/resources/infrastructure.md)
+    * [`SelfHostedShootExposure` resource](extensions/resources/selfhostedshootexposure.md)
     * [`Worker` resource](extensions/resources/worker.md)
   * Network plugin providers
     * [`Network` resource](extensions/resources/network.md)
@@ -232,12 +199,14 @@
 * [Extending project roles](extensions/project-roles.md)
 * [Referenced resources](extensions/referenced-resources.md)
 * [Validation Guidelines For Extensions](extensions/validation-guidelines-for-extensions.md)
+* [Static Manifest Propagation From Seed To Shoot](extensions/static-manifests.md)
 
 ## Deployment
 
 * [Getting started locally](deployment/getting_started_locally.md)
 * [Getting started locally with extensions](deployment/getting_started_locally_with_extensions.md)
 * [Getting started locally with Self-Hosted Shoot Clusters](deployment/getting_started_locally_with_gardenadm.md)
+* [Getting started remotely](deployment/getting_started_remotely.md)
 * [Setup Gardener on a Kubernetes cluster](deployment/setup_gardener.md)
 * [Version Skew Policy](deployment/version_skew_policy.md)
 * [Deploying Gardenlets](deployment/deploy_gardenlet.md)

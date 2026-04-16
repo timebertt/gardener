@@ -12,8 +12,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	"github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
@@ -107,9 +107,21 @@ var _ = Describe("Shoot Conditions controller tests", func() {
 				DNS: gardencorev1beta1.SeedDNS{
 					Provider: &gardencorev1beta1.SeedDNSProvider{
 						Type: "providerType",
-						SecretRef: corev1.SecretReference{
-							Name:      "some-secret",
-							Namespace: "some-namespace",
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
+						},
+					},
+					Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+						Type:   "providerType",
+						Domain: "internal.example.com",
+						CredentialsRef: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
 						},
 					},
 				},

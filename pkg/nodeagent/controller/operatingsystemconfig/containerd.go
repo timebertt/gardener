@@ -24,9 +24,9 @@ import (
 	"github.com/spf13/afero"
 	"k8s.io/utils/ptr"
 
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	"github.com/gardener/gardener/pkg/utils/retry"
 )
@@ -45,7 +45,7 @@ func (r *Reconciler) ReconcileContainerdConfig(ctx context.Context, log logr.Log
 		return fmt.Errorf("failed to ensure containerd default config: %w", err)
 	}
 
-	if err := r.ensureContainerdConfiguration(log, osc.Spec.CRIConfig); err != nil {
+	if err := r.ensureContainerdConfiguration(ctx, log, osc.Spec.CRIConfig); err != nil {
 		return fmt.Errorf("failed to ensure containerd config: %w", err)
 	}
 
@@ -132,7 +132,7 @@ const configFile = baseDir + "/config.toml"
 
 // Exec is the execution function to invoke outside binaries. Exposed for testing.
 var Exec = func(ctx context.Context, command string, arg ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, command, arg...).Output()
+	return exec.CommandContext(ctx, command, arg...).Output() // #nosec: G204 -- Command and args are controlled internally.
 }
 
 // ensureContainerdRegistries configures containerd to use the desired image registries.
@@ -236,7 +236,7 @@ func addRegistryToContainerdFunc(ctx context.Context, log logr.Logger, registryC
 					}
 				}
 
-				_, err = httpClient.Do(req)
+				_, err = httpClient.Do(req) // #nosec: G704 -- URL is from registry configuration, not arbitrary user input.
 				if err != nil {
 					return false, fmt.Errorf("failed to reach registry %s for upstream %s: %w", registryHost.URL, registryConfig.Upstream, err)
 				}

@@ -132,17 +132,26 @@ var _ = Describe("VpnSeedServer", func() {
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt32(1194),
+									Exec: &corev1.ExecAction{
+										Command: []string{
+											"/bin/vpn-server",
+											"readiness",
+										},
 									},
 								},
+								InitialDelaySeconds: 15,
 							},
+
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									TCPSocket: &corev1.TCPSocketAction{
-										Port: intstr.FromInt32(1194),
+									Exec: &corev1.ExecAction{
+										Command: []string{
+											"/bin/vpn-server",
+											"liveness",
+										},
 									},
 								},
+								InitialDelaySeconds: 5,
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
@@ -247,19 +256,29 @@ var _ = Describe("VpnSeedServer", func() {
 								},
 							},
 						},
+						{
+							Name: "openvpn-status",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
 					},
 				},
 			}
+			mount := corev1.VolumeMount{
+				Name:      "openvpn-status",
+				MountPath: "/srv/status",
+			}
+			template.Spec.Containers[0].Env = append(template.Spec.Containers[0].Env, []corev1.EnvVar{
+				{
+					Name:  "OPENVPN_STATUS_PATH",
+					Value: "/srv/status/openvpn.status",
+				},
+			}...)
+			template.Spec.Containers[0].VolumeMounts = append(template.Spec.Containers[0].VolumeMounts, mount)
+
 			if highAvailability {
-				mount := corev1.VolumeMount{
-					Name:      "openvpn-status",
-					MountPath: "/srv/status",
-				}
 				template.Spec.Containers[0].Env = append(template.Spec.Containers[0].Env, []corev1.EnvVar{
-					{
-						Name:  "OPENVPN_STATUS_PATH",
-						Value: "/srv/status/openvpn.status",
-					},
 					{
 						Name: "POD_NAME",
 						ValueFrom: &corev1.EnvVarSource{
@@ -277,7 +296,6 @@ var _ = Describe("VpnSeedServer", func() {
 						Value: "2",
 					},
 				}...)
-				template.Spec.Containers[0].VolumeMounts = append(template.Spec.Containers[0].VolumeMounts, mount)
 				exporterContainer := corev1.Container{
 					Name:            "openvpn-exporter",
 					Image:           vpnSeedServerImage,
@@ -329,12 +347,6 @@ var _ = Describe("VpnSeedServer", func() {
 					VolumeMounts: []corev1.VolumeMount{mount},
 				}
 				template.Spec.Containers = append(template.Spec.Containers, exporterContainer)
-				template.Spec.Volumes = append(template.Spec.Volumes, corev1.Volume{
-					Name: "openvpn-status",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				})
 			} else {
 				template.Spec.Containers = append(template.Spec.Containers, *envoy.GetEnvoyProxyContainer(apiServerProxyImage))
 				template.Spec.Volumes = append(template.Spec.Volumes, corev1.Volume{
@@ -515,6 +527,7 @@ var _ = Describe("VpnSeedServer", func() {
 				Selector: map[string]string{
 					v1beta1constants.LabelApp: "vpn-seed-server",
 				},
+				PublishNotReadyAddresses: true,
 			},
 		}
 
@@ -582,6 +595,8 @@ var _ = Describe("VpnSeedServer", func() {
 					"openvpn_server_route_last_reference_time_seconds",
 					"openvpn_status_update_time_seconds",
 					"openvpn_up",
+					"openvpn_netstat_Tcp_OutSegs",
+					"openvpn_netstat_Tcp_RetransSegs",
 				}
 			}
 
@@ -652,24 +667,19 @@ var _ = Describe("VpnSeedServer", func() {
 				targetKindRef = "StatefulSet"
 			}
 
-			containerPolicies := []vpaautoscalingv1.ContainerResourcePolicy{
-				{
-					ContainerName: "vpn-seed-server",
-					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-				},
-			}
+			containerPolicies := []vpaautoscalingv1.ContainerResourcePolicy{}
 
-			if highAvailabilityEnabled {
-				containerPolicies = append(containerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
-					ContainerName: "openvpn-exporter",
-					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-				})
-			} else {
+			if !highAvailabilityEnabled {
 				containerPolicies = append(containerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
 					ContainerName:    "envoy-proxy",
 					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 				})
 			}
+
+			containerPolicies = append(containerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
+				ContainerName: "*",
+				Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+			})
 
 			return &vpaautoscalingv1.VerticalPodAutoscaler{
 				ObjectMeta: metav1.ObjectMeta{
@@ -731,7 +741,7 @@ var _ = Describe("VpnSeedServer", func() {
 				statefulSet.ResourceVersion = ""
 				Expect(c.Create(ctx, statefulSet)).To(Succeed())
 
-				for i := 0; i < 2; i++ {
+				for i := range 2 {
 					destinationRule := indexedDestinationRule(i)
 					destinationRule.ResourceVersion = ""
 					Expect(c.Create(ctx, destinationRule)).To(Succeed())
@@ -784,7 +794,7 @@ var _ = Describe("VpnSeedServer", func() {
 				Expect(c.Get(ctx, client.ObjectKey{Namespace: expectedPodDisruptionBudget.Namespace, Name: expectedPodDisruptionBudget.Name}, actualPodDisruptionBudget)).To(BeNotFoundError())
 
 				Expect(c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "vpn-seed-server"}, &appsv1.StatefulSet{})).To(BeNotFoundError())
-				for i := 0; i < 2; i++ {
+				for i := range 2 {
 					Expect(c.Get(ctx, client.ObjectKeyFromObject(indexedDestinationRule(i)), &istionetworkingv1beta1.DestinationRule{})).To(BeNotFoundError())
 					Expect(c.Get(ctx, client.ObjectKeyFromObject(indexedService(i)), &corev1.Service{})).To(BeNotFoundError())
 				}
@@ -878,7 +888,7 @@ var _ = Describe("VpnSeedServer", func() {
 				Expect(actualSecretTLSAuth.Immutable).To(PointTo(BeTrue()))
 				Expect(actualSecretTLSAuth.Data).NotTo(BeEmpty())
 
-				for i := 0; i < 2; i++ {
+				for i := range 2 {
 					actualDestinationRule := &istionetworkingv1beta1.DestinationRule{}
 					expectedDestinationRule := indexedDestinationRule(i)
 					Expect(c.Get(ctx, client.ObjectKey{Namespace: expectedDestinationRule.Namespace, Name: expectedDestinationRule.Name}, actualDestinationRule)).To(Succeed())
@@ -930,7 +940,7 @@ var _ = Describe("VpnSeedServer", func() {
 			statefulSet.ResourceVersion = ""
 			Expect(c.Create(ctx, statefulSet)).To(Succeed())
 
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				destinationRule := indexedDestinationRule(i)
 				destinationRule.ResourceVersion = ""
 				Expect(c.Create(ctx, destinationRule)).To(Succeed())
@@ -971,7 +981,7 @@ var _ = Describe("VpnSeedServer", func() {
 
 		JustAfterEach(func() {
 			Expect(c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "vpn-seed-server"}, &appsv1.StatefulSet{})).To(BeNotFoundError())
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				Expect(c.Get(ctx, client.ObjectKeyFromObject(indexedDestinationRule(i)), &istionetworkingv1beta1.DestinationRule{})).To(BeNotFoundError())
 				Expect(c.Get(ctx, client.ObjectKeyFromObject(indexedService(i)), &corev1.Service{})).To(BeNotFoundError())
 			}

@@ -18,7 +18,11 @@ import (
 	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/utils"
 )
+
+// LabelMetricsScrapeTarget is the label which identifies the kube-apiserver service for scraping metrics.
+const LabelMetricsScrapeTarget = "metrics-scrape-target"
 
 func (k *kubeAPIServer) emptyServiceMonitor() *monitoringv1.ServiceMonitor {
 	return &monitoringv1.ServiceMonitor{ObjectMeta: monitoringutils.ConfigObjectMeta(k.values.NamePrefix+v1beta1constants.DeploymentNameKubeAPIServer, k.namespace, k.prometheusLabel())}
@@ -28,15 +32,23 @@ func (k *kubeAPIServer) reconcileServiceMonitor(ctx context.Context, serviceMoni
 	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, k.client.Client(), serviceMonitor, func() error {
 		serviceMonitor.Labels = monitoringutils.Labels(k.prometheusLabel())
 		serviceMonitor.Spec = monitoringv1.ServiceMonitorSpec{
-			Selector: metav1.LabelSelector{MatchLabels: getLabels()},
+			Selector: metav1.LabelSelector{MatchLabels: utils.MergeStringMaps(getLabels(), map[string]string{
+				LabelMetricsScrapeTarget: "true",
+			})},
 			Endpoints: []monitoringv1.Endpoint{{
 				TargetPort: ptr.To(intstr.FromInt32(kubeapiserverconstants.Port)),
-				Scheme:     "https",
-				TLSConfig:  &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: k.prometheusAccessSecretName()},
-					Key:                  resourcesv1alpha1.DataKeyToken,
-				}},
+				Scheme:     ptr.To(monitoringv1.SchemeHTTPS),
+				HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+						HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+							Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: k.prometheusAccessSecretName()},
+								Key:                  resourcesv1alpha1.DataKeyToken,
+							}},
+						},
+					},
+				},
 				RelabelConfigs: []monitoringv1.RelabelConfig{{
 					Action: "labelmap",
 					Regex:  `__meta_kubernetes_service_label_(.+)`,
@@ -53,7 +65,7 @@ func (k *kubeAPIServer) reconcileServiceMonitor(ctx context.Context, serviceMoni
 					"apiserver_audit_error_total",
 					"apiserver_audit_requests_rejected_total",
 					"apiserver_cache_list_.+",
-					"apiserver_crd_webhook_conversion_duration_seconds_.+",
+					"apiserver_crd_conversion_webhook_duration_seconds_.+",
 					"apiserver_current_inflight_requests",
 					"apiserver_current_inqueue_requests",
 					"apiserver_flowcontrol_rejected_requests_total",

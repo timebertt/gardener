@@ -195,6 +195,11 @@ var _ = Describe("Virtual", func() {
 					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
 				},
 				{
+					APIGroups: []string{"discovery.k8s.io"},
+					Resources: []string{"endpointslices"},
+					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
+				},
+				{
 					APIGroups: []string{"events.k8s.io"},
 					Resources: []string{"events"},
 					Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
@@ -298,6 +303,11 @@ var _ = Describe("Virtual", func() {
 				{
 					APIGroups: []string{""},
 					Resources: []string{"events", "namespaces", "resourcequotas", "services", "endpoints"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{"discovery.k8s.io"},
+					Resources: []string{"endpointslices"},
 					Verbs:     []string{"get", "list", "watch"},
 				},
 				{
@@ -492,6 +502,11 @@ var _ = Describe("Virtual", func() {
 						"shoots/viewerkubeconfig",
 					},
 					Verbs: []string{"create"},
+				},
+				{
+					APIGroups: []string{gardencorev1beta1.GroupName},
+					Resources: []string{"shoots/finalizers"},
+					Verbs:     []string{"update"},
 				},
 				{
 					APIGroups: []string{"core.gardener.cloud"},

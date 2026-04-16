@@ -11,12 +11,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/controllerinstallation/care"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/controllerinstallation/controllerinstallation"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/controllerinstallation/required"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 )
 
 // AddToManager adds all ControllerInstallation controllers to the given manager.
@@ -36,20 +37,27 @@ func AddToManager(
 		return fmt.Errorf("failed adding care reconciler: %w", err)
 	}
 
-	if err := (&controllerinstallation.Reconciler{
-		SeedClientSet:         seedClientSet,
-		Config:                cfg,
-		Identity:              identity,
-		GardenClusterIdentity: gardenClusterIdentity,
-	}).AddToManager(ctx, mgr, gardenCluster); err != nil {
-		return fmt.Errorf("failed adding main reconciler: %w", err)
-	}
+	// When the seed is a self-hosted shoot, all ControllerInstallations have .spec.shootRef instead of .spec.seedRef.
+	// The self-hosted gardenlet already runs the required controller with ShootRef-based filtering, so the SeedRef-based
+	// instance here would find no ControllerInstallations.
+	if seedIsSelfHostedShoot, err := gardenletutils.SeedIsSelfHostedShoot(ctx, seedCluster.GetAPIReader()); err != nil {
+		return fmt.Errorf("failed checking whether the seed is a self-hosted shoot cluster: %w", err)
+	} else if !seedIsSelfHostedShoot {
+		if err := (&controllerinstallation.Reconciler{
+			SeedClientSet:         seedClientSet,
+			Config:                cfg,
+			Identity:              identity,
+			GardenClusterIdentity: gardenClusterIdentity,
+		}).AddToManager(ctx, mgr, gardenCluster); err != nil {
+			return fmt.Errorf("failed adding main reconciler: %w", err)
+		}
 
-	if err := (&required.Reconciler{
-		Config:   *cfg.Controllers.ControllerInstallationRequired,
-		SeedName: cfg.SeedConfig.SeedTemplate.Name,
-	}).AddToManager(mgr, gardenCluster, seedCluster); err != nil {
-		return fmt.Errorf("failed adding required reconciler: %w", err)
+		if err := (&required.Reconciler{
+			Config:   *cfg.Controllers.ControllerInstallationRequired,
+			SeedName: cfg.SeedConfig.SeedTemplate.Name,
+		}).AddToManager(mgr, gardenCluster, seedCluster); err != nil {
+			return fmt.Errorf("failed adding required reconciler: %w", err)
+		}
 	}
 
 	return nil

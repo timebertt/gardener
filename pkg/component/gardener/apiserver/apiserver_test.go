@@ -16,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -43,6 +44,7 @@ import (
 	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	"github.com/gardener/gardener/pkg/utils/version"
 )
 
 var _ = Describe("GardenerAPIServer", func() {
@@ -103,7 +105,7 @@ var _ = Describe("GardenerAPIServer", func() {
 			}
 		}
 		serviceVirtual                   *corev1.Service
-		endpoints                        *corev1.Endpoints
+		endpointsResources               []client.Object
 		clusterRole                      *rbacv1.ClusterRole
 		clusterRoleBinding               *rbacv1.ClusterRoleBinding
 		clusterRoleBindingAuthDelegation *rbacv1.ClusterRoleBinding
@@ -142,6 +144,7 @@ var _ = Describe("GardenerAPIServer", func() {
 			ShootAdminKubeconfigMaxExpiration: &metav1.Duration{Duration: 1 * time.Hour},
 			TopologyAwareRoutingEnabled:       true,
 			WorkloadIdentityTokenIssuer:       workloadIdentityIssuer,
+			TargetVersion:                     semver.MustParse("1.33.1"),
 		}
 		deployer = New(fakeClient, namespace, fakeSecretManager, values)
 		consistOf = NewManagedResourceConsistOfObjectsMatcher(fakeClient)
@@ -254,6 +257,10 @@ var _ = Describe("GardenerAPIServer", func() {
 								corev1.ResourceMemory: resource.MustParse("48G"),
 							},
 							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -541,7 +548,26 @@ var _ = Describe("GardenerAPIServer", func() {
 				}},
 			},
 		}
-		endpoints = &corev1.Endpoints{
+		endpointSlice := &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "gardener-apiserver",
+				Namespace: "kube-system",
+				Labels: map[string]string{
+					"app":                        "gardener",
+					"role":                       "apiserver",
+					"kubernetes.io/service-name": "gardener-apiserver",
+				},
+			},
+			AddressType: "IPv4",
+			Ports: []discoveryv1.EndpointPort{{
+				Port:     ptr.To(int32(443)),
+				Protocol: ptr.To(corev1.ProtocolTCP),
+			}},
+			Endpoints: []discoveryv1.Endpoint{{
+				Addresses: []string{clusterIP},
+			}},
+		}
+		endpoints := &corev1.Endpoints{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "gardener-apiserver",
 				Namespace: "kube-system",
@@ -559,6 +585,13 @@ var _ = Describe("GardenerAPIServer", func() {
 					IP: clusterIP,
 				}},
 			}},
+		}
+		if version.ConstraintK8sGreaterEqual134.Check(values.TargetVersion) {
+			endpointsResources = []client.Object{endpointSlice}
+		} else if version.ConstraintK8sGreaterEqual133.Check(values.TargetVersion) {
+			endpointsResources = []client.Object{endpoints, endpointSlice}
+		} else {
+			endpointsResources = []client.Object{endpoints}
 		}
 		clusterRole = &rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{
@@ -645,12 +678,18 @@ var _ = Describe("GardenerAPIServer", func() {
 				}},
 				Endpoints: []monitoringv1.Endpoint{{
 					TargetPort: ptr.To(intstr.FromInt32(8443)),
-					Scheme:     "https",
-					TLSConfig:  &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-garden"},
-						Key:                  "token",
-					}},
+					Scheme:     ptr.To(monitoringv1.SchemeHTTPS),
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+							HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+								Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-garden"},
+									Key:                  "token",
+								}},
+							},
+						},
+					},
 					MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
 						SourceLabels: []monitoringv1.LabelName{"__name__"},
 						Action:       "keep",
@@ -771,6 +810,7 @@ resources:
 									ETCDEncryption: apiserver.ETCDEncryptionConfig{EncryptWithCurrentKey: encryptWithCurrentKey, ResourcesToEncrypt: []string{"shootstates.core.gardener.cloud"}},
 									RuntimeVersion: semver.MustParse("1.33.1"),
 								},
+								TargetVersion: semver.MustParse("1.33.1"),
 							})
 
 							oldKeyName, oldKeySecret := "key-old", "old-secret"
@@ -888,6 +928,7 @@ resources:
 							Audit:          auditConfig,
 							RuntimeVersion: semver.MustParse("1.33.1"),
 						},
+						TargetVersion: semver.MustParse("1.33.1"),
 					})
 
 					expectedSecret := &corev1.Secret{
@@ -948,6 +989,7 @@ resources:
 								EnabledAdmissionPlugins: admissionPlugins,
 								RuntimeVersion:          semver.MustParse("1.33.1"),
 							},
+							TargetVersion: semver.MustParse("1.33.1"),
 						})
 
 						secretAdmissionKubeconfigs := &corev1.Secret{
@@ -1015,6 +1057,7 @@ rules:
 								Audit:          auditConfig,
 								RuntimeVersion: semver.MustParse("1.33.1"),
 							},
+							TargetVersion: semver.MustParse("1.33.1"),
 						})
 
 						configMapAuditPolicy := &corev1.ConfigMap{
@@ -1096,6 +1139,7 @@ kubeConfigFile: /etc/kubernetes/foobar.yaml
 								EnabledAdmissionPlugins: admissionPlugins,
 								RuntimeVersion:          semver.MustParse("1.33.1"),
 							},
+							TargetVersion: semver.MustParse("1.33.1"),
 						})
 
 						configMapAdmission := &corev1.ConfigMap{
@@ -1169,6 +1213,7 @@ kubeConfigFile: /etc/kubernetes/foobar.yaml
 								EnabledAdmissionPlugins: admissionPlugins,
 								RuntimeVersion:          semver.MustParse("1.33.1"),
 							},
+							TargetVersion: semver.MustParse("1.33.1"),
 						})
 
 						configMapAdmission := &corev1.ConfigMap{
@@ -1232,6 +1277,7 @@ kubeConfigFile: ""
 								EnabledAdmissionPlugins: admissionPlugins,
 								RuntimeVersion:          semver.MustParse("1.33.1"),
 							},
+							TargetVersion: semver.MustParse("1.33.1"),
 						})
 
 						configMapAdmission := &corev1.ConfigMap{
@@ -1346,7 +1392,7 @@ kubeConfigFile: /etc/kubernetes/admission-kubeconfigs/validatingadmissionwebhook
 					Expect(managedResourceSecretRuntime.Immutable).To(Equal(ptr.To(true)))
 					Expect(managedResourceSecretRuntime.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
 
-					Expect(managedResourceVirtual).To(consistOf(
+					expectedVirtualObjects := []client.Object{
 						apiServiceFor("core.gardener.cloud", "v1"),
 						apiServiceFor("core.gardener.cloud", "v1beta1"),
 						apiServiceFor("seedmanagement.gardener.cloud", "v1alpha1"),
@@ -1354,12 +1400,13 @@ kubeConfigFile: /etc/kubernetes/admission-kubeconfigs/validatingadmissionwebhook
 						apiServiceFor("settings.gardener.cloud", "v1alpha1"),
 						apiServiceFor("security.gardener.cloud", "v1alpha1"),
 						serviceVirtual,
-						endpoints,
 						clusterRole,
 						clusterRoleBinding,
 						clusterRoleBindingAuthDelegation,
 						roleBindingAuthReader,
-					))
+					}
+					expectedVirtualObjects = append(expectedVirtualObjects, endpointsResources...)
+					Expect(managedResourceVirtual).To(consistOf(expectedVirtualObjects...))
 					Expect(managedResourceSecretVirtual.Type).To(Equal(corev1.SecretTypeOpaque))
 					Expect(managedResourceSecretVirtual.Immutable).To(Equal(ptr.To(true)))
 					Expect(managedResourceSecretVirtual.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
@@ -1402,33 +1449,6 @@ kubeConfigFile: /etc/kubernetes/admission-kubeconfigs/validatingadmissionwebhook
 					})
 
 					AfterEach(func() {
-						delete(serviceRuntime.Labels, "endpoint-slice-hints.resources.gardener.cloud/consider")
-						serviceRuntime.Spec.TrafficDistribution = nil
-					})
-				})
-
-				Context("Kubernetes version < 1.31", func() {
-					BeforeEach(func() {
-						values.RuntimeVersion = semver.MustParse("1.30.0")
-						deployer = New(fakeClient, namespace, fakeSecretManager, values)
-					})
-
-					It("should successfully deploy all resources", func() {
-						metav1.SetMetaDataAnnotation(&serviceRuntime.ObjectMeta, "service.kubernetes.io/topology-mode", "auto")
-						metav1.SetMetaDataLabel(&serviceRuntime.ObjectMeta, "endpoint-slice-hints.resources.gardener.cloud/consider", "true")
-						serviceRuntime.Spec.TrafficDistribution = nil
-
-						expectedRuntimeObjects = append(
-							expectedRuntimeObjects,
-							podDisruptionBudget,
-							serviceRuntime,
-						)
-
-						Expect(managedResourceRuntime).To(consistOf(expectedRuntimeObjects...))
-					})
-
-					AfterEach(func() {
-						delete(serviceRuntime.Annotations, "service.kubernetes.io/topology-mode")
 						delete(serviceRuntime.Labels, "endpoint-slice-hints.resources.gardener.cloud/consider")
 						serviceRuntime.Spec.TrafficDistribution = nil
 					})

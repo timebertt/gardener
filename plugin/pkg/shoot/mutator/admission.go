@@ -27,11 +27,11 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/pkg/api"
+	"github.com/gardener/gardener/pkg/api/core/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	"github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
@@ -219,6 +219,7 @@ func (c *mutationContext) addMetadataAnnotations(a admission.Attributes) {
 	if a.GetOperation() == admission.Create {
 		addInfrastructureDeploymentTask(c.shoot)
 		addDNSRecordDeploymentTasks(c.shoot)
+		return
 	}
 
 	var (
@@ -492,14 +493,11 @@ func (c *mutationContext) ensureMachineImage(oldWorkers []core.Worker, worker co
 		}
 
 		if oldWorker.Machine.Image.Name == worker.Machine.Image.Name {
-			// image name was not changed -> keep version from the new worker if specified, otherwise use the old worker image version
-			if len(worker.Machine.Image.Version) != 0 {
-				return getDefaultMachineImage(c.cloudProfileSpec.MachineImages, worker.Machine.Image, worker.Machine.Architecture, machineType, c.cloudProfileSpec.MachineCapabilities, helper.IsUpdateStrategyInPlace(worker.UpdateStrategy), fldPath)
+			// image name was not changed
+			if len(worker.Machine.Image.Version) == 0 || worker.Machine.Image.Version == oldWorker.Machine.Image.Version {
+				// if the version from the new worker is not specified or it is equal to the old worker image version -> keep the old one
+				return oldWorker.Machine.Image, nil
 			}
-			return oldWorker.Machine.Image, nil
-		} else if len(worker.Machine.Image.Version) != 0 {
-			// image name was changed -> keep version from new worker if specified, otherwise default the image version
-			return getDefaultMachineImage(c.cloudProfileSpec.MachineImages, worker.Machine.Image, worker.Machine.Architecture, machineType, c.cloudProfileSpec.MachineCapabilities, helper.IsUpdateStrategyInPlace(worker.UpdateStrategy), fldPath)
 		}
 	}
 
@@ -537,8 +535,16 @@ func getDefaultMachineImage(
 				break
 			}
 		}
+
 		if defaultImage == nil {
 			return nil, field.Invalid(fldPath, image.Name, "image is not supported")
+		}
+
+		// check for an exact image version match. In that case, do no apply version defaulting.
+		if slices.ContainsFunc(defaultImage.Versions, func(version gardencorev1beta1.MachineImageVersion) bool {
+			return version.Version == image.Version
+		}) {
+			return image, nil
 		}
 	} else {
 		// select the first image which supports the required architecture type

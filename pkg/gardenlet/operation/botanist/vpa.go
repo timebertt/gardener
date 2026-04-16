@@ -50,7 +50,8 @@ func (b *Botanist) DefaultVerticalPodAutoscaler() (vpa.Interface, error) {
 			PriorityClassName: v1beta1constants.PriorityClassNameShootControlPlane200,
 			Replicas:          ptr.To(b.Shoot.GetReplicas(1)),
 		}
-		featureGates map[string]bool
+		featureGates  map[string]bool
+		isManagedSeed = b.ManagedSeed != nil
 	)
 
 	if vpaConfig := b.Shoot.GetInfo().Spec.Kubernetes.VerticalPodAutoscaler; vpaConfig != nil {
@@ -67,6 +68,7 @@ func (b *Botanist) DefaultVerticalPodAutoscaler() (vpa.Interface, error) {
 		valuesRecommender.MemoryAggregationInterval = vpaConfig.MemoryAggregationInterval
 		valuesRecommender.MemoryAggregationIntervalCount = vpaConfig.MemoryAggregationIntervalCount
 		valuesRecommender.MaxAllowed = vpaConfig.MaxAllowed
+		valuesRecommender.UpdateWorkerCount = vpaConfig.RecommenderUpdateWorkerCount
 
 		valuesUpdater.EvictAfterOOMThreshold = vpaConfig.EvictAfterOOMThreshold
 		valuesUpdater.EvictionRateBurst = vpaConfig.EvictionRateBurst
@@ -83,6 +85,7 @@ func (b *Botanist) DefaultVerticalPodAutoscaler() (vpa.Interface, error) {
 		b.SecretsManager,
 		vpa.Values{
 			ClusterType:              component.ClusterTypeShoot,
+			IsManagedSeed:            isManagedSeed,
 			SecretNameServerCA:       v1beta1constants.SecretNameCACluster,
 			RuntimeKubernetesVersion: b.Seed.KubernetesVersion,
 			AdmissionController:      valuesAdmissionController,

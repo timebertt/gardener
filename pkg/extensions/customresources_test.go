@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,19 +19,20 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	testclock "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	. "github.com/gardener/gardener/pkg/extensions"
+	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
 	"github.com/gardener/gardener/pkg/utils/retry"
 	retryfake "github.com/gardener/gardener/pkg/utils/retry/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
-	mocktime "github.com/gardener/gardener/third_party/mock/go/time"
 )
 
 var _ = Describe("extensions", func() {
@@ -38,7 +40,7 @@ var _ = Describe("extensions", func() {
 		ctx       context.Context
 		log       logr.Logger
 		ctrl      *gomock.Controller
-		mockNow   *mocktime.MockNow
+		fakeClock *testclock.FakeClock
 		now       time.Time
 		fakeOps   *retryfake.Ops
 		resetVars func()
@@ -60,7 +62,9 @@ var _ = Describe("extensions", func() {
 		ctx = context.TODO()
 		log = logr.Discard()
 		ctrl = gomock.NewController(GinkgoT())
-		mockNow = mocktime.NewMockNow(ctrl)
+		now = time.Unix(60, 0)
+
+		fakeClock = testclock.NewFakeClock(now)
 
 		scheme = runtime.NewScheme()
 		Expect(extensionsv1alpha1.AddToScheme(scheme)).NotTo(HaveOccurred())
@@ -153,7 +157,7 @@ var _ = Describe("extensions", func() {
 			err := WaitUntilExtensionObjectReady(
 				ctx, c, log,
 				passedObj, extensionsv1alpha1.WorkerResource,
-				defaultInterval, defaultThreshold, defaultTimeout, func() error {
+				defaultInterval, defaultThreshold, defaultTimeout, func(_ context.Context) error {
 					val++
 					return nil
 				},
@@ -326,7 +330,7 @@ var _ = Describe("extensions", func() {
 					return nil
 				},
 				expected, extensionsv1alpha1.WorkerResource,
-				defaultInterval, defaultThreshold, defaultTimeout, func() error {
+				defaultInterval, defaultThreshold, defaultTimeout, func(_ context.Context) error {
 					val++
 					return nil
 				},
@@ -348,14 +352,12 @@ var _ = Describe("extensions", func() {
 
 		It("should delete extension object", func() {
 			defer test.WithVars(
-				&TimeNow, mockNow.Do,
+				&TimeNow, fakeClock.Now,
 			)()
 
 			expected.Annotations = map[string]string{
 				v1beta1constants.GardenerTimestamp: now.UTC().Format(time.RFC3339Nano),
 			}
-
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			mc := mockclient.NewMockClient(ctrl)
 			// add deletion confirmation and Timestamp annotation
@@ -552,9 +554,8 @@ var _ = Describe("extensions", func() {
 		Describe("#RestoreExtensionWithDeployFunction", func() {
 			It("should restore the extension object state with the provided deploy function and annotate it for restoration", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				err := RestoreExtensionWithDeployFunction(
 					ctx,
@@ -577,9 +578,8 @@ var _ = Describe("extensions", func() {
 
 			It("should only annotate the resource with restore operation annotation if a corresponding state does not exist in the ShootState", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				expected.Name = "worker2"
 				err := RestoreExtensionWithDeployFunction(
@@ -616,9 +616,8 @@ var _ = Describe("extensions", func() {
 
 			It("should update the state if the extension object exists", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				Expect(c.Create(ctx, expected)).ToNot(HaveOccurred(), "adding pre-existing worker succeeds")
 				err := RestoreExtensionObjectState(
@@ -632,19 +631,15 @@ var _ = Describe("extensions", func() {
 				Expect(expected.Status.State).To(Equal(expectedState))
 			})
 
-			It("should not update the state if the extension controller has already picked up the object", func() {
+			It("should not overwrite the extension object's state if already present", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				Expect(c.Create(ctx, expected)).To(Succeed())
 
 				changedStatus := &runtime.RawExtension{
 					Raw: []byte(`{"data":"changed-value"}`),
-				}
-				expected.Status.LastOperation = &gardencorev1beta1.LastOperation{
-					State: gardencorev1beta1.LastOperationStateProcessing,
 				}
 				expected.Status.State = changedStatus
 				Expect(c.Status().Update(ctx, expected)).To(Succeed())
@@ -659,6 +654,134 @@ var _ = Describe("extensions", func() {
 				Expect(expected.Status.State).To(Equal(changedStatus))
 			})
 		})
+
+		Describe("#RestoreWorkerState", func() {
+			var (
+				machineState     *shootstate.MachineState
+				machineStateData []byte
+			)
+
+			BeforeEach(func() {
+				machineState = &shootstate.MachineState{
+					MachineDeployments: map[string]*shootstate.MachineDeploymentState{
+						"shoot--foo--bar-worker-z1": {
+							Replicas: 3,
+							MachineSets: []machinev1alpha1.MachineSet{
+								{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "shoot--foo--bar-worker-z1-hash1",
+										Namespace: namespace,
+									},
+									Spec: machinev1alpha1.MachineSetSpec{
+										Replicas: 3,
+										MachineClass: machinev1alpha1.ClassSpec{
+											Name: "shoot--foo--bar-worker-z1-hash1",
+										},
+										Template: machinev1alpha1.MachineTemplateSpec{
+											Spec: machinev1alpha1.MachineSpec{
+												Class: machinev1alpha1.ClassSpec{
+													Name: "shoot--foo--bar-worker-z1-hash1",
+												},
+											},
+										},
+									},
+								},
+								{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "shoot--foo--bar-worker-z1-hash2",
+										Namespace: namespace,
+									},
+									Spec: machinev1alpha1.MachineSetSpec{
+										Replicas: 3,
+										MachineClass: machinev1alpha1.ClassSpec{
+											Name: "shoot--foo--bar-worker-z1-hash2",
+										},
+										Template: machinev1alpha1.MachineTemplateSpec{
+											Spec: machinev1alpha1.MachineSpec{
+												Class: machinev1alpha1.ClassSpec{
+													Name: "shoot--foo--bar-worker-z1-hash2",
+												},
+											},
+										},
+									},
+								},
+							},
+							Machines: []machinev1alpha1.Machine{
+								{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "shoot--foo--bar-worker-z1-hash1-abcde",
+										Namespace: namespace,
+									},
+									Spec: machinev1alpha1.MachineSpec{
+										Class: machinev1alpha1.ClassSpec{
+											Name: "shoot--foo--bar-worker-z1-hash1-abcde",
+										},
+									},
+								},
+								{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "shoot--foo--bar-worker-z1-hash2-abcde",
+										Namespace: namespace,
+									},
+									Spec: machinev1alpha1.MachineSpec{
+										Class: machinev1alpha1.ClassSpec{
+											Name: "shoot--foo--bar-worker-z1-hash2-abcde",
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+
+				var err error
+				machineStateData, err = shootstate.MarshalMachineState(machineState)
+				Expect(err).NotTo(HaveOccurred())
+
+				shootState.Spec.Gardener = []gardencorev1beta1.GardenerResourceData{{
+					Name: "machine-state",
+					Type: "machine-state",
+					Data: runtime.RawExtension{
+						Raw: machineStateData,
+					},
+				}}
+			})
+
+			It("should fail if the worker object already has a state", func() {
+				expected.Status.State = &runtime.RawExtension{Raw: []byte(`{"data":"some-existing-value"}`)}
+
+				Expect(RestoreWorkerState(ctx, c, shootState, expected)).Error().To(MatchError(ContainSubstring("already contains state")))
+			})
+
+			It("should copy the machine-state to the worker status", func() {
+				Expect(c.Create(ctx, expected)).To(Succeed())
+
+				Expect(RestoreWorkerState(ctx, c, shootState, expected)).To(Succeed())
+
+				actual := &extensionsv1alpha1.Worker{}
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(expected), actual)).To(Succeed())
+				Expect(actual.Status.State.Raw).To(HaveValue(Equal(machineStateData)))
+			})
+
+			It("should update the namespace of the machine-state", func() {
+				expected.Namespace = "kube-system"
+				Expect(c.Create(ctx, expected)).To(Succeed())
+
+				Expect(RestoreWorkerState(ctx, c, shootState, expected)).To(Succeed())
+
+				actual := &extensionsv1alpha1.Worker{}
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(expected), actual)).To(Succeed())
+
+				machineState.MachineDeployments["shoot--foo--bar-worker-z1"].Machines[0].Namespace = expected.Namespace
+				machineState.MachineDeployments["shoot--foo--bar-worker-z1"].Machines[1].Namespace = expected.Namespace
+				machineState.MachineDeployments["shoot--foo--bar-worker-z1"].MachineSets[0].Namespace = expected.Namespace
+				machineState.MachineDeployments["shoot--foo--bar-worker-z1"].MachineSets[1].Namespace = expected.Namespace
+
+				actualMachineState, err := shootstate.UnmarshalMachineState(actual.Status.State.Raw)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(actualMachineState).To(Equal(machineState))
+			})
+		})
 	})
 
 	Describe("#MigrateExtensionObject", func() {
@@ -668,10 +791,8 @@ var _ = Describe("extensions", func() {
 
 		It("should properly annotate extension object for migration", func() {
 			defer test.WithVars(
-				&TimeNow, mockNow.Do,
+				&TimeNow, fakeClock.Now,
 			)()
-
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			expectedWithAnnotations := expected.DeepCopy()
 			expectedWithAnnotations.Annotations = map[string]string{
@@ -695,7 +816,7 @@ var _ = Describe("extensions", func() {
 		})
 
 		It("should properly annotate all extension objects for migration", func() {
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				containerRuntimeExtension := &extensionsv1alpha1.ContainerRuntime{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: namespace,
@@ -718,7 +839,7 @@ var _ = Describe("extensions", func() {
 		})
 
 		It("should properly annotate only the desired extension objects for migration", func() {
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				containerRuntimeExtension := &extensionsv1alpha1.ContainerRuntime{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: namespace,
@@ -879,10 +1000,8 @@ var _ = Describe("extensions", func() {
 
 		It("should annotate extension object with operation", func() {
 			defer test.WithVars(
-				&TimeNow, mockNow.Do,
+				&TimeNow, fakeClock.Now,
 			)()
-
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			expectedWithAnnotations := expected.DeepCopy()
 			expectedWithAnnotations.Annotations = map[string]string{

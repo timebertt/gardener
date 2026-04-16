@@ -30,12 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	. "github.com/gardener/gardener/pkg/component/etcd/etcd"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils/retry"
 	retryfake "github.com/gardener/gardener/pkg/utils/retry/fake"
@@ -69,6 +69,67 @@ var _ = Describe("Etcd", func() {
 
 		managedResourceName       = "etcd-druid"
 		managedResourceSecretName = "managedresource-" + managedResourceName
+
+		etcdOperatorConfigMountPath = "/operator_config/config.yaml"
+		etcdOperatorConfigYAML      = ptr.To(`apiVersion: config.druid.gardener.cloud/v1alpha1
+clientConnection:
+  acceptContentTypes: ""
+  burst: 150
+  contentType: ""
+  qps: 100
+controllers:
+  compaction:
+    activeDeadlineDuration: 3h0m0s
+    concurrentSyncs: 3
+    enabled: true
+    eventsThreshold: 1000000
+    metricsScrapeWaitDuration: 1m0s
+    triggerFullSnapshotThreshold: 3000000
+  disableLeaseCache: false
+  etcd:
+    concurrentSyncs: 25
+    disableEtcdServiceAccountAutomount: true
+    enableEtcdSpecAutoReconcile: false
+    etcdMember:
+      notReadyThreshold: 5m0s
+      unknownThreshold: 1m0s
+    etcdStatusSyncPeriod: 15s
+  etcdCopyBackupsTask:
+    concurrentSyncs: 3
+    enabled: true
+  etcdOpsTask:
+    concurrentSyncs: 3
+    requeueInterval: 15s
+  secret:
+    concurrentSyncs: 10
+kind: OperatorConfiguration
+leaderElection:
+  enabled: true
+  leaseDuration: 15s
+  renewDeadline: 10s
+  resourceLock: leases
+  resourceName: druid-leader-election
+  retryPeriod: 2s
+logging:
+  logFormat: json
+  logLevel: info
+server:
+  metrics:
+    bindAddress: ""
+    port: 8080
+  webhooks:
+    bindAddress: ""
+    port: 10250
+    serverCertDir: /etc/webhook-server-tls
+webhooks:
+  etcdComponentProtection:
+    enabled: true
+    exemptServiceAccounts:
+    - system:serviceaccount:kube-system:generic-garbage-collector
+    serviceAccountInfo:
+      name: etcd-druid
+      namespace: ` + namespace + `
+`)
 	)
 
 	JustBeforeEach(func() {
@@ -116,7 +177,8 @@ var _ = Describe("Etcd", func() {
 		var (
 			expectedResources []client.Object
 
-			configMapName = "etcd-druid-imagevector-overwrite-4475dd36"
+			imageVectorConfigMapName    = "etcd-druid-imagevector-overwrite-4475dd36"
+			operatorConfigConfigMapName = "etcd-druid-operator-config-735336e3"
 
 			serviceAccount = &corev1.ServiceAccount{
 				ObjectMeta: metav1.ObjectMeta{
@@ -179,12 +241,12 @@ var _ = Describe("Etcd", func() {
 					},
 					{
 						APIGroups: []string{druidcorev1alpha1.GroupName},
-						Resources: []string{"etcds", "etcdcopybackupstasks"},
+						Resources: []string{"etcds", "etcdcopybackupstasks", "etcdopstasks"},
 						Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 					},
 					{
 						APIGroups: []string{druidcorev1alpha1.GroupName},
-						Resources: []string{"etcds/status", "etcds/finalizers", "etcdcopybackupstasks/status", "etcdcopybackupstasks/finalizers"},
+						Resources: []string{"etcds/status", "etcds/finalizers", "etcdcopybackupstasks/status", "etcdcopybackupstasks/finalizers", "etcdopstasks/status", "etcdopstasks/finalizers"},
 						Verbs:     []string{"get", "update", "patch", "create"},
 					},
 					{
@@ -244,6 +306,10 @@ var _ = Describe("Etcd", func() {
 								},
 								ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 							},
+							{
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+							},
 						},
 					},
 					TargetRef: &autoscalingv1.CrossVersionObjectReference{
@@ -259,7 +325,7 @@ var _ = Describe("Etcd", func() {
 
 			configMapImageVectorOverwrite = &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      configMapName,
+					Name:      imageVectorConfigMapName,
 					Namespace: namespace,
 					Labels: map[string]string{
 						"gardener.cloud/role": "etcd-druid",
@@ -268,6 +334,21 @@ var _ = Describe("Etcd", func() {
 				},
 				Data: map[string]string{
 					"images_overwrite.yaml": *imageVectorOverwriteFull,
+				},
+				Immutable: ptr.To(true),
+			}
+
+			configMapOperatorConfig = &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      operatorConfigConfigMapName,
+					Namespace: namespace,
+					Labels: map[string]string{
+						"gardener.cloud/role": "etcd-druid",
+						"resources.gardener.cloud/garbage-collectable-reference": "true",
+					},
+				},
+				Data: map[string]string{
+					"config.yaml": *etcdOperatorConfigYAML,
 				},
 				Immutable: ptr.To(true),
 			}
@@ -281,7 +362,8 @@ var _ = Describe("Etcd", func() {
 						"high-availability-config.resources.gardener.cloud/type": "controller",
 					},
 					Annotations: map[string]string{
-						references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"): "etcd-druid-webhook",
+						references.AnnotationKey(references.KindConfigMap, operatorConfigConfigMapName): operatorConfigConfigMapName,
+						references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"):           "etcd-druid-webhook",
 					},
 				},
 				Spec: appsv1.DeploymentSpec{
@@ -301,27 +383,15 @@ var _ = Describe("Etcd", func() {
 								"networking.resources.gardener.cloud/to-all-shoots-etcd-main-client-tcp-8080": "allowed",
 							},
 							Annotations: map[string]string{
-								references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"): "etcd-druid-webhook",
+								references.AnnotationKey(references.KindConfigMap, operatorConfigConfigMapName): operatorConfigConfigMapName,
+								references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"):           "etcd-druid-webhook",
 							},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
 									Args: []string{
-										"--enable-leader-election=true",
-										"--disable-etcd-serviceaccount-automount=true",
-										"--etcd-workers=25",
-										"--enable-etcd-spec-auto-reconcile=false",
-										"--webhook-server-port=10250",
-										"--webhook-server-tls-server-cert-dir=/etc/webhook-server-tls",
-										"--enable-etcd-components-webhook=true",
-										"--etcd-components-webhook-exempt-service-accounts=system:serviceaccount:kube-system:generic-garbage-collector",
-										"--enable-backup-compaction=true",
-										"--compaction-workers=3",
-										"--etcd-events-threshold=1000000",
-										"--reconciler-service-account=system:serviceaccount:" + namespace + ":etcd-druid",
-										"--metrics-scrape-wait-duration=1m0s",
-										"--active-deadline-duration=3h0m0s",
+										"--config=" + etcdOperatorConfigMountPath,
 									},
 									Image:           etcdDruidImage,
 									ImagePullPolicy: corev1.PullIfNotPresent,
@@ -346,9 +416,15 @@ var _ = Describe("Etcd", func() {
 											Name:      "webhook-server-tls-cert",
 											ReadOnly:  true,
 										},
+										{
+											MountPath: "/operator_config",
+											Name:      "operator-config",
+											ReadOnly:  true,
+										},
 									},
 								},
 							},
+							Tolerations:        []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: "Exists"}},
 							PriorityClassName:  priorityClassName,
 							ServiceAccountName: "etcd-druid",
 							Volumes: []corev1.Volume{
@@ -358,6 +434,16 @@ var _ = Describe("Etcd", func() {
 										Secret: &corev1.SecretVolumeSource{
 											SecretName:  "etcd-druid-webhook",
 											DefaultMode: ptr.To[int32](420),
+										},
+									},
+								},
+								{
+									Name: "operator-config",
+									VolumeSource: corev1.VolumeSource{
+										ConfigMap: &corev1.ConfigMapVolumeSource{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: operatorConfigConfigMapName,
+											},
 										},
 									},
 								},
@@ -376,8 +462,9 @@ var _ = Describe("Etcd", func() {
 						"high-availability-config.resources.gardener.cloud/type": "controller",
 					},
 					Annotations: map[string]string{
-						references.AnnotationKey(references.KindConfigMap, configMapName):     configMapName,
-						references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"): "etcd-druid-webhook",
+						references.AnnotationKey(references.KindConfigMap, imageVectorConfigMapName):    imageVectorConfigMapName,
+						references.AnnotationKey(references.KindConfigMap, operatorConfigConfigMapName): operatorConfigConfigMapName,
+						references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"):           "etcd-druid-webhook",
 					},
 				},
 				Spec: appsv1.DeploymentSpec{
@@ -397,28 +484,16 @@ var _ = Describe("Etcd", func() {
 								"networking.resources.gardener.cloud/to-all-shoots-etcd-main-client-tcp-8080": "allowed",
 							},
 							Annotations: map[string]string{
-								references.AnnotationKey(references.KindConfigMap, configMapName):     configMapName,
-								references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"): "etcd-druid-webhook",
+								references.AnnotationKey(references.KindConfigMap, imageVectorConfigMapName):    imageVectorConfigMapName,
+								references.AnnotationKey(references.KindConfigMap, operatorConfigConfigMapName): operatorConfigConfigMapName,
+								references.AnnotationKey(references.KindSecret, "etcd-druid-webhook"):           "etcd-druid-webhook",
 							},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
 								{
 									Args: []string{
-										"--enable-leader-election=true",
-										"--disable-etcd-serviceaccount-automount=true",
-										"--etcd-workers=25",
-										"--enable-etcd-spec-auto-reconcile=false",
-										"--webhook-server-port=10250",
-										"--webhook-server-tls-server-cert-dir=/etc/webhook-server-tls",
-										"--enable-etcd-components-webhook=true",
-										"--etcd-components-webhook-exempt-service-accounts=system:serviceaccount:kube-system:generic-garbage-collector",
-										"--enable-backup-compaction=true",
-										"--compaction-workers=3",
-										"--etcd-events-threshold=1000000",
-										"--reconciler-service-account=system:serviceaccount:" + namespace + ":etcd-druid",
-										"--metrics-scrape-wait-duration=1m0s",
-										"--active-deadline-duration=3h0m0s",
+										"--config=" + etcdOperatorConfigMountPath,
 									},
 									Env: []corev1.EnvVar{
 										{
@@ -450,6 +525,11 @@ var _ = Describe("Etcd", func() {
 											ReadOnly:  true,
 										},
 										{
+											MountPath: "/operator_config",
+											Name:      "operator-config",
+											ReadOnly:  true,
+										},
+										{
 											MountPath: "/imagevector_overwrite",
 											Name:      "imagevector-overwrite",
 											ReadOnly:  true,
@@ -457,6 +537,7 @@ var _ = Describe("Etcd", func() {
 									},
 								},
 							},
+							Tolerations:        []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: "Exists"}},
 							PriorityClassName:  priorityClassName,
 							ServiceAccountName: "etcd-druid",
 							Volumes: []corev1.Volume{
@@ -470,11 +551,21 @@ var _ = Describe("Etcd", func() {
 									},
 								},
 								{
+									Name: "operator-config",
+									VolumeSource: corev1.VolumeSource{
+										ConfigMap: &corev1.ConfigMapVolumeSource{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: operatorConfigConfigMapName,
+											},
+										},
+									},
+								},
+								{
 									Name: "imagevector-overwrite",
 									VolumeSource: corev1.VolumeSource{
 										ConfigMap: &corev1.ConfigMapVolumeSource{
 											LocalObjectReference: corev1.LocalObjectReference{
-												Name: configMapName,
+												Name: imageVectorConfigMapName,
 											},
 										},
 									},
@@ -606,7 +697,7 @@ var _ = Describe("Etcd", func() {
 									Resources:   []string{"leases"},
 									Scope:       ptr.To(admissionregistrationv1.AllScopes),
 								},
-								Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update, admissionregistrationv1.Delete},
+								Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Delete},
 							},
 						},
 					},
@@ -728,6 +819,7 @@ var _ = Describe("Etcd", func() {
 			Expect(managedResource).To(DeepEqual(expectedMr))
 
 			expectedResources = []client.Object{
+				configMapOperatorConfig,
 				serviceAccount,
 				clusterRole,
 				clusterRoleBinding,

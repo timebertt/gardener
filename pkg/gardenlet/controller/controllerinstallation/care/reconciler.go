@@ -16,21 +16,22 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 )
 
 // Reconciler reconciles ControllerInstallations, checks their health status and reports it via conditions.
 type Reconciler struct {
-	GardenClient    client.Client
-	SeedClient      client.Client
-	Config          gardenletconfigv1alpha1.ControllerInstallationCareControllerConfiguration
-	Clock           clock.Clock
-	GardenNamespace string
+	GardenClient             client.Client
+	SeedClient               client.Client
+	Config                   gardenletconfigv1alpha1.ControllerInstallationCareControllerConfiguration
+	Clock                    clock.Clock
+	ManagedResourceNamespace string
 }
 
 // Reconcile reconciles ControllerInstallations, checks their health status and reports it via conditions.
@@ -63,8 +64,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	managedResource := &resourcesv1alpha1.ManagedResource{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      controllerInstallation.Name,
-			Namespace: r.GardenNamespace,
+			Name:      gardenerutils.ManagedResourceNameForControllerInstallation(controllerInstallation),
+			Namespace: r.ManagedResourceNamespace,
 		},
 	}
 

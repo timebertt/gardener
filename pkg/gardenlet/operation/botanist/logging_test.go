@@ -18,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
@@ -27,7 +28,6 @@ import (
 	mockvali "github.com/gardener/gardener/pkg/component/observability/logging/vali/mock"
 	mockcollector "github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector/mock"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
@@ -49,6 +49,7 @@ var _ = Describe("Logging", func() {
 		eventLoggerDeployer   *mockcomponent.MockDeployer
 		otelCollectorDeployer *mockcollector.MockInterface
 		valiDeployer          *mockvali.MockInterface
+		victoriaLogsDeployer  *mockcomponent.MockDeployWaiter
 		fakeSecretManager     secretsmanager.Interface
 		chartApplier          *mock.MockChartApplier
 		ctx                   = context.TODO()
@@ -75,6 +76,7 @@ var _ = Describe("Logging", func() {
 		eventLoggerDeployer = mockcomponent.NewMockDeployer(ctrl)
 		otelCollectorDeployer = mockcollector.NewMockInterface(ctrl)
 		valiDeployer = mockvali.NewMockInterface(ctrl)
+		victoriaLogsDeployer = mockcomponent.NewMockDeployWaiter(ctrl)
 		fakeSecretManager = fakesecretsmanager.New(c, controlPlaneNamespace)
 
 		botanist = &Botanist{
@@ -86,6 +88,9 @@ var _ = Describe("Logging", func() {
 					Logging: &gardenletconfigv1alpha1.Logging{
 						Enabled: ptr.To(true),
 						Vali: &gardenletconfigv1alpha1.Vali{
+							Enabled: ptr.To(true),
+						},
+						VictoriaLogs: &gardenletconfigv1alpha1.VictoriaLogs{
 							Enabled: ptr.To(true),
 						},
 						ShootNodeLogging: &gardenletconfigv1alpha1.ShootNodeLogging{
@@ -107,6 +112,7 @@ var _ = Describe("Logging", func() {
 							EventLogger:   eventLoggerDeployer,
 							Vali:          valiDeployer,
 							OtelCollector: otelCollectorDeployer,
+							VictoriaLogs:  victoriaLogsDeployer,
 						},
 					},
 					IsWorkerless: false,
@@ -139,11 +145,16 @@ var _ = Describe("Logging", func() {
 	})
 
 	Describe("#DeployLogging", func() {
+		BeforeEach(func() {
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, false))
+		})
+
 		It("should successfully delete the logging stack when shoot is with testing purpose", func() {
 			botanist.Shoot.Purpose = shootPurposeTesting
 			gomock.InOrder(
 				eventLoggerDeployer.EXPECT().Destroy(ctx),
 				otelCollectorDeployer.EXPECT().Destroy(ctx),
+				victoriaLogsDeployer.EXPECT().Destroy(ctx),
 				valiDeployer.EXPECT().Destroy(ctx),
 			)
 
@@ -155,6 +166,7 @@ var _ = Describe("Logging", func() {
 			gomock.InOrder(
 				eventLoggerDeployer.EXPECT().Destroy(ctx),
 				otelCollectorDeployer.EXPECT().Destroy(ctx),
+				victoriaLogsDeployer.EXPECT().Destroy(ctx),
 				valiDeployer.EXPECT().Destroy(ctx),
 			)
 
@@ -170,9 +182,10 @@ var _ = Describe("Logging", func() {
 						*obj.(*appsv1.Deployment) = *deployment
 						return nil
 					}),
+					victoriaLogsDeployer.EXPECT().Deploy(ctx),
 					valiDeployer.EXPECT().WithAuthenticationProxy(false),
-					otelCollectorDeployer.EXPECT().Destroy(ctx),
 					valiDeployer.EXPECT().Deploy(ctx),
+					otelCollectorDeployer.EXPECT().Destroy(ctx),
 				)
 
 				Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -206,11 +219,11 @@ var _ = Describe("Logging", func() {
 						*obj.(*appsv1.Deployment) = *deployment
 						return nil
 					}),
+					victoriaLogsDeployer.EXPECT().Deploy(ctx),
 					valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
-					eventLoggerDeployer.EXPECT().Deploy(ctx),
-					otelCollectorDeployer.EXPECT().Destroy(ctx),
 					valiDeployer.EXPECT().Deploy(ctx),
+					otelCollectorDeployer.EXPECT().Destroy(ctx),
+					eventLoggerDeployer.EXPECT().Deploy(ctx),
 				)
 
 				Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -238,12 +251,103 @@ var _ = Describe("Logging", func() {
 							*obj.(*appsv1.Deployment) = *deployment
 							return nil
 						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx),
 						valiDeployer.EXPECT().WithAuthenticationProxy(false),
-
-						eventLoggerDeployer.EXPECT().Deploy(ctx),
+						valiDeployer.EXPECT().Deploy(ctx),
 						otelCollectorDeployer.EXPECT().WithAuthenticationProxy(true),
 						otelCollectorDeployer.EXPECT().Deploy(ctx),
+						eventLoggerDeployer.EXPECT().Deploy(ctx),
+					)
+
+					Expect(botanist.DeployLogging(ctx)).To(Succeed())
+				})
+			})
+
+			Context("VictoriaLogs feature gate", func() {
+				BeforeEach(func() {
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, true))
+				})
+
+				It("should successfully deploy all of the components including VictoriaLogs when it is enabled", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					gomock.InOrder(
+						c.EXPECT().Get(ctx, gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context,
+							_ runtimeclient.ObjectKey, obj runtimeclient.Object, _ ...runtimeclient.GetOption) error {
+							deployment := &appsv1.Deployment{
+								ObjectMeta: metav1.ObjectMeta{
+									Name:      v1beta1constants.DeploymentNameGardenerResourceManager,
+									Namespace: controlPlaneNamespace,
+								},
+								Status: appsv1.DeploymentStatus{
+									ReadyReplicas: 1,
+								},
+							}
+							*obj.(*appsv1.Deployment) = *deployment
+							return nil
+						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx),
+						valiDeployer.EXPECT().WithAuthenticationProxy(true),
 						valiDeployer.EXPECT().Deploy(ctx),
+						otelCollectorDeployer.EXPECT().Destroy(ctx),
+						eventLoggerDeployer.EXPECT().Deploy(ctx),
+					)
+
+					Expect(botanist.DeployLogging(ctx)).To(Succeed())
+				})
+
+				It("should fail to deploy the logging stack when VictoriaLogs Deploy returns error", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					gomock.InOrder(
+						c.EXPECT().Get(ctx, gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context,
+							_ runtimeclient.ObjectKey, obj runtimeclient.Object, _ ...runtimeclient.GetOption) error {
+							deployment := &appsv1.Deployment{
+								ObjectMeta: metav1.ObjectMeta{
+									Name:      v1beta1constants.DeploymentNameGardenerResourceManager,
+									Namespace: controlPlaneNamespace,
+								},
+								Status: appsv1.DeploymentStatus{
+									ReadyReplicas: 1,
+								},
+							}
+							*obj.(*appsv1.Deployment) = *deployment
+							return nil
+						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx).Return(fakeErr),
+					)
+
+					Expect(botanist.DeployLogging(ctx)).ToNot(Succeed())
+				})
+			})
+
+			Context("Combined VictoriaLogsBackend and OpenTelemetryCollector feature gates", func() {
+				BeforeEach(func() {
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VictoriaLogsBackend, true))
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.OpenTelemetryCollector, true))
+				})
+
+				It("should successfully deploy all components when both VictoriaLogs and OpenTelemetryCollector are enabled", func() {
+					gardenletfeatures.RegisterFeatureGates()
+					gomock.InOrder(
+						c.EXPECT().Get(ctx, gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context,
+							_ runtimeclient.ObjectKey, obj runtimeclient.Object, _ ...runtimeclient.GetOption) error {
+							deployment := &appsv1.Deployment{
+								ObjectMeta: metav1.ObjectMeta{
+									Name:      v1beta1constants.DeploymentNameGardenerResourceManager,
+									Namespace: controlPlaneNamespace,
+								},
+								Status: appsv1.DeploymentStatus{
+									ReadyReplicas: 1,
+								},
+							}
+							*obj.(*appsv1.Deployment) = *deployment
+							return nil
+						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx),
+						valiDeployer.EXPECT().WithAuthenticationProxy(false),
+						valiDeployer.EXPECT().Deploy(ctx),
+						otelCollectorDeployer.EXPECT().WithAuthenticationProxy(true),
+						otelCollectorDeployer.EXPECT().Deploy(ctx),
+						eventLoggerDeployer.EXPECT().Deploy(ctx),
 					)
 
 					Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -267,11 +371,11 @@ var _ = Describe("Logging", func() {
 						*obj.(*appsv1.Deployment) = *deployment
 						return nil
 					}),
+					victoriaLogsDeployer.EXPECT().Deploy(ctx),
 					valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
-					eventLoggerDeployer.EXPECT().Destroy(ctx),
-					otelCollectorDeployer.EXPECT().Destroy(ctx),
 					valiDeployer.EXPECT().Deploy(ctx),
+					otelCollectorDeployer.EXPECT().Destroy(ctx),
+					eventLoggerDeployer.EXPECT().Destroy(ctx),
 				)
 
 				Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -294,11 +398,11 @@ var _ = Describe("Logging", func() {
 						*obj.(*appsv1.Deployment) = *deployment
 						return nil
 					}),
+					victoriaLogsDeployer.EXPECT().Deploy(ctx),
 					valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
-					eventLoggerDeployer.EXPECT().Deploy(ctx),
-					otelCollectorDeployer.EXPECT().Destroy(ctx),
 					valiDeployer.EXPECT().Deploy(ctx),
+					otelCollectorDeployer.EXPECT().Destroy(ctx),
+					eventLoggerDeployer.EXPECT().Deploy(ctx),
 				)
 
 				Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -321,11 +425,11 @@ var _ = Describe("Logging", func() {
 						*obj.(*appsv1.Deployment) = *deployment
 						return nil
 					}),
+					victoriaLogsDeployer.EXPECT().Deploy(ctx),
 					valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
-					eventLoggerDeployer.EXPECT().Deploy(ctx),
-					otelCollectorDeployer.EXPECT().Destroy(ctx),
 					valiDeployer.EXPECT().Deploy(ctx),
+					otelCollectorDeployer.EXPECT().Destroy(ctx),
+					eventLoggerDeployer.EXPECT().Deploy(ctx),
 				)
 
 				Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -348,11 +452,11 @@ var _ = Describe("Logging", func() {
 						*obj.(*appsv1.Deployment) = *deployment
 						return nil
 					}),
+					victoriaLogsDeployer.EXPECT().Deploy(ctx),
 					valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
-					eventLoggerDeployer.EXPECT().Deploy(ctx),
-					otelCollectorDeployer.EXPECT().Destroy(ctx),
 					valiDeployer.EXPECT().Destroy(ctx),
+					otelCollectorDeployer.EXPECT().Destroy(ctx),
+					eventLoggerDeployer.EXPECT().Deploy(ctx),
 				)
 
 				Expect(botanist.DeployLogging(ctx)).To(Succeed())
@@ -370,6 +474,7 @@ var _ = Describe("Logging", func() {
 					gomock.InOrder(
 						eventLoggerDeployer.EXPECT().Destroy(ctx),
 						otelCollectorDeployer.EXPECT().Destroy(ctx),
+						victoriaLogsDeployer.EXPECT().Destroy(ctx),
 						valiDeployer.EXPECT().Destroy(ctx).Return(fakeErr),
 					)
 
@@ -392,8 +497,10 @@ var _ = Describe("Logging", func() {
 							*obj.(*appsv1.Deployment) = *deployment
 							return nil
 						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx),
 						valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
+						valiDeployer.EXPECT().Deploy(ctx),
+						otelCollectorDeployer.EXPECT().Destroy(ctx),
 						eventLoggerDeployer.EXPECT().Deploy(ctx).Return(fakeErr),
 					)
 
@@ -416,8 +523,10 @@ var _ = Describe("Logging", func() {
 							*obj.(*appsv1.Deployment) = *deployment
 							return nil
 						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx),
 						valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
+						valiDeployer.EXPECT().Deploy(ctx),
+						otelCollectorDeployer.EXPECT().Destroy(ctx),
 						eventLoggerDeployer.EXPECT().Deploy(ctx).Return(fakeErr),
 					)
 
@@ -441,10 +550,8 @@ var _ = Describe("Logging", func() {
 							*obj.(*appsv1.Deployment) = *deployment
 							return nil
 						}),
+						victoriaLogsDeployer.EXPECT().Deploy(ctx),
 						valiDeployer.EXPECT().WithAuthenticationProxy(true),
-
-						eventLoggerDeployer.EXPECT().Deploy(ctx),
-						otelCollectorDeployer.EXPECT().Destroy(ctx),
 						valiDeployer.EXPECT().Deploy(ctx).Return(fakeErr),
 					)
 

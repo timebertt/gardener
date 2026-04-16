@@ -130,6 +130,7 @@ honor_labels: true`
 			RetentionSize:       retentionSize,
 			ExternalLabels:      externalLabels,
 			AdditionalPodLabels: additionalLabels,
+			HealthCheckBy:       "some-component",
 		}
 
 		fakeOps = &retryfake.Ops{MaxAttempts: 2}
@@ -283,9 +284,10 @@ honor_labels: true`
 					Name:      name,
 					Namespace: namespace,
 					Labels: map[string]string{
-						"app":  "prometheus",
-						"role": "monitoring",
-						"name": name,
+						"app":             "prometheus",
+						"role":            "monitoring",
+						"name":            name,
+						"health-check-by": "some-component",
 					},
 				},
 				Spec: monitoringv1.PrometheusSpec{
@@ -409,7 +411,7 @@ honor_labels: true`
 							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 						},
 						{
-							ContainerName: "config-reloader",
+							ContainerName: "*",
 							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
@@ -492,7 +494,7 @@ honor_labels: true`
 				Labels:    map[string]string{"foo": "bar"},
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
-				Scheme: ptr.To("baz"),
+				Scheme: ptr.To(monitoringv1.SchemeHTTPS),
 			},
 		}
 		additionalConfigMap = &corev1.ConfigMap{
@@ -1013,47 +1015,13 @@ tls_config:
 							TargetLabel:  "shoot_dashboard_url",
 						}}
 					})
-
-					It("should successfully append the additional alert relabel config", func() {
-						prometheusRule.Namespace = namespace
-						metav1.SetMetaDataLabel(&prometheusRule.ObjectMeta, "prometheus", name)
-						metav1.SetMetaDataLabel(&scrapeConfig.ObjectMeta, "prometheus", name)
-						metav1.SetMetaDataLabel(&serviceMonitor.ObjectMeta, "prometheus", name)
-						metav1.SetMetaDataLabel(&podMonitor.ObjectMeta, "prometheus", name)
-
-						prometheus := prometheusFor([]alertmanager{{name: alertmanagerName}}, false)
-						prometheus.Spec.Alerting.Alertmanagers[0].AlertRelabelConfigs = append(
-							prometheus.Spec.Alerting.Alertmanagers[0].AlertRelabelConfigs,
-							monitoringv1.RelabelConfig{
-								SourceLabels: []monitoringv1.LabelName{"project", "name"},
-								Regex:        "(.+);(.+)",
-								Action:       "replace",
-								Replacement:  ptr.To("https://dashboard.ingress.gardener.cloud/namespace/garden-$1/shoots/$2"),
-								TargetLabel:  "shoot_dashboard_url",
-							},
-						)
-
-						Expect(managedResource).To(contain(
-							serviceAccount,
-							service,
-							clusterRoleBinding,
-							prometheus,
-							vpa,
-							prometheusRule,
-							scrapeConfig,
-							serviceMonitor,
-							podMonitor,
-							secretAdditionalScrapeConfigs,
-							additionalConfigMap,
-						))
-					})
 				})
 			})
 
 			When("there is more than 1 replica", func() {
 				BeforeEach(func() {
 					values.Replicas = 2
-					values.RuntimeVersion = semver.MustParse("1.29.1")
+					values.RuntimeVersion = semver.MustParse("1.35.0")
 				})
 
 				It("should successfully deploy all resources", func() {
@@ -1195,11 +1163,11 @@ query_range:
 					})
 					Expect(references.InjectAnnotations(prometheusObj)).To(Succeed())
 
-					service.Spec.Ports[0].TargetPort = intstr.FromInt32(9091)
-
-					vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
-						ContainerName: "cortex",
-						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+					service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{
+						Name:       "cortex",
+						Port:       81,
+						TargetPort: intstr.FromInt32(9091),
+						Protocol:   corev1.ProtocolTCP,
 					})
 
 					prometheusRule.Namespace = namespace

@@ -24,6 +24,8 @@ rules:
   - infrastructures/status
   - operatingsystemconfigs
   - operatingsystemconfigs/status
+  - selfhostedshootexposures
+  - selfhostedshootexposures/status
   - workers
   - workers/status
   verbs:
@@ -118,7 +120,6 @@ rules:
   - mutatingwebhookconfigurations
   - customresourcedefinitions
   - networkpolicies
-  - ingresses
   - poddisruptionbudgets
   - ippools
   verbs:

@@ -32,6 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -53,8 +55,6 @@ import (
 	"github.com/gardener/gardener/pkg/component/networking/nginxingress"
 	"github.com/gardener/gardener/pkg/component/shared"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	gardencontroller "github.com/gardener/gardener/pkg/operator/controller/garden/garden"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
@@ -437,6 +437,7 @@ spec:
 		deployedCRDs := []string{
 			"etcds.druid.gardener.cloud",
 			"etcdcopybackupstasks.druid.gardener.cloud",
+			"etcdopstasks.druid.gardener.cloud",
 			"managedresources.resources.gardener.cloud",
 			"verticalpodautoscalers.autoscaling.k8s.io",
 			"verticalpodautoscalercheckpoints.autoscaling.k8s.io",
@@ -487,6 +488,14 @@ spec:
 			"perses.perses.dev",
 			"persesdashboards.perses.dev",
 			"persesdatasources.perses.dev",
+			"persesglobaldatasources.perses.dev",
+			// opentelemetry-operator
+			"instrumentations.opentelemetry.io",
+			"opampbridges.opentelemetry.io",
+			"opentelemetrycollectors.opentelemetry.io",
+			"targetallocators.opentelemetry.io",
+			// victoria-operator
+			"vlsingles.operator.victoriametrics.com",
 		}
 
 		By("Verify that the custom resource definitions have been created")
@@ -539,8 +548,11 @@ spec:
 		By("Verify that garden namespace was labeled and annotated appropriately")
 		Eventually(func(g Gomega) {
 			g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(testNamespace), testNamespace)).To(Succeed())
-			g.Expect(testNamespace.Labels).To(HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"))
-			g.Expect(testNamespace.Labels).To(HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"))
+			g.Expect(testNamespace.Labels).To(And(
+				HaveKeyWithValue("gardener.cloud/role", "garden"),
+				HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"),
+				HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"),
+			))
 			g.Expect(testNamespace.Annotations).To(HaveKeyWithValue("high-availability-config.resources.gardener.cloud/zones", "a,b,c"))
 		}).Should(Succeed())
 
@@ -578,6 +590,10 @@ spec:
 			"prometheus-operator",
 			"alertmanager-garden",
 			"perses-operator",
+			"opentelemetry-operator",
+			"opentelemetry-collector",
+			"victoria-operator",
+			"virtual-garden-istio-basic-auth-server",
 		))
 
 		By("Verify that the virtual garden control plane components have been deployed")
@@ -597,7 +613,7 @@ spec:
 		}).Should(Equal(map[string]string{
 			"networking.istio.io/exportTo": "*",
 			"networking.resources.gardener.cloud/from-all-garden-scrape-targets-allowed-ports": `[{"protocol":"TCP","port":443}]`,
-			"networking.resources.gardener.cloud/namespace-selectors":                          `[{"matchLabels":{"gardener.cloud/role":"istio-ingress"}},{"matchLabels":{"networking.gardener.cloud/access-target-apiserver":"allowed"}}]`,
+			"networking.resources.gardener.cloud/namespace-selectors":                          `[{"matchLabels":{"networking.gardener.cloud/access-target-apiserver":"allowed"}}]`,
 		}))
 
 		// The garden controller waits for the Etcd resources to be healthy, but etcd-druid is not really running in
@@ -674,7 +690,7 @@ spec:
 
 			if desiredReplicas := int(ptr.Deref(deployment.Spec.Replicas, 1)); len(podList.Items) != desiredReplicas {
 				g.Expect(testClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(testNamespace.Name), client.MatchingLabels(kubeapiserver.GetLabels()))).To(Succeed())
-				for i := 0; i < desiredReplicas; i++ {
+				for i := range desiredReplicas {
 					g.Expect(testClient.Create(ctx, &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      fmt.Sprintf("virtual-garden-kube-apiserver-%d", i),
@@ -730,15 +746,6 @@ spec:
 			return test.ObjectNames(managedResourceList)
 		}).Should(ContainElements(
 			"shoot-core-gardener-resource-manager",
-		))
-
-		// The secret with the bootstrap certificate should be gone when virtual-garden-gardener-resource-manager was bootstrapped.
-		Eventually(func(g Gomega) []string {
-			secretList := &corev1.SecretList{}
-			g.Expect(testClient.List(ctx, secretList, client.InNamespace(testNamespace.Name))).To(Succeed())
-			return test.ObjectNames(secretList)
-		}).ShouldNot(ContainElement(
-			ContainSubstring("shoot-access-gardener-resource-manager-bootstrap-"),
 		))
 
 		// The garden controller waits for the virtual-garden-gardener-resource-manager Deployment to be healthy, so let's fake this here.
@@ -800,7 +807,7 @@ spec:
 
 			if desiredReplicas := int(ptr.Deref(deployment.Spec.Replicas, 1)); len(podList.Items) != desiredReplicas {
 				g.Expect(testClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(testNamespace.Name), client.MatchingLabels(map[string]string{"app": "kubernetes", "role": "controller-manager"}))).To(Succeed())
-				for i := 0; i < desiredReplicas; i++ {
+				for i := range desiredReplicas {
 					g.Expect(testClient.Create(ctx, &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      fmt.Sprintf("virtual-garden-kube-controller-manager-%d", i),

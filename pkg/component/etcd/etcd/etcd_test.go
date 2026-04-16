@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -88,7 +89,7 @@ var _ = Describe("Etcd", func() {
 			End:   "5678",
 		}
 		highAvailabilityEnabled bool
-		runAsStaticPod          bool
+		staticPodConfig         *StaticPodConfig
 		role                    string
 		caRotationPhase         gardencorev1beta1.CredentialsRotationPhase
 		autoscalingConfig       AutoscalingConfig
@@ -113,12 +114,8 @@ var _ = Describe("Etcd", func() {
 		backupLeaderElectionEtcdConnectionTimeout = &metav1.Duration{Duration: 10 * time.Second}
 		backupLeaderElectionReelectionPeriod      = &metav1.Duration{Duration: 11 * time.Second}
 
-		vpaUpdateMode       = vpaautoscalingv1.UpdateModeRecreate
-		containerPolicyOff  = vpaautoscalingv1.ContainerScalingModeOff
-		containerPolicyAuto = vpaautoscalingv1.ContainerScalingModeAuto
-		controlledValues    = vpaautoscalingv1.ContainerControlledValuesRequestsOnly
-		metricsBasic        = druidcorev1alpha1.Basic
-		metricsExtensive    = druidcorev1alpha1.Extensive
+		metricsBasic     = druidcorev1alpha1.Basic
+		metricsExtensive = druidcorev1alpha1.Extensive
 
 		etcdName string
 		vpaName  string
@@ -139,7 +136,7 @@ var _ = Describe("Etcd", func() {
 			peerServerSecretName *string,
 			topologyAwareRoutingEnabled bool,
 			runtimeKubernetesVersion *semver.Version,
-			runAsStaticPod bool,
+			staticPodConfig *StaticPodConfig,
 		) *druidcorev1alpha1.Etcd {
 			defragSchedule := defragmentationSchedule
 			if existingDefragmentationSchedule != "" {
@@ -190,11 +187,8 @@ var _ = Describe("Etcd", func() {
 					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferSameZone)
 				} else if versionutils.ConstraintK8sGreaterEqual132.Check(runtimeKubernetesVersion) {
 					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
-				} else if versionutils.ConstraintK8sEqual131.Check(runtimeKubernetesVersion) {
-					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
-					metav1.SetMetaDataLabel(&clientService.ObjectMeta, "endpoint-slice-hints.resources.gardener.cloud/consider", "true")
 				} else {
-					metav1.SetMetaDataAnnotation(&clientService.ObjectMeta, "service.kubernetes.io/topology-mode", "auto")
+					clientService.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
 					metav1.SetMetaDataLabel(&clientService.ObjectMeta, "endpoint-slice-hints.resources.gardener.cloud/consider", "true")
 				}
 			}
@@ -377,7 +371,7 @@ var _ = Describe("Etcd", func() {
 				}
 			}
 
-			if runAsStaticPod {
+			if staticPodConfig != nil {
 				obj.Annotations["druid.gardener.cloud/disable-etcd-runtime-component-creation"] = ""
 				obj.Spec.RunAsRoot = ptr.To(true)
 
@@ -413,20 +407,19 @@ var _ = Describe("Etcd", func() {
 						Name:       etcdName,
 					},
 					UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-						UpdateMode: &vpaUpdateMode,
+						UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 					},
 					ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 						ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 							{
 								ContainerName:    "etcd",
 								MinAllowed:       minAllowedConfig,
-								ControlledValues: &controlledValues,
-								Mode:             &containerPolicyAuto,
+								ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+								Mode:             ptr.To(vpaautoscalingv1.ContainerScalingModeAuto),
 							},
 							{
-								ContainerName:    "backup-restore",
-								Mode:             &containerPolicyOff,
-								ControlledValues: &controlledValues,
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 							},
 						},
 					},
@@ -476,18 +469,22 @@ var _ = Describe("Etcd", func() {
 					Endpoints: []monitoringv1.Endpoint{
 						{
 							Port:   "client",
-							Scheme: "https",
-							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
-								InsecureSkipVerify: ptr.To(true),
-								Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyCertificate,
-								}},
-								KeySecret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyPrivateKey,
+							Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+								HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+									TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
+										InsecureSkipVerify: ptr.To(true),
+										Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyCertificate,
+										}},
+										KeySecret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyPrivateKey,
+										},
+									}},
 								},
-							}},
+							},
 							RelabelConfigs: []monitoringv1.RelabelConfig{
 								{
 									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_service_label_app_kubernetes_io_part_of"},
@@ -506,18 +503,22 @@ var _ = Describe("Etcd", func() {
 						},
 						{
 							Port:   "backuprestore",
-							Scheme: "https",
-							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
-								InsecureSkipVerify: ptr.To(true),
-								Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyCertificate,
-								}},
-								KeySecret: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
-									Key:                  secretsutils.DataKeyPrivateKey,
+							Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+								HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+									TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{
+										InsecureSkipVerify: ptr.To(true),
+										Cert: monitoringv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyCertificate,
+										}},
+										KeySecret: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: clientSecretName},
+											Key:                  secretsutils.DataKeyPrivateKey,
+										},
+									}},
 								},
-							}},
+							},
 							RelabelConfigs: []monitoringv1.RelabelConfig{
 								{
 									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_service_label_app_kubernetes_io_part_of"},
@@ -724,7 +725,7 @@ var _ = Describe("Etcd", func() {
 		backupConfig = nil
 		replicas = ptr.To[int32](1)
 		highAvailabilityEnabled = false
-		runAsStaticPod = false
+		staticPodConfig = nil
 		role = testRole
 	})
 
@@ -753,7 +754,7 @@ var _ = Describe("Etcd", func() {
 			MaintenanceTimeWindow:   maintenanceTimeWindow,
 			HighAvailabilityEnabled: highAvailabilityEnabled,
 			BackupConfig:            backupConfig,
-			RunsAsStaticPod:         runAsStaticPod,
+			StaticPodConfig:         staticPodConfig,
 		})
 	})
 
@@ -803,7 +804,7 @@ var _ = Describe("Etcd", func() {
 						nil,
 						false,
 						nil,
-						runAsStaticPod,
+						staticPodConfig,
 					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -878,7 +879,7 @@ var _ = Describe("Etcd", func() {
 						nil,
 						false,
 						nil,
-						runAsStaticPod,
+						staticPodConfig,
 					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -958,7 +959,7 @@ var _ = Describe("Etcd", func() {
 						nil,
 						false,
 						nil,
-						runAsStaticPod,
+						staticPodConfig,
 					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1022,7 +1023,7 @@ var _ = Describe("Etcd", func() {
 						nil,
 						false,
 						nil,
-						runAsStaticPod,
+						staticPodConfig,
 					)
 					expectedObj.Annotations = utils.MergeStringMaps(expectedObj.Annotations, map[string]string{
 						"foo": "bar",
@@ -1095,7 +1096,7 @@ var _ = Describe("Etcd", func() {
 						nil,
 						false,
 						nil,
-						runAsStaticPod,
+						staticPodConfig,
 					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1140,7 +1141,7 @@ var _ = Describe("Etcd", func() {
 						nil,
 						false,
 						nil,
-						runAsStaticPod,
+						staticPodConfig,
 					)))
 				}),
 				c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1208,7 +1209,7 @@ var _ = Describe("Etcd", func() {
 							nil,
 							false,
 							nil,
-							runAsStaticPod,
+							staticPodConfig,
 						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1268,7 +1269,7 @@ var _ = Describe("Etcd", func() {
 							nil,
 							false,
 							nil,
-							runAsStaticPod,
+							staticPodConfig,
 						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1333,7 +1334,7 @@ var _ = Describe("Etcd", func() {
 							nil,
 							false,
 							nil,
-							runAsStaticPod,
+							staticPodConfig,
 						)
 						expobj.Status.Etcd = &druidcorev1alpha1.CrossVersionObjectReference{}
 
@@ -1359,7 +1360,7 @@ var _ = Describe("Etcd", func() {
 
 		When("etcd should run as static pod", func() {
 			BeforeEach(func() {
-				runAsStaticPod = true
+				staticPodConfig = &StaticPodConfig{}
 			})
 
 			Describe("main etcd", func() {
@@ -1386,7 +1387,7 @@ var _ = Describe("Etcd", func() {
 								nil,
 								false,
 								nil,
-								runAsStaticPod,
+								staticPodConfig,
 							)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1438,7 +1439,7 @@ var _ = Describe("Etcd", func() {
 								nil,
 								false,
 								nil,
-								runAsStaticPod,
+								staticPodConfig,
 							)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1495,7 +1496,7 @@ var _ = Describe("Etcd", func() {
 							&peerServerSecretName,
 							false,
 							nil,
-							runAsStaticPod,
+							staticPodConfig,
 						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1532,11 +1533,10 @@ var _ = Describe("Etcd", func() {
 						logr.New(logf.NullLogSink{}),
 						testclock.NewFakeClock(time.Now()),
 						fakeClient,
-						testNamespace,
 						"",
-						secretsmanager.Config{
-							SecretNamesToTimes: secretNamesToTimes,
-						})
+						secretsmanager.WithSecretNamesToTimes(secretNamesToTimes),
+						secretsmanager.WithNamespaces(testNamespace),
+					)
 					Expect(err).ToNot(HaveOccurred())
 
 					// Create new etcd CA
@@ -1588,6 +1588,7 @@ var _ = Describe("Etcd", func() {
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc",
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc.cluster.local",
 						},
+						IPAddresses:                 []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 						CertType:                    secretsutils.ServerClientCert,
 						SkipPublishingCACertificate: true,
 					}, secretsmanager.SignedByCA(v1beta1constants.SecretNameCAETCDPeer, secretsmanager.UseCurrentCA), secretsmanager.Rotate(secretsmanager.InPlace))
@@ -1615,6 +1616,7 @@ var _ = Describe("Etcd", func() {
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc",
 							"*.etcd-" + testRole + "-peer.shoot--test--test.svc.cluster.local",
 						},
+						IPAddresses:                 []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 						CertType:                    secretsutils.ServerClientCert,
 						SkipPublishingCACertificate: true,
 					}, secretsmanager.SignedByCA(v1beta1constants.SecretNameCAETCD), secretsmanager.Rotate(secretsmanager.InPlace))
@@ -1639,11 +1641,10 @@ var _ = Describe("Etcd", func() {
 					logr.New(logf.NullLogSink{}),
 					testclock.NewFakeClock(time.Now()),
 					fakeClient,
-					testNamespace,
 					"",
-					secretsmanager.Config{
-						SecretNamesToTimes: secretNamesToTimes,
-					})
+					secretsmanager.WithSecretNamesToTimes(secretNamesToTimes),
+					secretsmanager.WithNamespaces(testNamespace),
+				)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Create new etcd CA
@@ -1814,7 +1815,7 @@ var _ = Describe("Etcd", func() {
 								nil,
 								true,
 								runtimeKubernetesVersion,
-								runAsStaticPod,
+								staticPodConfig,
 							)))
 						}),
 						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),
@@ -1833,9 +1834,9 @@ var _ = Describe("Etcd", func() {
 					Expect(etcd.Deploy(ctx)).To(Succeed())
 				},
 
-				Entry("when runtime Kubernetes version is >= 1.32", semver.MustParse("1.32.1")),
+				Entry("when runtime Kubernetes version is >= 1.34", semver.MustParse("1.34.0")),
+				Entry("when runtime Kubernetes version is >= 1.32, < 1.34", semver.MustParse("1.32.1")),
 				Entry("when runtime Kubernetes version is 1.31", semver.MustParse("1.31.2")),
-				Entry("when runtime Kubernetes version is < 1.31", semver.MustParse("1.30.3")),
 			)
 		})
 
@@ -1880,7 +1881,7 @@ var _ = Describe("Etcd", func() {
 					nil,
 					false,
 					nil,
-					runAsStaticPod,
+					staticPodConfig,
 				)
 				etcdObj.Name = etcdName
 				etcdObj.Spec.VolumeClaimTemplate = ptr.To(testRole + "-virtual-garden-etcd")
@@ -1951,7 +1952,7 @@ var _ = Describe("Etcd", func() {
 							nil,
 							false,
 							nil,
-							runAsStaticPod,
+							staticPodConfig,
 						)))
 					}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: vpaName}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})).Return(apierrors.NewNotFound(schema.GroupResource{}, "")),

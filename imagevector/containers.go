@@ -41,6 +41,8 @@ const (
 	ContainerImageNameEventLogger = "event-logger"
 	// ContainerImageNameFluentBit is a constant for an image in the image vector with name 'fluent-bit'.
 	ContainerImageNameFluentBit = "fluent-bit"
+	// ContainerImageNameFluentBitPlugin is a constant for an image in the image vector with name 'fluent-bit-plugin'.
+	ContainerImageNameFluentBitPlugin = "fluent-bit-plugin"
 	// ContainerImageNameFluentBitPluginInstaller is a constant for an image in the image vector with name 'fluent-bit-plugin-installer'.
 	ContainerImageNameFluentBitPluginInstaller = "fluent-bit-plugin-installer"
 	// ContainerImageNameFluentOperator is a constant for an image in the image vector with name 'fluent-operator'.
@@ -71,6 +73,8 @@ const (
 	ContainerImageNameHyperkube = "hyperkube"
 	// ContainerImageNameIngressDefaultBackend is a constant for an image in the image vector with name 'ingress-default-backend'.
 	ContainerImageNameIngressDefaultBackend = "ingress-default-backend"
+	// ContainerImageNameIstioBasicAuthServer is a constant for an image in the image vector with name 'istio-basic-auth-server'.
+	ContainerImageNameIstioBasicAuthServer = "istio-basic-auth-server"
 	// ContainerImageNameIstioIstiod is a constant for an image in the image vector with name 'istio-istiod'.
 	ContainerImageNameIstioIstiod = "istio-istiod"
 	// ContainerImageNameIstioProxy is a constant for an image in the image vector with name 'istio-proxy'.
@@ -133,6 +137,10 @@ const (
 	ContainerImageNameValiCurator = "vali-curator"
 	// ContainerImageNameValitail is a constant for an image in the image vector with name 'valitail'.
 	ContainerImageNameValitail = "valitail"
+	// ContainerImageNameVictoriaLogs is a constant for an image in the image vector with name 'victoria-logs'.
+	ContainerImageNameVictoriaLogs = "victoria-logs"
+	// ContainerImageNameVictoriaOperator is a constant for an image in the image vector with name 'victoria-operator'.
+	ContainerImageNameVictoriaOperator = "victoria-operator"
 	// ContainerImageNameVpaAdmissionController is a constant for an image in the image vector with name 'vpa-admission-controller'.
 	ContainerImageNameVpaAdmissionController = "vpa-admission-controller"
 	// ContainerImageNameVpaRecommender is a constant for an image in the image vector with name 'vpa-recommender'.

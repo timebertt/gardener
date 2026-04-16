@@ -5,12 +5,113 @@
 package health
 
 import (
+	"context"
 	"fmt"
+	"slices"
+	"strings"
+	"time"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	prom "github.com/prometheus/client_golang/api"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 )
+
+// PrometheusHealthCheckResult contains the result of a Prometheus health check.
+type PrometheusHealthCheckResult struct {
+	IsHealthy bool
+	Message   string
+}
+
+// PrometheusHealthChecker is a function type that checks for health issues in a Prometheus instance.
+type PrometheusHealthChecker func(ctx context.Context, endpoint string, port int) (PrometheusHealthCheckResult, error)
+
+// IsPrometheusHealthy checks for health issues in a Prometheus instance.
+func IsPrometheusHealthy(ctx context.Context, endpoint string, port int) (PrometheusHealthCheckResult, error) {
+	client, err := prom.NewClient(prom.Config{Address: fmt.Sprintf("http://%s:%d", endpoint, port)})
+	if err != nil {
+		return PrometheusHealthCheckResult{}, fmt.Errorf("failed to create Prometheus client: %w", err)
+	}
+
+	v1api := promv1.NewAPI(client)
+
+	// set a maximum timeout for the query, but callers can set a shorter timeout via the context
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	result, warnings, err := v1api.Query(ctx, "healthcheck:up", time.Now())
+	if err != nil {
+		return PrometheusHealthCheckResult{}, fmt.Errorf("query failed: %w", err)
+	}
+
+	if len(warnings) > 0 {
+		return PrometheusHealthCheckResult{}, fmt.Errorf("query returned warnings: %s", strings.Join(warnings, ", "))
+	}
+
+	vector, ok := result.(model.Vector)
+	if !ok {
+		return PrometheusHealthCheckResult{}, fmt.Errorf("query returned an unexpected result type: %s", result.Type())
+	}
+
+	if len(vector) == 0 {
+		return PrometheusHealthCheckResult{IsHealthy: false, Message: "health check recording rules are not deployed or running yet"}, nil
+	}
+
+	var (
+		healthySamples    []string
+		unhealthySamples  []string
+		unexpectedSamples []string
+
+		healthy        = model.SampleValue(1)
+		unhealthy      = model.SampleValue(0)
+		sampleToString = func(s *model.Sample) string {
+			return fmt.Sprintf("%s => %s", s.Metric, s.Value)
+		}
+	)
+
+	for _, sample := range vector {
+		switch sample.Value {
+		case healthy:
+			healthySamples = append(healthySamples, sampleToString(sample))
+		case unhealthy:
+			unhealthySamples = append(unhealthySamples, sampleToString(sample))
+		default:
+			unexpectedSamples = append(unexpectedSamples, sampleToString(sample))
+		}
+	}
+
+	var (
+		hasUnexpectedSamples          = len(unexpectedSamples) > 0
+		hasMultipleHealthySamples     = len(healthySamples) > 1
+		hasHealthyAndUnhealthySamples = len(healthySamples) > 0 && len(unhealthySamples) > 0
+
+		isHealthy = len(healthySamples) == 1
+
+		buildMessage = func(samples []string) string {
+			slices.Sort(samples)
+			var (
+				msg      = strings.Join(samples, ", ")
+				msgLimit = 500
+			)
+			if len(msg) > msgLimit {
+				msg = msg[:msgLimit-3] + "..."
+			}
+			return msg
+		}
+	)
+
+	if hasUnexpectedSamples || hasMultipleHealthySamples || hasHealthyAndUnhealthySamples {
+		var samples []string
+		samples = append(samples, healthySamples...)
+		samples = append(samples, unhealthySamples...)
+		samples = append(samples, unexpectedSamples...)
+		return PrometheusHealthCheckResult{}, fmt.Errorf("query returned inconsistent sample values: %s", buildMessage(samples))
+	}
+
+	return PrometheusHealthCheckResult{IsHealthy: isHealthy, Message: buildMessage(unhealthySamples)}, nil
+}
 
 // CheckPrometheus checks whether the given Prometheus is healthy.
 func CheckPrometheus(prometheus *monitoringv1.Prometheus) error {

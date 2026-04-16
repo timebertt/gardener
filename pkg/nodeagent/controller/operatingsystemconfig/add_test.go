@@ -5,17 +5,16 @@
 package operatingsystemconfig_test
 
 import (
-	"context"
 	"time"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
-	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"go.uber.org/mock/gomock"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -25,7 +24,7 @@ import (
 
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	. "github.com/gardener/gardener/pkg/nodeagent/controller/operatingsystemconfig"
-	mockworkqueue "github.com/gardener/gardener/third_party/mock/client-go/util/workqueue"
+	"github.com/gardener/gardener/pkg/utils/test"
 )
 
 var _ = Describe("Add", func() {
@@ -79,14 +78,154 @@ var _ = Describe("Add", func() {
 		})
 	})
 
+	Describe("#LeasePredicate", func() {
+		var (
+			fakeClient client.Client
+			p          predicate.Predicate
+			lease      *coordinationv1.Lease
+			secret     *corev1.Secret
+			node       *corev1.Node
+
+			hostName string
+		)
+
+		BeforeEach(func() {
+			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.ShootScheme).Build()
+
+			hostName = "test-host"
+			lease = &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "osc-secret",
+					Namespace: "kube-system",
+				},
+			}
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "osc-secret",
+					Namespace:   "kube-system",
+					Annotations: map[string]string{"checksum/data-script": "downloaded-checksum"},
+				},
+			}
+			node = &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-node",
+					Annotations: map[string]string{"checksum/cloud-config-data": "applied-checksum"},
+				},
+			}
+		})
+
+		JustBeforeEach(func() {
+			p = (&Reconciler{
+				Client:   fakeClient,
+				HostName: hostName,
+				NodeName: node.Name,
+			}).LeasePredicate(ctx, log)
+		})
+
+		Describe("#Create", func() {
+			It("should return false", func() {
+				Expect(p.Create(event.CreateEvent{})).To(BeFalse())
+			})
+		})
+
+		Describe("#Update", func() {
+			It("should return false because old object is not a lease", func() {
+				Expect(p.Update(event.UpdateEvent{ObjectOld: &corev1.Secret{}})).To(BeFalse())
+			})
+
+			It("should return false because new object is not a lease", func() {
+				Expect(p.Update(event.UpdateEvent{ObjectOld: lease, ObjectNew: &corev1.Secret{}})).To(BeFalse())
+			})
+
+			It("should return false because lease was not released by another instance", func() {
+				oldLease := lease.DeepCopy()
+				oldLease.Spec.HolderIdentity = &hostName
+
+				Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeFalse())
+			})
+
+			It("should return false because lease was released but held by current instance", func() {
+				oldLease := lease.DeepCopy()
+				oldLease.Spec.HolderIdentity = &hostName
+				lease.Spec.HolderIdentity = nil
+
+				Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeFalse())
+			})
+
+			It("should return false because lease is still held", func() {
+				oldLease := lease.DeepCopy()
+				oldLease.Spec.HolderIdentity = ptr.To("other-host")
+				lease = oldLease.DeepCopy()
+
+				Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeFalse())
+			})
+
+			When("lease was released by another instance", func() {
+				var oldLease *coordinationv1.Lease
+
+				BeforeEach(func() {
+					oldLease = lease.DeepCopy()
+					oldLease.Spec.HolderIdentity = ptr.To("other-host")
+					lease.Spec.HolderIdentity = nil
+				})
+
+				It("should return true because secret does not exist (treated as node being outdated)", func() {
+					Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeTrue())
+				})
+
+				When("secret exists", func() {
+					BeforeEach(func() {
+						Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+						DeferCleanup(func() {
+							Expect(fakeClient.Delete(ctx, secret)).To(Succeed())
+						})
+					})
+
+					It("should return true because node does not exist (treated as node being outdated)", func() {
+						Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeTrue())
+					})
+
+					When("node exists", func() {
+						BeforeEach(func() {
+							Expect(fakeClient.Create(ctx, node)).To(Succeed())
+							DeferCleanup(func() {
+								Expect(fakeClient.Delete(ctx, node)).To(Succeed())
+							})
+						})
+
+						It("should return false because node is up-to-date (checksums match)", func() {
+							node.Annotations["checksum/cloud-config-data"] = "downloaded-checksum"
+							Expect(fakeClient.Update(ctx, node)).To(Succeed())
+
+							Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeFalse())
+						})
+
+						It("should return true because node is not up-to-date (checksums differ)", func() {
+							Expect(p.Update(event.UpdateEvent{ObjectOld: oldLease, ObjectNew: lease})).To(BeTrue())
+						})
+					})
+				})
+			})
+		})
+
+		Describe("#Delete", func() {
+			It("should return false", func() {
+				Expect(p.Delete(event.DeleteEvent{})).To(BeFalse())
+			})
+		})
+
+		Describe("#Generic", func() {
+			It("should return false", func() {
+				Expect(p.Generic(event.GenericEvent{})).To(BeFalse())
+			})
+		})
+	})
+
 	Describe("#EnqueueWithJitterDelay", func() {
 		var (
-			ctx = context.Background()
-			log = logr.Discard()
-
 			fakeClient client.Client
 			hdlr       handler.EventHandler
-			queue      *mockworkqueue.MockTypedRateLimitingInterface[reconcile.Request]
+			queue      *test.FakeQueue[reconcile.Request]
 			obj        *corev1.Secret
 			req        reconcile.Request
 
@@ -104,29 +243,33 @@ var _ = Describe("Add", func() {
 				Client:   fakeClient,
 				NodeName: nodeName,
 			}).EnqueueWithJitterDelay(ctx, log)
-			queue = mockworkqueue.NewMockTypedRateLimitingInterface[reconcile.Request](gomock.NewController(GinkgoT()))
+			queue = &test.FakeQueue[reconcile.Request]{}
 			obj = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "osc-secret", Namespace: "namespace"}}
 			req = reconcile.Request{NamespacedName: types.NamespacedName{Name: obj.Name, Namespace: obj.Namespace}}
 		})
 
 		Context("Create events", func() {
 			It("should enqueue the object without delay", func() {
-				queue.EXPECT().Add(req)
-
 				hdlr.Create(ctx, event.CreateEvent{Object: obj}, queue)
+
+				Expect(queue.Added).To(ConsistOf(req))
 			})
 		})
 
 		Context("Update events", func() {
 			It("should not enqueue the object when the OSC did not change", func() {
 				hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: obj}, queue)
+
+				Expect(queue.Added).To(BeEmpty())
+				Expect(queue.AddedAfter).To(BeEmpty())
 			})
 
-			It("should not enqueue the object when the OSC is the same", func() {
-				obj.Data = map[string][]byte{"osc.yaml": []byte(`{"apiVersion":"extensions.gardener.cloud/v1alpha1","kind":"OperatingSystemConfig"}`)}
-				oldObj := obj.DeepCopy()
+			It("should enqueue the object when the OSC did not change if reconciliation is serial", func() {
+				metav1.SetMetaDataAnnotation(&obj.ObjectMeta, "reconciliation.osc.node-agent.gardener.cloud/serial", "true")
 
-				hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+				hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: obj}, queue)
+
+				Expect(queue.Added).To(ConsistOf(req))
 			})
 
 			Context("when the OSC changed", func() {
@@ -140,8 +283,9 @@ var _ = Describe("Add", func() {
 
 				When("node name is not known yet", func() {
 					It("should enqueue the object without delay", func() {
-						queue.EXPECT().AddAfter(req, time.Duration(0))
 						hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+						Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: time.Duration(0)}))
 					})
 				})
 
@@ -152,8 +296,9 @@ var _ = Describe("Add", func() {
 
 					When("node does not exist or cannot be read", func() {
 						It("should enqueue the object without delay", func() {
-							queue.EXPECT().AddAfter(req, time.Duration(0))
 							hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+							Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: time.Duration(0)}))
 						})
 					})
 
@@ -173,8 +318,9 @@ var _ = Describe("Add", func() {
 
 						When("node has no reconciliation delay annotation", func() {
 							It("should enqueue the object without delay", func() {
-								queue.EXPECT().AddAfter(req, time.Duration(0))
 								hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+								Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: time.Duration(0)}))
 							})
 
 							When("node had a reconciliation delay previously", func() {
@@ -182,14 +328,17 @@ var _ = Describe("Add", func() {
 									metav1.SetMetaDataAnnotation(&node.ObjectMeta, "node-agent.gardener.cloud/reconciliation-delay", "8m")
 									Expect(fakeClient.Update(ctx, node)).To(Succeed())
 
-									queue.EXPECT().AddAfter(req, 8*time.Minute)
 									hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
 
+									Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: 8 * time.Minute}))
+
+									queue.AddedAfter = nil
 									delete(node.Annotations, "node-agent.gardener.cloud/reconciliation-delay")
 									Expect(fakeClient.Update(ctx, node)).To(Succeed())
 
-									queue.EXPECT().AddAfter(req, 8*time.Minute)
 									hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+									Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: 8 * time.Minute}))
 								})
 							})
 						})
@@ -199,8 +348,9 @@ var _ = Describe("Add", func() {
 								metav1.SetMetaDataAnnotation(&node.ObjectMeta, "node-agent.gardener.cloud/reconciliation-delay", "fjj123hi")
 								Expect(fakeClient.Update(ctx, node)).To(Succeed())
 
-								queue.EXPECT().AddAfter(req, time.Duration(0))
 								hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+								Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: time.Duration(0)}))
 							})
 
 							When("node had a reconciliation delay previously", func() {
@@ -208,14 +358,17 @@ var _ = Describe("Add", func() {
 									metav1.SetMetaDataAnnotation(&node.ObjectMeta, "node-agent.gardener.cloud/reconciliation-delay", "13s")
 									Expect(fakeClient.Update(ctx, node)).To(Succeed())
 
-									queue.EXPECT().AddAfter(req, 13*time.Second)
 									hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
 
+									Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: 13 * time.Second}))
+
+									queue.AddedAfter = nil
 									metav1.SetMetaDataAnnotation(&node.ObjectMeta, "node-agent.gardener.cloud/reconciliation-delay", "fjj123hi")
 									Expect(fakeClient.Update(ctx, node)).To(Succeed())
 
-									queue.EXPECT().AddAfter(req, 13*time.Second)
 									hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+									Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: 13 * time.Second}))
 								})
 							})
 						})
@@ -226,8 +379,9 @@ var _ = Describe("Add", func() {
 							})
 
 							It("should enqueue the object with expected delay", func() {
-								queue.EXPECT().AddAfter(req, 12*time.Hour)
 								hdlr.Update(ctx, event.UpdateEvent{ObjectNew: obj, ObjectOld: oldObj}, queue)
+
+								Expect(queue.AddedAfter).To(ConsistOf(test.AddAfterArgs[reconcile.Request]{Item: req, Duration: 12 * time.Hour}))
 							})
 						})
 					})
@@ -238,26 +392,50 @@ var _ = Describe("Add", func() {
 		Context("Delete events", func() {
 			It("should not enqueue the object", func() {
 				hdlr.Delete(ctx, event.DeleteEvent{Object: obj}, queue)
+
+				Expect(queue.Added).To(BeEmpty())
+				Expect(queue.AddedAfter).To(BeEmpty())
 			})
 		})
 
 		Context("Generic events", func() {
 			It("should not enqueue the object", func() {
 				hdlr.Generic(ctx, event.GenericEvent{Object: obj}, queue)
+
+				Expect(queue.Added).To(BeEmpty())
+				Expect(queue.AddedAfter).To(BeEmpty())
 			})
+		})
+	})
+
+	Describe("#LeaseToSecretMapper", func() {
+		var (
+			mapper handler.MapFunc
+			lease  *coordinationv1.Lease
+		)
+
+		BeforeEach(func() {
+			mapper = (&Reconciler{}).LeaseToSecretMapper()
+			lease = &coordinationv1.Lease{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "some-name",
+					Namespace: "some-namespace",
+				},
+			}
+		})
+
+		It("should map the node to the secret", func() {
+			Expect(mapper(ctx, lease)).To(ConsistOf(reconcile.Request{NamespacedName: types.NamespacedName{Name: "some-name", Namespace: "some-namespace"}}))
 		})
 	})
 
 	Describe("#NodeToSecretMapper", func() {
 		var (
 			mapper handler.MapFunc
-			ctx    context.Context
-
-			node *corev1.Node
+			node   *corev1.Node
 		)
 
 		BeforeEach(func() {
-			ctx = context.TODO()
 			mapper = (&Reconciler{}).NodeToSecretMapper()
 			node = &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
@@ -298,7 +476,7 @@ var _ = Describe("Add", func() {
 		)
 
 		BeforeEach(func() {
-			p = (&Reconciler{}).NodeReadyForUpdate()
+			p = (&Reconciler{}).NodeReadyForInPlaceUpdate()
 
 			node = &corev1.Node{
 				Status: corev1.NodeStatus{

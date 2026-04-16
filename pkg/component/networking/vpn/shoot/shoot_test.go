@@ -39,6 +39,7 @@ import (
 	"github.com/gardener/gardener/pkg/component"
 	. "github.com/gardener/gardener/pkg/component/networking/vpn/shoot"
 	componenttest "github.com/gardener/gardener/pkg/component/test"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils/retry"
 	retryfake "github.com/gardener/gardener/pkg/utils/retry/fake"
@@ -328,6 +329,10 @@ var _ = Describe("VPNShoot", func() {
 									corev1.ResourceMemory: resource.MustParse("10Mi"),
 								},
 							},
+							{
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+							},
 						},
 					},
 				},
@@ -380,6 +385,10 @@ var _ = Describe("VPNShoot", func() {
 									corev1.ResourceMemory: resource.MustParse("10Mi"),
 								},
 							},
+							{
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+							},
 						},
 					},
 				},
@@ -425,7 +434,7 @@ var _ = Describe("VPNShoot", func() {
 					}
 				} else {
 					volumeMounts = nil
-					for i := 0; i < clients; i++ {
+					for i := range clients {
 						volumeMounts = append(volumeMounts, corev1.VolumeMount{
 							Name:      fmt.Sprintf("vpn-shoot-%d", i),
 							MountPath: fmt.Sprintf("/srv/secrets/vpn-client-%d", i),
@@ -596,7 +605,7 @@ var _ = Describe("VPNShoot", func() {
 				return volumes
 			}
 
-			templateForEx = func(servers int, secretNameClients []string, secretNameCA, secretNameTLSAuth string, highAvailable bool) *corev1.PodTemplateSpec {
+			templateForEx = func(servers int, secretNameClients []string, secretNameCA, secretNameTLSAuth string, highAvailable, rrEnabled bool) *corev1.PodTemplateSpec {
 				var (
 					annotations = map[string]string{
 						references.AnnotationKey(references.KindSecret, secretNameCA): secretNameCA,
@@ -739,13 +748,20 @@ var _ = Describe("VPNShoot", func() {
 					}...)
 				}
 
+				if rrEnabled {
+					initContainer.Env = append(initContainer.Env, corev1.EnvVar{
+						Name:  "BONDING_MODE",
+						Value: "balance-rr",
+					})
+				}
+
 				obj.Spec.InitContainers = []corev1.Container{initContainer}
 
 				return obj
 			}
 
 			templateFor = func(secretNameCA, secretNameClient, secretNameTLSAuth string) *corev1.PodTemplateSpec {
-				return templateForEx(1, []string{secretNameClient}, secretNameCA, secretNameTLSAuth, false)
+				return templateForEx(1, []string{secretNameClient}, secretNameCA, secretNameTLSAuth, false, false)
 			}
 
 			objectMetaForEx = func(secretNameClients []string, secretNameCA, secretNameTLSAuth string) *metav1.ObjectMeta {
@@ -805,7 +821,7 @@ var _ = Describe("VPNShoot", func() {
 				}
 			}
 
-			statefulSetFor = func(servers, replicas int, secretNameClients []string, secretNameCA, secretNameTLSAuth string) *appsv1.StatefulSet {
+			statefulSetFor = func(servers, replicas int, secretNameClients []string, secretNameCA, secretNameTLSAuth string, rrEnabled bool) *appsv1.StatefulSet {
 				return &appsv1.StatefulSet{
 					ObjectMeta: *objectMetaForEx(secretNameClients, secretNameCA, secretNameTLSAuth),
 					Spec: appsv1.StatefulSetSpec{
@@ -820,7 +836,7 @@ var _ = Describe("VPNShoot", func() {
 								"app": "vpn-shoot",
 							},
 						},
-						Template: *templateForEx(servers, secretNameClients, secretNameCA, secretNameTLSAuth, true),
+						Template: *templateForEx(servers, secretNameClients, secretNameCA, secretNameTLSAuth, true, rrEnabled),
 					},
 				}
 			}
@@ -967,7 +983,7 @@ var _ = Describe("VPNShoot", func() {
 
 					Expect(managedResource).To(contain(
 						vpaCopy,
-						statefulSetFor(3, 2, []string{secretNameClient0, secretNameClient1}, secretNameCA, secretNameTLSAuth),
+						statefulSetFor(3, 2, []string{secretNameClient0, secretNameClient1}, secretNameCA, secretNameTLSAuth, false),
 					))
 				})
 
@@ -993,13 +1009,36 @@ var _ = Describe("VPNShoot", func() {
 
 						Expect(managedResource).To(contain(
 							vpaCopy,
-							statefulSetFor(3, 2, []string{secretNameClient0, secretNameClient1}, secretNameCA, secretNameTLSAuth),
+							statefulSetFor(3, 2, []string{secretNameClient0, secretNameClient1}, secretNameCA, secretNameTLSAuth, false),
 						))
 					})
 				})
 
 				AfterEach(func() {
 					values.HighAvailabilityEnabled = false
+				})
+			})
+
+			Context("w/ VPNBondingModeRoundRobin feature enabled", func() {
+				BeforeEach(func() {
+					values.HighAvailabilityEnabled = true
+					values.HighAvailabilityNumberOfSeedServers = 3
+					values.HighAvailabilityNumberOfShootClients = 2
+
+					DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VPNBondingModeRoundRobin, true))
+				})
+
+				It("should successfully deploy all resources", func() {
+					var (
+						secretNameClient0 = expectVPNShootSecret(manifests, "-0")
+						secretNameClient1 = expectVPNShootSecret(manifests, "-1")
+						secretNameCA      = expectCASecret(manifests)
+						secretNameTLSAuth = expectTLSAuthSecret(manifests)
+					)
+
+					Expect(managedResource).To(contain(
+						statefulSetFor(3, 2, []string{secretNameClient0, secretNameClient1}, secretNameCA, secretNameTLSAuth, true),
+					))
 				})
 			})
 		})

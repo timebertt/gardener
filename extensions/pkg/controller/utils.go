@@ -23,6 +23,7 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
@@ -106,7 +107,7 @@ func (w *WatchBuilder) AddToController(ctrl controller.Controller) error {
 // The argument to this method _has_ to be a pointer, otherwise it panics.
 func UnsafeGuessKind(obj runtime.Object) string {
 	t := reflect.TypeOf(obj)
-	if t.Kind() != reflect.Ptr {
+	if t.Kind() != reflect.Pointer {
 		panic(fmt.Sprintf("kind of obj %T is not pointer", obj))
 	}
 
@@ -148,5 +149,9 @@ func ShouldSkipOperation(operationType gardencorev1beta1.LastOperationType, obj 
 // GetObjectByReference gets an object by the given reference, in the given namespace.
 // If the object kind doesn't match the given reference kind this will result in an error.
 func GetObjectByReference(ctx context.Context, c client.Client, ref *autoscalingv1.CrossVersionObjectReference, namespace string, obj client.Object) error {
-	return c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: v1beta1constants.ReferencedResourcesPrefix + ref.Name}, obj)
+	prefix := v1beta1constants.ReferencedResourcesPrefix
+	if ref.APIVersion == securityv1alpha1.SchemeGroupVersion.String() && ref.Kind == "WorkloadIdentity" {
+		prefix = v1beta1constants.ReferencedWorkloadIdentityPrefix
+	}
+	return c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: prefix + ref.Name}, obj)
 }

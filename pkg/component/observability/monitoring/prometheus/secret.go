@@ -16,7 +16,6 @@ import (
 
 const (
 	secretNameSuffixAdditionalScrapeConfigs       = "-additional-scrape-configs"
-	secretNameSuffixAdditionalAlertRelabelConfigs = "-additional-alert-relabel-configs"
 	secretNameSuffixAdditionalAlertmanagerConfigs = "-additional-alertmanager-configs"
 	secretNameSuffixRemoteWriteBasicAuth          = "-remote-write-basic-auth"
 )
@@ -25,7 +24,7 @@ func (p *prometheus) secretAdditionalScrapeConfigs() *corev1.Secret {
 	var scrapeConfigs strings.Builder
 
 	for _, config := range p.values.CentralConfigs.AdditionalScrapeConfigs {
-		scrapeConfigs.WriteString(fmt.Sprintf("- %s\n", utils.Indent(config, 2)))
+		fmt.Fprintf(&scrapeConfigs, "- %s\n", utils.Indent(config, 2))
 	}
 
 	return &corev1.Secret{

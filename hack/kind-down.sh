@@ -35,6 +35,13 @@ parse_flags "$@"
 kind delete cluster \
   --name "$CLUSTER_NAME"
 
+# Only stop the infra containers if deleting the "main" kind cluster.
+# When deleting the secondary cluster, we might still need DNS/registry for the other cluster.
+if [[ "$CLUSTER_NAME" != "gardener-local2" ]]; then
+  # Reset dynamic updates to the DNS zones by removing the volumes.
+  docker compose -f "$(dirname "$0")/../dev-setup/infra/docker-compose.yaml" down --volumes
+fi
+
 rm -f "$PATH_KUBECONFIG"
 if [[ "$PATH_KUBECONFIG" == *"dev-setup/gardenlet/components/kubeconfigs/seed-local2/kubeconfig" ]]; then
   rm -f "${PATH_KUBECONFIG}-gardener-operator"

@@ -207,8 +207,6 @@ spec:
         - containerPort: 20257
           name: exporter
         resources:
-          limits:
-            memory: 500Mi
           requests:
             cpu: 20m
             memory: 20Mi
@@ -264,10 +262,12 @@ metadata:
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: node-problem-detector
       controlledValues: RequestsOnly
       minAllowed:
         memory: 20Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: DaemonSet

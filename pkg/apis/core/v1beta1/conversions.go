@@ -8,11 +8,13 @@ package v1beta1
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/gardener/gardener/pkg/apis/core"
+	"github.com/gardener/gardener/pkg/apis/utils"
 )
 
 func addConversionFuncs(scheme *runtime.Scheme) error {
@@ -20,7 +22,7 @@ func addConversionFuncs(scheme *runtime.Scheme) error {
 		SchemeGroupVersion.WithKind("BackupBucket"),
 		func(label, value string) (string, string, error) {
 			switch label {
-			case "metadata.name", "metadata.namespace", core.BackupBucketSeedName:
+			case "metadata.name", "metadata.namespace", core.BackupBucketSeedName, core.BackupBucketShootRefName, core.BackupBucketShootRefNamespace:
 				return label, value, nil
 			default:
 				return "", "", fmt.Errorf("field label not supported: %s", label)
@@ -34,7 +36,7 @@ func addConversionFuncs(scheme *runtime.Scheme) error {
 		SchemeGroupVersion.WithKind("BackupEntry"),
 		func(label, value string) (string, string, error) {
 			switch label {
-			case "metadata.name", "metadata.namespace", core.BackupEntrySeedName, core.BackupEntryBucketName:
+			case "metadata.name", "metadata.namespace", core.BackupEntrySeedName, core.BackupEntryBucketName, core.BackupEntryShootRefName, core.BackupEntryShootRefNamespace:
 				return label, value, nil
 			default:
 				return "", "", fmt.Errorf("field label not supported: %s", label)
@@ -48,7 +50,7 @@ func addConversionFuncs(scheme *runtime.Scheme) error {
 		SchemeGroupVersion.WithKind("ControllerInstallation"),
 		func(label, value string) (string, string, error) {
 			switch label {
-			case "metadata.name", core.RegistrationRefName, core.SeedRefName:
+			case "metadata.name", core.RegistrationRefName, core.SeedRefName, core.ShootRefName, core.ShootRefNamespace:
 				return label, value, nil
 			default:
 				return "", "", fmt.Errorf("field label not supported: %s", label)
@@ -232,14 +234,9 @@ func Convert_core_ProjectMember_To_v1beta1_ProjectMember(in *core.ProjectMember,
 }
 
 func removeRoleFromRoles(roles []string, role string) []string {
-	var newRoles []string
-
-	for _, r := range roles {
-		if r != role {
-			newRoles = append(newRoles, r)
-		}
-	}
-	return newRoles
+	return slices.Collect(utils.FilterElements(roles, func(r string) bool {
+		return r != role
+	}))
 }
 
 func Convert_v1beta1_ControllerDeployment_To_core_ControllerDeployment(in *ControllerDeployment, out *core.ControllerDeployment, s conversion.Scope) error {

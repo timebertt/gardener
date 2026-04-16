@@ -7,6 +7,7 @@ package core
 import (
 	"time"
 
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,8 +56,11 @@ type ShootTemplate struct {
 // ShootSpec is the specification of a Shoot.
 type ShootSpec struct {
 	// Addons contains information about enabled/disabled addons and their configuration.
-	Addons *Addons
+	//
+	// Deprecated: This field is deprecated. Enabling addons will be forbidden starting from Kubernetes 1.35.
+	Addons *Addons // TODO(timuthy): Drop this field when support for Kubernetes 1.34 is dropped.
 	// CloudProfileName is a name of a CloudProfile object.
+	//
 	// Deprecated: This field will be removed in a future version of Gardener. Use `CloudProfile` instead.
 	// Until Kubernetes v1.33, this field is synced with the `CloudProfile` field.
 	// Starting with Kubernetes v1.34, this field is set to empty string and must not be provided anymore.
@@ -92,6 +96,7 @@ type ShootSpec struct {
 	// SeedName is the name of the seed cluster that runs the control plane of the Shoot.
 	SeedName *string
 	// SeedSelector is an optional selector which must match a seed's labels for the shoot to be scheduled on that seed.
+	// Once the shoot is assigned to a seed, the selector can only be changed later if the new one still matches the assigned seed.
 	SeedSelector *SeedSelector
 	// Resources holds a list of named resource references that can be referred to in extension configs by their names.
 	Resources []NamedResourceReference
@@ -161,13 +166,6 @@ type ShootStatus struct {
 	Credentials *ShootCredentials
 	// LastMaintenance holds information about the last maintenance operations on the Shoot.
 	LastMaintenance *LastMaintenance
-	// EncryptedResources is the list of resources in the Shoot which are currently encrypted.
-	// Secrets are encrypted by default and are not part of the list.
-	// See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
-	//
-	// Deprecated: This field is deprecated and will be removed with release v1.138.
-	// This field will be removed in favor of `status.credentials.encryptionAtRest.resources`.
-	EncryptedResources []string
 	// Networking contains information about cluster networking such as CIDRs.
 	Networking *NetworkingStatus
 	// InPlaceUpdates contains information about in-place updates for the Shoot workers.
@@ -244,6 +242,14 @@ type EncryptionAtRest struct {
 	// Secrets are encrypted by default and are not part of the list.
 	// See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
 	Resources []string
+	// Provider contains information about Shoot encryption provider.
+	Provider EncryptionProviderStatus
+}
+
+// EncryptionProviderStatus contains information about Shoot encryption provider.
+type EncryptionProviderStatus struct {
+	// Type is the used encryption provider type.
+	Type EncryptionProviderType
 }
 
 // CARotation contains information about the certificate authority credential rotation.
@@ -376,6 +382,8 @@ type ShootAdvertisedAddress struct {
 	Name string
 	// The URL of the API Server. e.g. https://api.foo.bar or https://1.2.3.4
 	URL string
+	// Application is the name of the application this address belongs to. Used by UI clients.
+	Application *string
 }
 
 // Addons is a collection of configuration for specific addons which are managed by the Gardener.
@@ -457,7 +465,10 @@ type DNSProvider struct {
 	// provider. When not specified, the Gardener will use the cloud provider credentials referenced
 	// by the Shoot and try to find respective credentials there. Specifying this field may override
 	// this behavior, i.e. forcing the Gardener to only look into the given secret.
-	SecretName *string
+	//
+	// Deprecated: This field is deprecated and will be forbidden starting from Kubernetes 1.35. Please use `CredentialsRef` instead.
+	// Until removed, this field is synced with the `CredentialsRef` field when it refers to a secret.
+	SecretName *string // TODO(vpnachev): Remove this field once support for Kubernetes 1.34 is dropped.
 	// Type is the DNS provider type for the Shoot. Only relevant if not the default domain is used for
 	// this shoot.
 	Type *string
@@ -466,6 +477,9 @@ type DNSProvider struct {
 	// Deprecated: This field is deprecated and will be removed in a future release.
 	// Please use the DNS extension provider config (e.g. shoot-dns-service) for additional configuration.
 	Zones *DNSIncludeExclude
+	// CredentialsRef is a reference to resource providing credentials for the DNS provider.
+	// Supported resource kinds are Secret and WorkloadIdentity.
+	CredentialsRef *autoscalingv1.CrossVersionObjectReference
 }
 
 // DNSIncludeExclude contains information about which domains shall be included/excluded.
@@ -576,7 +590,7 @@ type ClusterAutoscaler struct {
 	// Cluster Autoscaler internally treats nodes tainted with status taints as ready, but filtered out during scale up logic.
 	StatusTaints []string
 	// IgnoreTaints specifies a list of taint keys to ignore in node templates when considering to scale a node group.
-	// Ignore taints are deprecated as of K8S 1.29 and treated as startup taints.
+	// Ignore taints are deprecated and treated as startup taints.
 	IgnoreTaints []string
 	// NewPodScaleUpDelay specifies how long CA should ignore newly created pods before they have to be considered for scale-up.
 	NewPodScaleUpDelay *metav1.Duration
@@ -617,6 +631,10 @@ const (
 	// ClusterAutoscalerExpanderRandom should be used when you don't have a particular need
 	// for the node groups to scale differently.
 	ClusterAutoscalerExpanderRandom ExpanderMode = "random"
+	// ClusterAutoscalerExpanderLeastNodes selects the node group that will use the least number of nodes after scale-up.
+	// This is useful when you want to minimize the number of nodes in the cluster and opt for fewer larger nodes.
+	// Useful when chained with the most-pods expander before it to ensure that the node group selected can fit the most pods on the fewest nodes.
+	ClusterAutoscalerExpanderLeastNodes ExpanderMode = "least-nodes"
 )
 
 // VerticalPodAutoscaler contains the configuration flags for the Kubernetes vertical pod autoscaler.
@@ -681,6 +699,8 @@ type VerticalPodAutoscaler struct {
 	// The VerticalPodAutoscaler-level maximum allowed takes precedence over the global maximum allowed.
 	// For more information, see https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/docs/examples.md#specifying-global-maximum-allowed-resources-to-prevent-pods-from-being-unschedulable.
 	MaxAllowed corev1.ResourceList
+	// RecommenderUpdateWorkerCount is the number of workers used in the vpa-recommender for updating VPAs and VPACheckpoints in parallel.
+	RecommenderUpdateWorkerCount *int64
 }
 
 // KubernetesConfig contains common configuration fields for the control plane components.
@@ -731,11 +751,11 @@ type KubeAPIServerConfig struct {
 	// of the API server should be allowed (flag `--anonymous-auth`).
 	// See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
 	//
-	// Deprecated: This field is deprecated and will be removed in a future release.
+	// Deprecated: This field is deprecated and will be removed after support for Kubernetes v1.34 is dropped.
+	// This field is forbidden for clusters with Kubernetes version >= 1.35.
 	// Please use anonymous authentication configuration instead.
 	// For more information see: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration
-	// TODO(marc1404): Forbid this field when the feature gate AnonymousAuthConfigurableEndpoints has graduated.
-	EnableAnonymousAuthentication *bool
+	EnableAnonymousAuthentication *bool // TODO(dimityrmirchev): Drop this field when support for Kubernetes 1.34 is dropped.
 	// EventTTL controls the amount of time to retain events.
 	EventTTL *metav1.Duration
 	// Logging contains configuration settings for the log verbosity and access logging
@@ -789,6 +809,18 @@ type EncryptionConfig struct {
 	// Wildcards are not supported for now.
 	// See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
 	Resources []string
+	// Provider contains information about the encryption provider.
+	Provider EncryptionProvider
+}
+
+// EncryptionProvider contains information about the encryption provider.
+type EncryptionProvider struct {
+	// Type contains the type of the encryption provider.
+	//
+	// Supported types:
+	//   - "aescbc"
+	// Defaults to aescbc.
+	Type *EncryptionProviderType
 }
 
 // ServiceAccountConfig is the kube-apiserver configuration for service accounts.
@@ -855,12 +887,6 @@ type AuthorizerKubeconfigReference struct {
 type OIDCConfig struct {
 	// If set, the OpenID server's certificate will be verified by one of the authorities in the oidc-ca-file, otherwise the host's root CA set will be used.
 	CABundle *string
-	// ClientAuthentication can optionally contain client configuration used for kubeconfig generation.
-	//
-	// Deprecated: This field has no implemented use and will be forbidden starting from Kubernetes 1.31.
-	// It's use was planned for generating OIDC kubeconfig https://github.com/gardener/gardener/issues/1433
-	// TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dropped.
-	ClientAuthentication *OpenIDConnectClientAuthentication
 	// The client ID for the OpenID Connect client, must be set.
 	ClientID *string
 	// If provided, the name of a custom OpenID Connect claim for specifying user groups. The claim value is expected to be a string or array of strings. This flag is experimental, please see the authentication documentation for further details.
@@ -885,7 +911,7 @@ type OpenIDConnectClientAuthentication struct {
 	// Must not be any of idp-issuer-url, client-id, client-secret, idp-certificate-authority, idp-certificate-authority-data, id-token or refresh-token
 	ExtraConfig map[string]string
 	// The client Secret for the OpenID Connect client.
-	Secret *string
+	Secret *string // #nosec: G117 -- Field name for API spec.
 }
 
 // AdmissionPlugin contains information about a specific admission plugin and its corresponding configuration.
@@ -902,10 +928,11 @@ type AdmissionPlugin struct {
 
 // WatchCacheSizes contains configuration of the API server's watch cache sizes.
 type WatchCacheSizes struct {
-	// Default configures the default watch cache size of the kube-apiserver
-	// (flag `--default-watch-cache-size`, defaults to 100).
-	// See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
-	Default *int32
+	// Default is not respected anymore by kube-apiserver.
+	// The cache is sized automatically.
+	//
+	// Deprecated: This field is deprecated. Setting the default cache size will be forbidden starting from Kubernetes 1.35.
+	Default *int32 // TODO(timuthy): Drop this field when support for Kubernetes 1.35 is dropped.
 	// Resources configures the watch cache size of the kube-apiserver per resource
 	// (flag `--watch-cache-sizes`).
 	// See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
@@ -932,6 +959,9 @@ type KubeControllerManagerConfig struct {
 	HorizontalPodAutoscalerConfig *HorizontalPodAutoscalerConfig
 	// NodeCIDRMaskSize defines the mask size for node cidr in cluster (default is 24). This field is immutable.
 	NodeCIDRMaskSize *int32
+	// NodeCIDRMaskSizeIPv6 defines the mask size for node cidr in cluster (default is 64). This field is immutable.
+	NodeCIDRMaskSizeIPv6 *int32
+
 	// PodEvictionTimeout defines the grace period for deleting pods on failed nodes.
 	//
 	// Deprecated: The corresponding kube-controller-manager flag `--pod-eviction-timeout` is deprecated
@@ -966,11 +996,12 @@ type HorizontalPodAutoscalerConfig struct {
 type KubeSchedulerConfig struct {
 	KubernetesConfig
 
-	// KubeMaxPDVols allows to configure the `KUBE_MAX_PD_VOLS` environment variable for the kube-scheduler.
-	// Please find more information here: https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits
-	// Note that using this field is considered alpha-/experimental-level and is on your own risk. You should be aware
-	// of all the side-effects and consequences when changing it.
-	KubeMaxPDVols *string
+	// KubeMaxPDVols is not respected anymore by kube-scheduler.
+	// The maximum number of attached volumes is configured by the CSI driver.
+	// More information can be found at https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits.
+	//
+	// Deprecated: This field is deprecated. Using this field will be forbidden starting from Kubernetes 1.35.
+	KubeMaxPDVols *string // TODO(timuthy): Drop this field when support for Kubernetes 1.35 is dropped.
 	// Profile configures the scheduling profile for the cluster.
 	// If not specified, the used profile is "balanced" (provides the default kube-scheduler behavior).
 	Profile *SchedulingProfile
@@ -1003,16 +1034,17 @@ type KubeProxyConfig struct {
 }
 
 // ProxyMode available in Linux platform: 'userspace' (older, going to be EOL), 'iptables'
-// (newer, faster), 'ipvs' (newest, better in performance and scalability).
-// As of now only 'iptables' and 'ipvs' is supported by Gardener.
+// (newer, faster), 'nftables', and 'ipvs' (deprecated starting with Kubernetes 1.35).
+// As of now only 'iptables', 'nftables' and 'ipvs' (deprecated starting with Kubernetes 1.35) is supported by Gardener.
 // In Linux platform, if the iptables proxy is selected, regardless of how, but the system's kernel or iptables versions are
-// insufficient, this always falls back to the userspace proxy. IPVS mode will be enabled when proxy mode is set to 'ipvs',
-// and the fall back path is firstly iptables and then userspace.
+// insufficient, this always falls back to the userspace proxy.
 type ProxyMode string
 
 const (
 	// ProxyModeIPTables uses iptables as proxy implementation.
 	ProxyModeIPTables ProxyMode = "IPTables"
+	// ProxyModeNFTables uses nftables as proxy implementation.
+	ProxyModeNFTables ProxyMode = "NFTables"
 	// ProxyModeIPVS uses ipvs as proxy implementation.
 	ProxyModeIPVS ProxyMode = "IPVS"
 )
@@ -1073,13 +1105,6 @@ type KubeletConfig struct {
 	// When updating these values, be aware that cgroup resizes may not succeed on active worker nodes. Look for the NodeAllocatableEnforced event to determine if the configuration was applied.
 	// Default: cpu=80m,memory=1Gi,pid=20k
 	KubeReserved *KubeletConfigReserved
-	// SystemReserved is the configuration for resources reserved for system processes not managed by kubernetes (e.g. journald).
-	// When updating these values, be aware that cgroup resizes may not succeed on active worker nodes. Look for the NodeAllocatableEnforced event to determine if the configuration was applied.
-	//
-	// Deprecated: Separately configuring resource reservations for system processes is deprecated in Gardener and will be forbidden starting from Kubernetes 1.31.
-	// Please merge existing resource reservations into the kubeReserved field.
-	// TODO(MichaelEischer): Drop this field after support for Kubernetes 1.30 is dropped.
-	SystemReserved *KubeletConfigReserved
 	// ImageMinimumGCAge is the minimum age of an unused image before it can be garbage collected.
 	ImageMinimumGCAge *metav1.Duration
 	// ImageMaximumGCAge is the maximum age of an unused image before it can be garbage collected.
@@ -1174,21 +1199,17 @@ type SwapBehavior string
 
 const (
 	// NoSwap is a constant for the kubelet's swap behavior restricting Kubernetes workloads to not use swap.
-	// Only available for Kubernetes versions >= v1.30.
 	NoSwap SwapBehavior = "NoSwap"
 	// LimitedSwap is a constant for the kubelet's swap behavior limiting the amount of swap usable for Kubernetes workloads. Workloads on the node not managed by Kubernetes can still swap.
 	// - cgroupsv1 host: Kubernetes workloads can use any combination of memory and swap, up to the pod's memory limit
 	// - cgroupsv2 host: swap is managed independently from memory. Kubernetes workloads cannot use swap memory.
 	LimitedSwap SwapBehavior = "LimitedSwap"
-	// UnlimitedSwap is a constant for the kubelet's swap behavior enabling Kubernetes workloads to use as much swap memory as required, up to the system limit (not limited by pod or container memory limits).
-	// Only available for Kubernetes versions < v1.30.
-	UnlimitedSwap SwapBehavior = "UnlimitedSwap"
 )
 
 // MemorySwapConfiguration contains kubelet swap configuration
 // For more information, please see KEP: 2400-node-swap
 type MemorySwapConfiguration struct {
-	// SwapBehavior configures swap memory available to container workloads. May be one of {"LimitedSwap", "UnlimitedSwap"}
+	// SwapBehavior configures swap memory available to container workloads. May be one of {"NoSwap", "LimitedSwap"}
 	// defaults to: LimitedSwap
 	SwapBehavior *SwapBehavior
 }
@@ -1237,6 +1258,8 @@ type Maintenance struct {
 	// Instead, they are rolled out during the shoot's maintenance time window. There is one exception that will trigger
 	// an immediate roll out which is changes to the Spec.Hibernation.Enabled field.
 	ConfineSpecUpdateRollout *bool
+	// AutoRotation contains information about which rotations should be automatically performed.
+	AutoRotation *MaintenanceAutoRotation
 }
 
 // MaintenanceAutoUpdate contains information about which constraints should be automatically updated.
@@ -1245,6 +1268,29 @@ type MaintenanceAutoUpdate struct {
 	KubernetesVersion bool
 	// MachineImageVersion indicates whether the machine image version may be automatically updated (default: true).
 	MachineImageVersion *bool
+}
+
+// MaintenanceAutoRotation contains information about which rotations should be automatically performed.
+type MaintenanceAutoRotation struct {
+	// Credentials contains information about which credentials should be automatically rotated.
+	Credentials *MaintenanceCredentialsAutoRotation
+}
+
+// MaintenanceCredentialsAutoRotation contains information about which credentials should be automatically rotated.
+type MaintenanceCredentialsAutoRotation struct {
+	// Observability configures the automatic rotation for the observability credentials.
+	Observability *MaintenanceRotationConfig
+	// SSHKeypair configures the automatic rotation for the ssh keypair for worker nodes.
+	SSHKeypair *MaintenanceRotationConfig
+	// ETCDEncryptionKey configures the automatic rotation for the etcd encryption key.
+	ETCDEncryptionKey *MaintenanceRotationConfig
+}
+
+// MaintenanceRotationConfig contains configuration for automatic rotation.
+type MaintenanceRotationConfig struct {
+	// RotationPeriod is the period between a completed rotation and the start of a new rotation (default: 7d).
+	// The allowed rotation period is between 30m and 90d. When set to 0, rotation is disabled.
+	RotationPeriod *metav1.Duration
 }
 
 // MaintenanceTimeWindow contains information about the time window for maintenance operations.
@@ -1354,7 +1400,32 @@ type WorkerControlPlane struct {
 	// Backup holds the object store configuration for the backups of shoot (currently only etcd).
 	// If it is not specified, then there won't be any backups taken.
 	Backup *Backup
+	// Exposure holds the exposure configuration for the shoot (either `extension` or `dns` or omitted/empty).
+	Exposure *Exposure
 }
+
+// Exposure holds the exposure configuration for the shoot (either `extension` or `dns` or omitted/empty).
+type Exposure struct {
+	// Extension holds the type and provider config of the exposure extension.
+	// Mutually exclusive with DNS.
+	Extension *ExtensionExposure
+	// DNS specifies that this shoot will be exposed by DNS.
+	// Mutually exclusive with Extension.
+	DNS *DNSExposure
+}
+
+// ExtensionExposure holds the type and provider config of the exposure extension.
+type ExtensionExposure struct {
+	// Type defines the type of the extension exposure.
+	// Defaults to `.spec.provider.type`
+	Type *string
+	// ProviderConfig holds the extension specific configuration.
+	ProviderConfig *runtime.RawExtension
+}
+
+// DNSExposure specifies that this shoot will be exposed by DNS.
+// There is no specific configuration currently, for future extendability.
+type DNSExposure struct{}
 
 // MachineUpdateStrategy specifies the machine update strategy for the worker pool.
 type MachineUpdateStrategy string

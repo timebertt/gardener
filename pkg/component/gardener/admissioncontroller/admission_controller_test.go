@@ -33,7 +33,7 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
-	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/admissioncontroller/apis/config/v1alpha1"
+	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/admissioncontroller/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
@@ -164,17 +164,6 @@ var _ = Describe("GardenerAdmissionController", func() {
 			When("runtime Kubernetes version is 1.31", func() {
 				BeforeEach(func() {
 					testValues.RuntimeVersion = semver.MustParse("1.31.2")
-				})
-
-				It("should successfully deploy", func() {
-					Expect(deployer.Deploy(ctx)).To(Succeed())
-					verifyExpectations(ctx, fakeClient, consistOf, fakeSecretManager, namespace, "4ef77c17", testValues)
-				})
-			})
-
-			When("runtime Kubernetes version is < 1.31", func() {
-				BeforeEach(func() {
-					testValues.RuntimeVersion = semver.MustParse("1.30.3")
 				})
 
 				It("should successfully deploy", func() {
@@ -764,11 +753,8 @@ func service(namespace string, testValues Values) *corev1.Service {
 			svc.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferSameZone)
 		} else if versionutils.ConstraintK8sGreaterEqual132.Check(testValues.RuntimeVersion) {
 			svc.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
-		} else if versionutils.ConstraintK8sEqual131.Check(testValues.RuntimeVersion) {
-			svc.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
-			metav1.SetMetaDataLabel(&svc.ObjectMeta, "endpoint-slice-hints.resources.gardener.cloud/consider", "true")
 		} else {
-			metav1.SetMetaDataAnnotation(&svc.ObjectMeta, "service.kubernetes.io/topology-mode", "auto")
+			svc.Spec.TrafficDistribution = ptr.To(corev1.ServiceTrafficDistributionPreferClose)
 			metav1.SetMetaDataLabel(&svc.ObjectMeta, "endpoint-slice-hints.resources.gardener.cloud/consider", "true")
 		}
 	}
@@ -836,10 +822,14 @@ func vpa(namespace string) *vpaautoscalingv1.VerticalPodAutoscaler {
 			ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 				ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 					{
-						ContainerName: "*",
+						ContainerName: "gardener-admission-controller",
 						MinAllowed: corev1.ResourceList{
 							corev1.ResourceMemory: resource.MustParse("25Mi"),
 						},
+					},
+					{
+						ContainerName: "*",
+						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 					},
 				},
 			},
@@ -862,6 +852,7 @@ func clusterRole() *rbacv1.ClusterRole {
 				Resources: []string{
 					"backupbuckets",
 					"backupentries",
+					"controllerdeployments",
 					"controllerinstallations",
 					"secretbindings",
 					"seeds",
@@ -1311,9 +1302,17 @@ func validatingWebhookConfiguration(namespace string, caBundle []byte, testValue
 					{
 						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
 						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{""},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps", "secrets"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
 							APIGroups:   []string{"core.gardener.cloud"},
 							APIVersions: []string{"v1beta1"},
-							Resources:   []string{"projects", "shoots"},
+							Resources:   []string{"backupbuckets", "backupentries", "projects", "shoots"},
 						},
 					},
 				},
@@ -1346,14 +1345,24 @@ func mutatingWebhookConfiguration(namespace string, caBundle []byte) *admissionr
 				Name:                    "sync-provider-secret-labels.gardener.cloud",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				TimeoutSeconds:          ptr.To[int32](10),
-				Rules: []admissionregistrationv1.RuleWithOperations{{
-					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-					Rule: admissionregistrationv1.Rule{
-						APIGroups:   []string{""},
-						APIVersions: []string{"v1"},
-						Resources:   []string{"secrets"},
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{""},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"secrets"},
+						},
 					},
-				}},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{"core.gardener.cloud"},
+							APIVersions: []string{"v1beta1"},
+							Resources:   []string{"internalsecrets"},
+						},
+					},
+				},
 				FailurePolicy: &failurePolicyFail,
 				NamespaceSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{

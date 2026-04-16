@@ -63,7 +63,7 @@ var _ = Describe("ControllerInstallation Required controller tests", func() {
 				Labels:       map[string]string{testID: testRunID},
 			},
 			Spec: gardencorev1beta1.ControllerInstallationSpec{
-				SeedRef: corev1.ObjectReference{
+				SeedRef: &corev1.ObjectReference{
 					Name: seedName,
 				},
 				RegistrationRef: corev1.ObjectReference{
@@ -88,6 +88,135 @@ var _ = Describe("ControllerInstallation Required controller tests", func() {
 		// See https://github.com/gardener/gardener/issues/6927
 		Eventually(func() error {
 			return mgrClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation), controllerInstallation)
+		}).Should(Succeed())
+
+		infrastructure = &extensionsv1alpha1.Infrastructure{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "infra1-",
+				Namespace:    testNamespace.Name,
+				Labels:       map[string]string{testID: testRunID},
+			},
+			Spec: extensionsv1alpha1.InfrastructureSpec{
+				DefaultSpec: extensionsv1alpha1.DefaultSpec{
+					Type: extensionType,
+				},
+			},
+		}
+	})
+
+	Context("when no extension resources exist", func() {
+		It("should set the Required condition to False", func() {
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation), controllerInstallation)).To(Succeed())
+				return controllerInstallation.Status.Conditions
+			}).Should(ContainCondition(OfType(gardencorev1beta1.ControllerInstallationRequired), WithStatus(gardencorev1beta1.ConditionFalse), WithReason("NoExtensionObjects")))
+		})
+	})
+
+	Context("when extension resources exist", func() {
+		It("should set the Required condition to True", func() {
+			By("Create Infrastructure")
+			Expect(testClient.Create(ctx, infrastructure)).To(Succeed())
+			log.Info("Created Infrastructure for test", "infrastructure", client.ObjectKeyFromObject(infrastructure))
+
+			DeferCleanup(func() {
+				By("Delete Infrastructure")
+				Expect(testClient.Delete(ctx, infrastructure)).To(Succeed())
+			})
+
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation), controllerInstallation)).To(Succeed())
+				return controllerInstallation.Status.Conditions
+			}).Should(ContainCondition(OfType(gardencorev1beta1.ControllerInstallationRequired), WithStatus(gardencorev1beta1.ConditionTrue), WithReason("ExtensionObjectsExist")))
+		})
+
+		It("should set the Required condition to False when all extension resources get deleted", func() {
+			By("Create Infrastructure")
+			Expect(testClient.Create(ctx, infrastructure)).To(Succeed())
+			log.Info("Created Infrastructure for test", "infrastructure", client.ObjectKeyFromObject(infrastructure))
+
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation), controllerInstallation)).To(Succeed())
+				return controllerInstallation.Status.Conditions
+			}).Should(ContainCondition(OfType(gardencorev1beta1.ControllerInstallationRequired), WithStatus(gardencorev1beta1.ConditionTrue), WithReason("ExtensionObjectsExist")))
+
+			By("Delete Infrastructure")
+			Expect(testClient.Delete(ctx, infrastructure)).To(Succeed())
+
+			Eventually(func(g Gomega) []gardencorev1beta1.Condition {
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation), controllerInstallation)).To(Succeed())
+				return controllerInstallation.Status.Conditions
+			}).Should(ContainCondition(OfType(gardencorev1beta1.ControllerInstallationRequired), WithStatus(gardencorev1beta1.ConditionFalse), WithReason("NoExtensionObjects")))
+		})
+	})
+})
+
+var _ = Describe("ControllerInstallation Required controller tests (self-hosted shoot)", func() {
+	var (
+		extensionType = "type1"
+
+		controllerRegistration *gardencorev1beta1.ControllerRegistration
+		controllerInstallation *gardencorev1beta1.ControllerInstallation
+		infrastructure         *extensionsv1alpha1.Infrastructure
+	)
+
+	BeforeEach(func() {
+		By("Create ControllerRegistration")
+		controllerRegistration = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "ctrlreg1-",
+				Labels:       map[string]string{testID: testRunID},
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Resources: []gardencorev1beta1.ControllerResource{
+					{Kind: extensionsv1alpha1.InfrastructureResource, Type: extensionType},
+				},
+			},
+		}
+
+		Expect(testClient.Create(ctx, controllerRegistration)).To(Succeed())
+		log.Info("Created ControllerRegistration for test", "controllerRegistration", client.ObjectKeyFromObject(controllerRegistration))
+
+		DeferCleanup(func() {
+			By("Delete ControllerRegistration")
+			Expect(testClient.Delete(ctx, controllerRegistration)).To(Succeed())
+		})
+
+		By("Wait until manager has observed ControllerRegistration")
+		Eventually(func() error {
+			return selfHostedMgrClient.Get(ctx, client.ObjectKeyFromObject(controllerRegistration), controllerRegistration)
+		}).Should(Succeed())
+
+		By("Create ControllerInstallation with ShootRef")
+		controllerInstallation = &gardencorev1beta1.ControllerInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "ctrlinst-",
+				Labels:       map[string]string{testID: testRunID},
+			},
+			Spec: gardencorev1beta1.ControllerInstallationSpec{
+				ShootRef: &corev1.ObjectReference{
+					Name:      selfHostedShootName,
+					Namespace: selfHostedShootNamespace,
+				},
+				RegistrationRef: corev1.ObjectReference{
+					Name: controllerRegistration.Name,
+				},
+				DeploymentRef: &corev1.ObjectReference{
+					Name: "foo-deployment",
+				},
+			},
+		}
+		Expect(testClient.Create(ctx, controllerInstallation)).To(Succeed())
+		log.Info("Created ControllerInstallation for test", "controllerInstallation", client.ObjectKeyFromObject(controllerInstallation))
+
+		DeferCleanup(func() {
+			By("Delete ControllerInstallation")
+			Expect(testClient.Delete(ctx, controllerInstallation)).To(Succeed())
+		})
+
+		By("Wait until manager has observed ControllerInstallation")
+		Eventually(func() error {
+			return selfHostedMgrClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation), controllerInstallation)
 		}).Should(Succeed())
 
 		infrastructure = &extensionsv1alpha1.Infrastructure{

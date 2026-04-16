@@ -18,16 +18,8 @@ spec:
     resource:
       name: cpu
       target:
-        averageUtilization: 80
-        type: Utilization
-{{- if eq .Values.terminateAPIServerTLS false }}
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        averageUtilization: 80
-        type: Utilization
-{{- end }}
+        type: AverageValue
+        averageValue: "{{ .Values.hpaCPUAverageValue }}"
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 1800

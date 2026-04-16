@@ -98,7 +98,7 @@ var _ = Describe("NginxIngress", func() {
 				ConfigData:                configMapData,
 				LoadBalancerAnnotations:   loadBalancerAnnotations,
 				VPAEnabled:                true,
-				WildcardIngressDomains:    []string{firstWildcardIngress, secondWildcardIngress},
+				Domains:                   []string{firstWildcardIngress, secondWildcardIngress},
 				IstioIngressGatewayLabels: map[string]string{istioLabelKey: istioLabelValue},
 			}
 		})
@@ -378,9 +378,11 @@ metadata:
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: nginx-ingress-controller
       minAllowed:
         memory: 100Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment
@@ -569,7 +571,7 @@ spec:
   trafficPolicy:
     connectionPool:
       tcp:
-        maxConnections: 5000
+        maxConnectionDuration: 86400s
         tcpKeepalive:
           interval: 75s
           time: 7200s
@@ -621,12 +623,12 @@ spec:
   gateways:
   - nginx-ingress-controller
   hosts:
-  - '` + values.WildcardIngressDomains[index] + `'
+  - '` + values.Domains[index] + `'
   tls:
   - match:
     - port: 443
       sniHosts:
-      - '` + values.WildcardIngressDomains[index] + `'
+      - '` + values.Domains[index] + `'
     route:
     - destination:
         host: nginx-ingress-controller.` + namespace + `.svc.cluster.local
@@ -1207,9 +1209,11 @@ metadata:
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: nginx-ingress-controller
       minAllowed:
         memory: 100Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment

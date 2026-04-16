@@ -11,9 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/component"
 	extensionsdnsrecord "github.com/gardener/gardener/pkg/component/extensions/dnsrecord"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
@@ -31,14 +31,14 @@ func (b *Botanist) DefaultNginxIngress() (component.DeployWaiter, error) {
 		externalTrafficPolicy    corev1.ServiceExternalTrafficPolicy
 	)
 
-	if nginxIngressSpec := b.Shoot.GetInfo().Spec.Addons.NginxIngress; nginxIngressSpec != nil {
-		configData = getConfig(nginxIngressSpec.Config)
+	if b.Shoot.GetInfo().Spec.Addons != nil && b.Shoot.GetInfo().Spec.Addons.NginxIngress != nil {
+		configData = getConfig(b.Shoot.GetInfo().Spec.Addons.NginxIngress.Config)
 
-		if nginxIngressSpec.LoadBalancerSourceRanges != nil {
-			loadBalancerSourceRanges = nginxIngressSpec.LoadBalancerSourceRanges
+		if b.Shoot.GetInfo().Spec.Addons.NginxIngress.LoadBalancerSourceRanges != nil {
+			loadBalancerSourceRanges = b.Shoot.GetInfo().Spec.Addons.NginxIngress.LoadBalancerSourceRanges
 		}
-		if nginxIngressSpec.ExternalTrafficPolicy != nil {
-			externalTrafficPolicy = *nginxIngressSpec.ExternalTrafficPolicy
+		if b.Shoot.GetInfo().Spec.Addons.NginxIngress.ExternalTrafficPolicy != nil {
+			externalTrafficPolicy = *b.Shoot.GetInfo().Spec.Addons.NginxIngress.ExternalTrafficPolicy
 		}
 	}
 
@@ -110,7 +110,13 @@ func (b *Botanist) DefaultIngressDNSRecord() extensionsdnsrecord.Interface {
 		TTL:               b.dnsRecordTTLSeconds(),
 		AnnotateOperation: controllerutils.HasTask(b.Shoot.GetInfo().Annotations, v1beta1constants.ShootTaskDeployDNSRecordIngress) || b.IsRestorePhase(),
 		IPStack:           gardenerutils.GetIPStackForShoot(b.Shoot.GetInfo()),
+		Labels: map[string]string{
+			v1beta1constants.LabelRole:  v1beta1constants.LabelDNSRecordIngress,
+			v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
+		},
 	}
+
+	var credentialsDeployer extensionsdnsrecord.CredentialsDeployFunc
 
 	// Set component values even if the nginx-ingress addons is not enabled.
 	if b.NeedsExternalDNS() {
@@ -118,7 +124,7 @@ func (b *Botanist) DefaultIngressDNSRecord() extensionsdnsrecord.Interface {
 		if b.Shoot.ExternalDomain.Zone != "" {
 			values.Zone = &b.Shoot.ExternalDomain.Zone
 		}
-		values.SecretData = b.Shoot.ExternalDomain.SecretData
+		credentialsDeployer = extensionsdnsrecord.CredentialsDeployerFromCredentials(b.Shoot.ExternalDomain.Credentials, b.Shoot.GetInfo())
 		values.DNSName = b.Shoot.GetIngressFQDN("*")
 	}
 
@@ -129,6 +135,7 @@ func (b *Botanist) DefaultIngressDNSRecord() extensionsdnsrecord.Interface {
 		extensionsdnsrecord.DefaultInterval,
 		extensionsdnsrecord.DefaultSevereThreshold,
 		extensionsdnsrecord.DefaultTimeout,
+		credentialsDeployer,
 	)
 }
 

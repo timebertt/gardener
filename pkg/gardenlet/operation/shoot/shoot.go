@@ -20,17 +20,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
 	gardenerextensions "github.com/gardener/gardener/pkg/extensions"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenlethelper "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 )
@@ -106,6 +106,12 @@ func (b *Builder) WithSeedObject(seed *gardencorev1beta1.Seed) *Builder {
 	return b
 }
 
+// WithoutShootDNS unsets the `spec.DNS` configuration of a shoot resource.
+func (b *Builder) WithoutShootDNS() *Builder {
+	b.shootDNSFunc = func() *gardencorev1beta1.DNS { return nil }
+	return b
+}
+
 // WithExposureClassObject sets the exposureClass attribute at the Builder.
 func (b *Builder) WithExposureClassObject(exposureClass *gardencorev1beta1.ExposureClass) *Builder {
 	b.exposureClass = exposureClass
@@ -135,6 +141,12 @@ func (b *Builder) WithShootCredentialsFrom(c client.Reader) *Builder {
 					return nil, err
 				}
 				return workloadIdentity, nil
+			} else if binding.CredentialsRef.GroupVersionKind() == gardencorev1beta1.SchemeGroupVersion.WithKind("InternalSecret") {
+				internalSecret := &gardencorev1beta1.InternalSecret{}
+				if err := c.Get(ctx, key, internalSecret); err != nil {
+					return nil, err
+				}
+				return internalSecret, nil
 			}
 		}
 
@@ -200,6 +212,11 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if b.shootDNSFunc != nil {
+		shootObject.Spec.DNS = b.shootDNSFunc()
+	}
+
 	shoot.SetInfo(shootObject)
 
 	cloudProfile, err := b.cloudProfileFunc(ctx, shootObject)
@@ -266,11 +283,7 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 		shoot.VPNVPAUpdateDisabled = vpnVPAUpdateDisabled
 	}
 
-	needsClusterAutoscaler, err := v1beta1helper.ShootWantsClusterAutoscaler(shootObject)
-	if err != nil {
-		return nil, err
-	}
-	shoot.WantsClusterAutoscaler = needsClusterAutoscaler
+	shoot.WantsClusterAutoscaler = v1beta1helper.ShootWantsClusterAutoscaler(shootObject)
 
 	if shoot.IsWorkerless && shootObject.Spec.Networking != nil {
 		networks, err := ToNetworks(shootObject, shoot.IsWorkerless)
@@ -287,7 +300,13 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 		shoot.ResourcesToEncrypt = sharedcomponent.StringifyGroupResources(sharedcomponent.GetResourcesForEncryptionFromConfig(shoot.GetInfo().Spec.Kubernetes.KubeAPIServer.EncryptionConfig))
 	}
 
-	shoot.EncryptedResources = v1beta1helper.GetShootEncryptedResourcesInStatus(shoot.GetInfo().Status)
+	shootStatus := shoot.GetInfo().Status
+	shoot.EncryptedResources = v1beta1helper.GetShootEncryptedResourcesInStatus(shootStatus)
+
+	shoot.EncryptionProviderToUse = v1beta1helper.GetEncryptionProviderType(shoot.GetInfo().Spec.Kubernetes.KubeAPIServer)
+	if shootStatus.Credentials != nil && shootStatus.Credentials.EncryptionAtRest != nil {
+		shoot.UsedEncryptionProvider = shootStatus.Credentials.EncryptionAtRest.Provider.Type
+	}
 
 	if b.seed != nil {
 		shoot.TopologyAwareRoutingEnabled = v1beta1helper.IsTopologyAwareRoutingForShootControlPlaneEnabled(b.seed, shootObject)
@@ -507,12 +526,13 @@ func (s *Shoot) ComputeOutOfClusterAPIServerAddress(preferInternalClusterDomain 
 	return v1beta1helper.GetAPIServerDomain(*s.ExternalClusterDomain)
 }
 
-// IPVSEnabled returns true if IPVS is enabled for the shoot.
-func (s *Shoot) IPVSEnabled() bool {
+// ProxyMode returns the kube-proxy mode config for the shoot.
+func (s *Shoot) ProxyMode() gardencorev1beta1.ProxyMode {
 	shoot := s.GetInfo()
-	return shoot.Spec.Kubernetes.KubeProxy != nil &&
-		shoot.Spec.Kubernetes.KubeProxy.Mode != nil &&
-		*shoot.Spec.Kubernetes.KubeProxy.Mode == gardencorev1beta1.ProxyModeIPVS
+	if shoot.Spec.Kubernetes.KubeProxy != nil && shoot.Spec.Kubernetes.KubeProxy.Mode != nil {
+		return *shoot.Spec.Kubernetes.KubeProxy.Mode
+	}
+	return gardencorev1beta1.ProxyModeIPTables
 }
 
 // IsShootControlPlaneLoggingEnabled return true if the Shoot controlplane logging is enabled

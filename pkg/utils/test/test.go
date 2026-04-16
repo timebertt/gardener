@@ -33,7 +33,7 @@ import (
 //	DeferCleanup(WithVar(&v, "bar"))
 func WithVar(dst, src any) func() {
 	dstValue := reflect.ValueOf(dst)
-	if dstValue.Type().Kind() != reflect.Ptr {
+	if dstValue.Type().Kind() != reflect.Pointer {
 		ginkgo.Fail(fmt.Sprintf("destination value %T is not a pointer", dst))
 	}
 
@@ -171,7 +171,7 @@ func WithTempFile(dir, pattern string, content []byte, fileName *string) func() 
 	}
 
 	return func() {
-		if err := os.Remove(file.Name()); err != nil {
+		if err := os.Remove(file.Name()); err != nil { // #nosec: G703 -- Test cleanup of temp file created locally.
 			ginkgo.Fail(fmt.Sprintf("could not delete temp file %s: %v", file.Name(), err))
 		}
 	}

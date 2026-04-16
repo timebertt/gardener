@@ -17,9 +17,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/etcd/etcd"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
@@ -36,19 +36,29 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 	var (
 		b   = &Botanist{Operation: o}
 		err error
+
+		secretsManagerIdentity = v1beta1constants.SecretManagerIdentityGardenlet
+		namespaces             = []string{b.Shoot.ControlPlaneNamespace}
 	)
+
+	if o.Shoot.IsSelfHosted() {
+		// `gardenadm init` will generate secrets for gardener-resource-manager and etcd-druid in the `garden` namespace
+		// with the `self-hosted-shoot` identity. Later, when `gardener-operator` or the seed `gardenlet` will take over
+		// management of those shared components, they will generate new secrets with their identity and thereby orphan
+		// the existing ones. When the shoot `gardenlet` reconciles the self-hosted shoot, calling the secrets manager
+		// `Cleanup` will delete the orphaned secrets from the `garden` namespace.
+		secretsManagerIdentity = v1beta1constants.SecretManagerIdentitySelfHostedShoot
+		namespaces = append(namespaces, v1beta1constants.GardenNamespace)
+	}
 
 	o.SecretsManager, err = secretsmanager.New(
 		ctx,
 		b.Logger.WithName("secretsmanager"),
 		clock.RealClock{},
 		b.SeedClientSet.Client(),
-		b.Shoot.ControlPlaneNamespace,
-		v1beta1constants.SecretManagerIdentityGardenlet,
-		secretsmanager.Config{
-			CASecretAutoRotation: false,
-			SecretNamesToTimes:   b.lastSecretRotationStartTimes(),
-		},
+		secretsManagerIdentity,
+		secretsmanager.WithSecretNamesToTimes(b.lastSecretRotationStartTimes()),
+		secretsmanager.WithNamespaces(namespaces...),
 	)
 	if err != nil {
 		return nil, err
@@ -94,6 +104,10 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 		return nil, err
 	}
 	o.Shoot.Components.ControlPlane.EventLogger, err = b.DefaultEventLogger()
+	if err != nil {
+		return nil, err
+	}
+	o.Shoot.Components.ControlPlane.IstioBasicAuthServer, err = b.DefaultIstioBasicAuthServer()
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +164,10 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 		return nil, err
 	}
 	o.Shoot.Components.ControlPlane.OtelCollector, err = b.DefaultOtelCollector()
+	if err != nil {
+		return nil, err
+	}
+	o.Shoot.Components.ControlPlane.VictoriaLogs, err = b.DefaultVictoriaLogs()
 	if err != nil {
 		return nil, err
 	}

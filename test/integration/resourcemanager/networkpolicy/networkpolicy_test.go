@@ -11,21 +11,25 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
+	istioapinetworkingv1beta1 "istio.io/api/networking/v1beta1"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
 
 var _ = Describe("NetworkPolicy Controller tests", func() {
 	var (
-		namespace      *corev1.Namespace
-		otherNamespace *corev1.Namespace
-		service        *corev1.Service
+		namespace       *corev1.Namespace
+		otherNamespace  *corev1.Namespace
+		service         *corev1.Service
+		skipPodCreation bool
 
 		serviceSelector         = map[string]string{"foo": "bar"}
 		customPodLabelSelector1 = "custom-selector1"
@@ -56,6 +60,43 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 		port6Protocol   = corev1.ProtocolTCP
 		port6TargetPort = intstr.FromInt32(1023)
 		port6Suffix     = fmt.Sprintf("-%s-%s", strings.ToLower(string(port6Protocol)), port6TargetPort.String())
+
+		createPodWithNetPolLabels = func(namespaceName string, labels map[string]string) *corev1.Pod {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "pod-",
+					Namespace:    namespaceName,
+					Labels:       labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "test",
+						Image: "registry.k8s.io/pause:3.7",
+					}},
+				},
+			}
+			ExpectWithOffset(1, testClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				ExpectWithOffset(1, testClient.Delete(ctx, pod)).To(Or(Succeed(), BeNotFoundError()))
+			})
+			return pod
+		}
+
+		sameNamespaceLabelsForService = func() map[string]string {
+			labels := map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Name + port1Suffix: "allowed",
+				"networking.resources.gardener.cloud/to-" + service.Name + port2Suffix: "allowed",
+			}
+			return shortenLabelKeys(labels)
+		}
+
+		crossNamespaceLabelsForService = func() map[string]string {
+			labels := map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Namespace + "-" + service.Name + port1Suffix: "allowed",
+				"networking.resources.gardener.cloud/to-" + service.Namespace + "-" + service.Name + port2Suffix: "allowed",
+			}
+			return shortenLabelKeys(labels)
+		}
 
 		ensureNetworkPolicies = func(asyncAssertion func(int, any, ...any) AsyncAssertion, should bool) func() {
 			return func() {
@@ -177,6 +218,7 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 
 	BeforeEach(func() {
 		logBuffer.Reset()
+		skipPodCreation = false
 
 		namespace = &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -239,6 +281,11 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 		By("Create Service")
 		Expect(testClient.Create(ctx, service)).To(Succeed())
 		log.Info("Created Service", "service", client.ObjectKeyFromObject(service))
+
+		if service.Spec.Selector != nil && !skipPodCreation {
+			By("Create Pod with matching netpol labels in service namespace")
+			createPodWithNetPolLabels(service.Namespace, sameNamespaceLabelsForService())
+		}
 
 		DeferCleanup(func() {
 			By("Delete Service")
@@ -336,6 +383,11 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			service.Spec.Ports = []corev1.ServicePort{service.Spec.Ports[1]}
 			service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{Name: "newport", Port: 1357, Protocol: corev1.ProtocolUDP, TargetPort: intstr.FromInt32(2468)})
 			Expect(testClient.Patch(ctx, service, patch)).To(Succeed())
+
+			By("Create pod with labels for the new port")
+			createPodWithNetPolLabels(service.Namespace, map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Name + "-udp-2468": "allowed",
+			})
 
 			By("Wait until all policies were reconciled")
 			Eventually(func(g Gomega) []string {
@@ -473,6 +525,10 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/namespace-selectors", `[{"matchLabels":{"other":"namespace"}}]`)
 		})
 
+		JustBeforeEach(func() {
+			createPodWithNetPolLabels(otherNamespace.Name, crossNamespaceLabelsForService())
+		})
+
 		It("should create the expected cross-namespace network policies", func() {
 			ensureNetworkPoliciesGetCreated()
 
@@ -555,6 +611,14 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			service.Spec.Ports = []corev1.ServicePort{service.Spec.Ports[1]}
 			service.Spec.Ports = append(service.Spec.Ports, corev1.ServicePort{Name: "newport", Port: 1357, Protocol: corev1.ProtocolUDP, TargetPort: intstr.FromInt32(2468)})
 			Expect(testClient.Patch(ctx, service, patch)).To(Succeed())
+
+			By("Create pods with labels for the new port")
+			createPodWithNetPolLabels(service.Namespace, map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Name + "-udp-2468": "allowed",
+			})
+			createPodWithNetPolLabels(otherNamespace.Name, map[string]string{
+				"networking.resources.gardener.cloud/to-" + service.Namespace + "-" + service.Name + "-udp-2468": "allowed",
+			})
 
 			By("Wait until cross-namespace policies were reconciled")
 			Eventually(func(g Gomega) []networkingv1.NetworkPolicy {
@@ -687,6 +751,9 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 				}).Should(BeNotFoundError())
 			})
 
+			By("Create Pod with matching netpol labels in new namespace")
+			createPodWithNetPolLabels(newNamespace.Name, crossNamespaceLabelsForService())
+
 			By("Wait until all ingress policies are created")
 			Eventually(func(g Gomega) []string {
 				networkPolicyList := &networkingv1.NetworkPolicyList{}
@@ -713,6 +780,13 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 
 			BeforeEach(func() {
 				metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/pod-label-selector-namespace-alias", alias)
+			})
+
+			JustBeforeEach(func() {
+				createPodWithNetPolLabels(otherNamespace.Name, map[string]string{
+					"networking.resources.gardener.cloud/to-" + alias + "-" + service.Name + port1Suffix: "allowed",
+					"networking.resources.gardener.cloud/to-" + alias + "-" + service.Name + port2Suffix: "allowed",
+				})
 			})
 
 			It("should create the expected cross-namespace network policies", func() {
@@ -753,6 +827,13 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 		BeforeEach(func() {
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/from-"+customPodLabelSelector1+"-allowed-ports", `[{"protocol":"`+string(port3Protocol)+`","port":"`+port3TargetPort.String()+`"},{"protocol":"`+string(port4Protocol)+`","port":`+port4TargetPort.String()+`}]`)
 			metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/from-"+customPodLabelSelector2+"-allowed-ports", `[{"protocol":"`+string(port5Protocol)+`","port":`+port5TargetPort.String()+`},{"protocol":"`+string(port6Protocol)+`","port":`+port6TargetPort.String()+`}]`)
+		})
+
+		JustBeforeEach(func() {
+			createPodWithNetPolLabels(service.Namespace, map[string]string{
+				"networking.resources.gardener.cloud/to-" + customPodLabelSelector1: "allowed",
+				"networking.resources.gardener.cloud/to-" + customPodLabelSelector2: "allowed",
+			})
 		})
 
 		It("should create the expected network policies", func() {
@@ -1207,4 +1288,315 @@ var _ = Describe("NetworkPolicy Controller tests", func() {
 			ensureExposedViaIngressNetworkPoliciesGetDeleted()
 		})
 	})
+
+	Context("pod-aware policy creation", func() {
+		Context("same-namespace without matching pods", func() {
+			BeforeEach(func() {
+				service.Spec.Selector = serviceSelector
+				skipPodCreation = true
+			})
+
+			It("should not create policies when no matching pods exist", func() {
+				ensureNetworkPoliciesDoNotGetCreated()
+			})
+
+			It("should create policies when a pod with matching labels appears", func() {
+				By("Ensure no policies are created initially")
+				ensureNetworkPoliciesDoNotGetCreated()
+
+				By("Create pod with matching netpol labels")
+				createPodWithNetPolLabels(service.Namespace, sameNamespaceLabelsForService())
+
+				By("Ensure policies are created")
+				ensureNetworkPoliciesGetCreated()
+			})
+		})
+
+		Context("cross-namespace without matching pods", func() {
+			BeforeEach(func() {
+				metav1.SetMetaDataAnnotation(&service.ObjectMeta, "networking.resources.gardener.cloud/namespace-selectors", `[{"matchLabels":{"other":"namespace"}}]`)
+			})
+
+			It("should not create cross-namespace policies when no matching pods exist in remote namespace", func() {
+				ensureCrossNamespaceNetworkPoliciesDoNotGetCreated()
+			})
+
+			It("should create cross-namespace policies when a pod with matching labels appears in remote namespace", func() {
+				By("Ensure no cross-namespace policies are created initially")
+				ensureCrossNamespaceNetworkPoliciesDoNotGetCreated()
+
+				By("Create pod with matching netpol labels in remote namespace")
+				createPodWithNetPolLabels(otherNamespace.Name, crossNamespaceLabelsForService())
+
+				By("Ensure cross-namespace policies are created")
+				ensureCrossNamespaceNetworkPoliciesGetCreated()
+			})
+
+			It("should delete cross-namespace policies when matching pod disappears from remote namespace", func() {
+				By("Create pod with matching netpol labels in remote namespace")
+				pod := createPodWithNetPolLabels(otherNamespace.Name, crossNamespaceLabelsForService())
+
+				By("Wait until cross-namespace policies are created")
+				ensureCrossNamespaceNetworkPoliciesGetCreated()
+
+				By("Delete pod")
+				Expect(testClient.Delete(ctx, pod)).To(Succeed())
+
+				By("Wait until cross-namespace policies are deleted")
+				ensureCrossNamespaceNetworkPoliciesGetDeleted()
+			})
+		})
+	})
+
+	Context("service exposed via virtual service", func() {
+		var (
+			ensureExposedViaVirtualServiceNetworkPolicies = func(asyncAssertion func(int, any, ...any) AsyncAssertion, should bool) func() {
+				return func() {
+					assertedFunc := func(g Gomega) []networkingv1.NetworkPolicy {
+						networkPolicyList := &networkingv1.NetworkPolicyList{}
+						g.Expect(testClient.List(ctx, networkPolicyList)).To(Succeed())
+						return networkPolicyList.Items
+					}
+					expectation := ContainElements(
+						MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("ingress-to-" + service.Name + port1Suffix + "-from-" + istioNamespace), "Namespace": Equal(service.Namespace)})}),
+						MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("egress-to-" + service.Namespace + "-" + service.Name + port1Suffix + "-from-istio"), "Namespace": Equal(istioNamespace)})}),
+					)
+
+					if should {
+						asyncAssertion(1, assertedFunc).Should(expectation)
+					} else {
+						asyncAssertion(1, assertedFunc).ShouldNot(expectation)
+					}
+				}
+			}
+			ensureExposedViaVirtualServiceNetworkPoliciesGetCreated = ensureExposedViaVirtualServiceNetworkPolicies(EventuallyWithOffset, true)
+			ensureExposedViaVirtualServiceNetworkPoliciesGetDeleted = ensureExposedViaVirtualServiceNetworkPolicies(EventuallyWithOffset, false)
+
+			istioNamespaceResource *corev1.Namespace
+			istioPod               *corev1.Pod
+			gateway                *istionetworkingv1beta1.Gateway
+			virtualService         *istionetworkingv1beta1.VirtualService
+		)
+
+		JustBeforeEach(func() {
+			istioNamespaceResource = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: istioNamespace}}
+
+			istioPod = &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "istio-ingressgateway",
+					Namespace: istioNamespace,
+					Labels:    istioPodSelector.MatchLabels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "istio-proxy",
+						Image: "registry.k8s.io/pause:latest",
+					}},
+				},
+			}
+
+			gateway = &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      service.Name,
+					Namespace: service.Namespace,
+				},
+				Spec: istioapinetworkingv1beta1.Gateway{
+					Selector: istioPodSelector.MatchLabels,
+				},
+			}
+
+			virtualService = &istionetworkingv1beta1.VirtualService{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      service.Name,
+					Namespace: service.Namespace,
+				},
+				Spec: istioapinetworkingv1beta1.VirtualService{
+					Gateways: []string{gateway.Name},
+					Hosts:    []string{"foo.example.com"},
+					Http: []*istioapinetworkingv1beta1.HTTPRoute{{
+						Match: []*istioapinetworkingv1beta1.HTTPMatchRequest{{
+							Uri: &istioapinetworkingv1beta1.StringMatch{
+								MatchType: &istioapinetworkingv1beta1.StringMatch_Prefix{Prefix: "/bar"},
+							},
+						}},
+						Route: []*istioapinetworkingv1beta1.HTTPRouteDestination{{
+							Destination: &istioapinetworkingv1beta1.Destination{
+								Host: fmt.Sprintf("%s.%s.svc.cluster.local", service.Name, service.Namespace),
+								Port: &istioapinetworkingv1beta1.PortSelector{
+									Number: uint32(port1ServicePort),
+								},
+							},
+						}},
+					}},
+				},
+			}
+
+			By("Create istio ingress Namespace")
+			Expect(testClient.Create(ctx, istioNamespaceResource)).To(Succeed())
+			log.Info("Created istio ingress Namespace", "namespace", client.ObjectKeyFromObject(istioNamespaceResource))
+
+			By("Create istio ingress Pod")
+			Expect(testClient.Create(ctx, istioPod)).To(Succeed())
+			log.Info("Created istio ingress Pod", "pod", client.ObjectKeyFromObject(istioPod))
+
+			By("Create Gateway")
+			Expect(testClient.Create(ctx, gateway)).To(Succeed())
+			log.Info("Created Gateway", "gateway", client.ObjectKeyFromObject(gateway))
+
+			By("Create VirtualService")
+			Expect(testClient.Create(ctx, virtualService)).To(Succeed())
+			log.Info("Created VirtualService", "virtualService", client.ObjectKeyFromObject(virtualService))
+
+			DeferCleanup(func() {
+				list := &networkingv1.NetworkPolicyList{}
+				Expect(testClient.List(ctx, list)).To(Succeed())
+				log.Info("Found network policies", "count", len(list.Items))
+				for _, np := range list.Items {
+					log.Info("Existing NetworkPolicy", "name", np.Name, "namespace", np.Namespace)
+				}
+				By("Delete VirtualService")
+				Expect(testClient.Delete(ctx, virtualService)).To(Or(Succeed(), BeNotFoundError()))
+				log.Info("Deleted VirtualService", "virtualService", client.ObjectKeyFromObject(virtualService))
+
+				By("Wait until manager has observed VirtualService deletion")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(virtualService), virtualService)
+				}).Should(BeNotFoundError())
+
+				By("Delete Gateway")
+				Expect(testClient.Delete(ctx, gateway)).To(Or(Succeed(), BeNotFoundError()))
+				log.Info("Deleted Gateway", "gateway", client.ObjectKeyFromObject(gateway))
+
+				By("Wait until manager has observed Gateway deletion")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(gateway), gateway)
+				}).Should(BeNotFoundError())
+
+				By("Delete istio ingress Pod")
+				Expect(testClient.Delete(ctx, istioPod)).To(Or(Succeed(), BeNotFoundError()))
+				log.Info("Deleted istio ingress Pod", "pod", client.ObjectKeyFromObject(istioPod))
+
+				By("Wait until manager has observed istio ingress Pod deletion")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(istioPod), istioPod)
+				}).Should(BeNotFoundError())
+
+				By("Delete istio ingress Namespace")
+				Expect(testClient.Delete(ctx, istioNamespaceResource)).To(Or(Succeed(), BeNotFoundError()))
+				log.Info("Deleted istio ingress Namespace", "namespace", client.ObjectKeyFromObject(istioNamespaceResource))
+
+				By("Wait until manager has observed istio ingress Namespace deletion")
+				Eventually(func() error {
+					return mgrClient.Get(ctx, client.ObjectKeyFromObject(istioNamespaceResource), istioNamespaceResource)
+				}).Should(BeNotFoundError())
+			})
+		})
+
+		It("should create the expected network policies", func() {
+			By("Wait until virtualService policy was created")
+			Eventually(func(g Gomega) networkingv1.NetworkPolicySpec {
+				networkPolicy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "ingress-to-" + service.Name + port1Suffix + "-from-" + istioNamespaceResource.Name, Namespace: service.Namespace}}
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(networkPolicy), networkPolicy)).To(Succeed())
+				return networkPolicy.Spec
+			}).Should(Equal(networkingv1.NetworkPolicySpec{
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				PodSelector: metav1.LabelSelector{MatchLabels: serviceSelector},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector:       &istioPodSelector,
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": istioNamespaceResource.Name}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &port1Protocol, Port: &port1TargetPort}},
+				}},
+			}))
+
+			By("Wait until egress policy was created")
+			Eventually(func(g Gomega) networkingv1.NetworkPolicySpec {
+				networkPolicy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "egress-to-" + service.Namespace + "-" + service.Name + port1Suffix + "-from-istio", Namespace: istioNamespaceResource.Name}}
+				g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(networkPolicy), networkPolicy)).To(Succeed())
+				return networkPolicy.Spec
+			}).Should(Equal(networkingv1.NetworkPolicySpec{
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				PodSelector: istioPodSelector,
+				Egress: []networkingv1.NetworkPolicyEgressRule{{
+					To: []networkingv1.NetworkPolicyPeer{{
+						PodSelector:       &metav1.LabelSelector{MatchLabels: serviceSelector},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": service.Namespace}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &port1Protocol, Port: &port1TargetPort}},
+				}},
+			}))
+		})
+
+		It("should reconcile the policies when the ports in service are changed", func() {
+			By("Wait until all policies are created")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetCreated()
+
+			By("Patch Service")
+			newTargetPort := intstr.FromInt32(2468)
+			patch := client.MergeFrom(service.DeepCopy())
+			service.Spec.Ports[0].TargetPort = newTargetPort
+			Expect(testClient.Patch(ctx, service, patch)).To(Succeed())
+
+			By("Wait until all policies were reconciled")
+			Eventually(func(g Gomega) []networkingv1.NetworkPolicy {
+				networkPolicyList := &networkingv1.NetworkPolicyList{}
+				g.Expect(testClient.List(ctx, networkPolicyList)).To(Succeed())
+				return networkPolicyList.Items
+			}).Should(And(
+				Not(ContainElements(
+					MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("ingress-to-" + service.Name + port1Suffix + "-from-" + istioNamespaceResource.Name), "Namespace": Equal(service.Namespace)})}),
+					MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("egress-to-" + service.Namespace + "-" + service.Name + port1Suffix + "-from-istio"), "Namespace": Equal(istioNamespace)})}),
+				)),
+				ContainElements(
+					MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("ingress-to-" + service.Name + "-tcp-" + newTargetPort.String() + "-from-" + istioNamespaceResource.Name), "Namespace": Equal(service.Namespace)})}),
+					MatchFields(IgnoreExtras, Fields{"ObjectMeta": MatchFields(IgnoreExtras, Fields{"Name": Equal("egress-to-" + service.Namespace + "-" + service.Name + "-tcp-" + newTargetPort.String() + "-from-istio"), "Namespace": Equal(istioNamespace)})}),
+				),
+			))
+		})
+
+		It("should delete the policies when the pod selector in service is removed", func() {
+			By("Wait until all policies are created")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetCreated()
+
+			By("Patch Service")
+			patch := client.MergeFrom(service.DeepCopy())
+			service.Spec.Selector = nil
+			Expect(testClient.Patch(ctx, service, patch)).To(Succeed())
+
+			By("Wait until all policies are deleted")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetDeleted()
+		})
+
+		It("should delete the policies when the VirtualService gets deleted", func() {
+			By("Wait until all policies are created")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetCreated()
+
+			By("Delete VirtualService")
+			Expect(testClient.Delete(ctx, virtualService)).To(Succeed())
+
+			By("Wait until all policies are deleted")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetDeleted()
+		})
+
+		It("should delete the policies when the service gets deleted", func() {
+			By("Wait until all policies are created")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetCreated()
+
+			By("Delete Service")
+			Expect(testClient.Delete(ctx, service)).To(Succeed())
+
+			By("Wait until all policies are deleted")
+			ensureExposedViaVirtualServiceNetworkPoliciesGetDeleted()
+		})
+	})
 })
+
+func shortenLabelKeys(labels map[string]string) map[string]string {
+	result := make(map[string]string, len(labels))
+	for k, v := range labels {
+		newKey, _ := gardenerutils.ShortenNetworkPolicyLabelKeyIfTooLong(k)
+		result[newKey] = v
+	}
+	return result
+}

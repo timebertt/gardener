@@ -9,19 +9,20 @@ import (
 	"fmt"
 	"time"
 
+	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidcorev1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	monitoringv1alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
-	"go.uber.org/mock/gomock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -34,17 +35,15 @@ import (
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
-	mocktime "github.com/gardener/gardener/third_party/mock/go/time"
 )
 
 var _ = Describe("#Wait", func() {
 	var (
-		ctrl    *gomock.Controller
-		c       client.Client
-		sm      secretsmanager.Interface
-		log     logr.Logger
-		mockNow *mocktime.MockNow
-		now     time.Time
+		c         client.Client
+		sm        secretsmanager.Interface
+		log       logr.Logger
+		fakeClock *testclock.FakeClock
+		now       time.Time
 
 		waiter      *retryfake.Ops
 		cleanupFunc func()
@@ -57,9 +56,8 @@ var _ = Describe("#Wait", func() {
 	)
 
 	BeforeEach(func() {
-		ctrl = gomock.NewController(GinkgoT())
-		mockNow = mocktime.NewMockNow(ctrl)
-		now = time.Now()
+		now = time.Unix(60, 0)
+		fakeClock = testclock.NewFakeClock(now)
 
 		s := runtime.NewScheme()
 		Expect(corev1.AddToScheme(s)).To(Succeed())
@@ -115,7 +113,6 @@ var _ = Describe("#Wait", func() {
 	})
 
 	AfterEach(func() {
-		ctrl.Finish()
 		cleanupFunc()
 	})
 
@@ -125,11 +122,10 @@ var _ = Describe("#Wait", func() {
 
 	It("should return error when it's not ready", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 		delete(expected.Annotations, v1beta1constants.GardenerOperation)
-		expected.Status.LastErrors = []druidcorev1alpha1.LastError{}
+		expected.Status.LastErrors = []druidapicommon.LastError{}
 		expected.Status.ObservedGeneration = ptr.To(expected.Generation)
 		expected.Status.Conditions = []druidcorev1alpha1.Condition{
 			{
@@ -145,9 +141,8 @@ var _ = Describe("#Wait", func() {
 
 	It("should return error if we haven't observed the latest timestamp annotation", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 		By("Deploy")
 		// Deploy should fill internal state with the added timestamp annotation
@@ -175,9 +170,8 @@ var _ = Describe("#Wait", func() {
 
 	It("should return no error if etcd replicas set to 0", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 		By("Deploy")
 		etcd.SetReplicas(ptr.To[int32](0))
@@ -207,9 +201,8 @@ var _ = Describe("#Wait", func() {
 
 	It("should return error if AllMembersUpdated condition is not set", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 		By("Deploy")
 		// Deploy should fill internal state with the added timestamp annotation
@@ -232,9 +225,8 @@ var _ = Describe("#Wait", func() {
 
 	It("should return error if AllMembersUpdated condition is set but not true", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 		By("Deploy")
 		// Deploy should fill internal state with the added timestamp annotation
@@ -263,9 +255,8 @@ var _ = Describe("#Wait", func() {
 
 	It("should return error if it's not ready", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 		By("Deploy")
 		// Deploy should fill internal state with the added timestamp annotation
@@ -294,9 +285,8 @@ var _ = Describe("#Wait", func() {
 
 	It("should return no error when is ready", func() {
 		defer test.WithVars(
-			&TimeNow, mockNow.Do,
+			&TimeNow, fakeClock.Now,
 		)()
-		mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 		By("Deploy")
 		// Deploy should fill internal state with the added timestamp annotation
@@ -341,7 +331,7 @@ var _ = Describe("#CheckEtcdObject", func() {
 	})
 
 	It("should return error if reconciliation failed", func() {
-		obj.Status.LastErrors = []druidcorev1alpha1.LastError{{Code: "ERROR_FOO", Description: "foo", ObservedAt: metav1.Now()}}
+		obj.Status.LastErrors = []druidapicommon.LastError{{Code: "ERROR_FOO", Description: "foo", ObservedAt: metav1.Now()}}
 		err := CheckEtcdObject(obj)
 		Expect(err).To(MatchError(fmt.Sprintf("errors during reconciliation: %+v", obj.Status.LastErrors)))
 		Expect(retry.IsRetriable(err)).To(BeTrue())

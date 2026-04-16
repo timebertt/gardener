@@ -24,10 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiextensions "github.com/gardener/gardener/pkg/api/extensions"
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
 	"github.com/gardener/gardener/pkg/extensions"
@@ -35,6 +35,28 @@ import (
 
 // ControllerName is the name of this controller.
 const ControllerName = "controllerinstallation-required"
+
+type eventHandlerRegistration struct {
+	lock       sync.Mutex
+	registered bool
+	registerFn func() error
+}
+
+func (e *eventHandlerRegistration) registerOnce() error {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
+	if e.registered {
+		return nil
+	}
+
+	if err := e.registerFn(); err != nil {
+		return err
+	}
+
+	e.registered = true
+	return nil
+}
 
 // AddToManager adds Reconciler to the given manager.
 func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluster cluster.Cluster) error {
@@ -65,6 +87,19 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluste
 		return err
 	}
 
+	// Watch ControllerInstallation objects to enqueue them when created. This ensures that newly created
+	// ControllerInstallations are reconciled regardless of whether HandleOnce has already fired. Without this watch,
+	// ControllerInstallations created after startup would only be reconciled when an extension object changes.
+	// The gardenlet cache already restricts ControllerInstallation objects to the relevant seed or shoot, so no
+	// additional filtering is needed here.
+	if err = c.Watch(source.Kind[client.Object](
+		gardenCluster.GetCache(),
+		&gardencorev1beta1.ControllerInstallation{},
+		&handler.EnqueueRequestForObject{},
+	)); err != nil {
+		return err
+	}
+
 	for _, extension := range []struct {
 		objectKind        string
 		object            client.Object
@@ -80,6 +115,7 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluste
 		{extensionsv1alpha1.InfrastructureResource, &extensionsv1alpha1.Infrastructure{}, func() client.ObjectList { return &extensionsv1alpha1.InfrastructureList{} }},
 		{extensionsv1alpha1.NetworkResource, &extensionsv1alpha1.Network{}, func() client.ObjectList { return &extensionsv1alpha1.NetworkList{} }},
 		{extensionsv1alpha1.OperatingSystemConfigResource, &extensionsv1alpha1.OperatingSystemConfig{}, func() client.ObjectList { return &extensionsv1alpha1.OperatingSystemConfigList{} }},
+		{extensionsv1alpha1.SelfHostedShootExposureResource, &extensionsv1alpha1.SelfHostedShootExposure{}, func() client.ObjectList { return &extensionsv1alpha1.SelfHostedShootExposureList{} }},
 		{extensionsv1alpha1.WorkerResource, &extensionsv1alpha1.Worker{}, func() client.ObjectList { return &extensionsv1alpha1.WorkerList{} }},
 	} {
 		eventHandler := handler.EnqueueRequestsFromMapFunc(r.MapObjectKindToControllerInstallations(
@@ -88,27 +124,30 @@ func (r *Reconciler) AddToManager(mgr manager.Manager, gardenCluster, seedCluste
 			extension.newObjectListFunc,
 		))
 
-		// Execute the mapper function at least once to initialize the `KindToRequiredTypes` map.
-		// This is necessary for extension kinds which are registered but for which no extension objects exist in the
-		// seed (e.g. when backups are disabled). In such cases, no regular watch event would be triggered. Hence, the
-		// mapping function would never be executed. Hence, the extension kind would never be part of the
-		// `KindToRequiredTypes` map. Hence, the reconciler would not be able to decide whether the
-		// ControllerInstallation is required.
-		if err = c.Watch(&controllerutils.HandleOnce[client.Object, reconcile.Request]{Handler: eventHandler}); err != nil {
-			return err
-		}
+		// Since the EnqueueRequestsFromMapFunc is costly, actual watches need to be registered after the manager was started.
+		// Registering them here might otherwise cause cache sync timeouts, esp. in large seed clusters.
+		// See https://github.com/kubernetes-sigs/controller-runtime/issues/3466 and https://github.com/gardener/gardener/issues/14391 for more information.
+		r.deferredEventHandlerRegistrations = append(r.deferredEventHandlerRegistrations, &eventHandlerRegistration{
+			registerFn: func() error {
+				if err := c.Watch(
+					source.Kind[client.Object](
+						seedCluster.GetCache(),
+						extension.object,
+						eventHandler,
+						extensions.ObjectPredicate(),
+						predicateutils.HasClass(extensionsv1alpha1.ExtensionClassShoot, extensionsv1alpha1.ExtensionClassSeed),
+					),
+				); err != nil {
+					return err
+				}
 
-		if err := c.Watch(
-			source.Kind[client.Object](
-				seedCluster.GetCache(),
-				extension.object,
-				eventHandler,
-				extensions.ObjectPredicate(),
-				predicateutils.HasClass(extensionsv1alpha1.ExtensionClassShoot, extensionsv1alpha1.ExtensionClassSeed),
-			),
-		); err != nil {
-			return err
-		}
+				// Execute the mapper function to initialize `KindToRequiredTypes` for this extension kind. This
+				// is necessary for kinds with no extension objects in the seed (e.g. when backups are disabled),
+				// as the source.Kind watch above would never deliver events for them. Without this, the
+				// reconciler could not decide whether a ControllerInstallation is required.
+				return c.Watch(&controllerutils.HandleOnce[client.Object, reconcile.Request]{Handler: eventHandler})
+			},
+		})
 	}
 
 	return nil
@@ -187,7 +226,15 @@ func (r *Reconciler) MapObjectKindToControllerInstallations(log logr.Logger, obj
 		// the other reconciler to decide whether it is required or not.
 
 		controllerInstallationList := &gardencorev1beta1.ControllerInstallationList{}
-		if err := r.GardenClient.List(ctx, controllerInstallationList, client.MatchingFields{core.SeedRefName: r.SeedName}); err != nil {
+
+		var listOptions client.MatchingFields
+		if r.SelfHostedShootMeta != nil {
+			listOptions = client.MatchingFields{core.ShootRefName: r.SelfHostedShootMeta.Name, core.ShootRefNamespace: r.SelfHostedShootMeta.Namespace}
+		} else {
+			listOptions = client.MatchingFields{core.SeedRefName: r.SeedName}
+		}
+
+		if err := r.GardenClient.List(ctx, controllerInstallationList, listOptions); err != nil {
 			log.Error(err, "Failed to list ControllerInstallations")
 			return nil
 		}

@@ -47,9 +47,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 	"github.com/gardener/gardener/test/framework"
@@ -69,8 +69,7 @@ var _ = ginkgo.Describe("Shoot operation testing", func() {
 	var isShootHibernated bool
 
 	f.Default().Serial().CIt("Testing if Shoot can be hibernated successfully", func(ctx context.Context) {
-		guestBookTest, err := applications.NewGuestBookTest(f)
-		framework.ExpectNoError(err)
+		guestBookTest := applications.NewGuestBookTest(f)
 
 		defer guestBookTest.Cleanup(ctx)
 
@@ -80,7 +79,7 @@ var _ = ginkgo.Describe("Shoot operation testing", func() {
 
 		ginkgo.By("Hibernate shoot")
 		isShootHibernated = true
-		err = f.HibernateShoot(ctx)
+		err := f.HibernateShoot(ctx)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Wake up shoot")

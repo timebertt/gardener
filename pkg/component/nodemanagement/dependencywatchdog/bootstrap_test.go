@@ -339,8 +339,6 @@ spec:
           name: metrics
           protocol: TCP
         resources:
-          limits:
-            memory: 512Mi
           requests:
             cpu: 200m
             memory: 256Mi
@@ -372,7 +370,7 @@ metadata:
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: dependency-watchdog
       minAllowed:
 `
 
@@ -385,6 +383,8 @@ spec:
 					}
 
 					out += `
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: Deployment

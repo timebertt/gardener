@@ -10,9 +10,12 @@ import (
 
 const (
 	// SecretManagerIdentityControllerManager is the identity for the secret manager used inside controller-manager.
-	SecretManagerIdentityControllerManager = "controller-manager"
+	SecretManagerIdentityControllerManager = "controller-manager" // #nosec G101 -- No credential.
 	// SecretManagerIdentityGardenlet is the identity for the secret manager used inside gardenlet.
-	SecretManagerIdentityGardenlet = "gardenlet"
+	SecretManagerIdentityGardenlet = "gardenlet" // #nosec G101 -- No credential.
+	// SecretManagerIdentitySelfHostedShoot is the identity for the secret manager used inside gardenadm or the shoot
+	// gardenlet.
+	SecretManagerIdentitySelfHostedShoot = "self-hosted-shoot" // #nosec G101 -- No credential.
 
 	// SecretNameCACluster is a constant for the name of a Kubernetes secret object that contains the CA
 	// certificate of a shoot cluster.
@@ -41,6 +44,12 @@ const (
 	// SecretNameCASeed is a constant for the name of a Kubernetes secret object that contains the CA
 	// certificate generated for a seed cluster.
 	SecretNameCASeed = "ca-seed"
+	// SecretNameCAIstioBasicAuthServer is a constant for the name of a Kubernetes secret object that contains
+	// the CA certificate generated for the istio-basic-auth-server.
+	SecretNameCAIstioBasicAuthServer = "ca-istio-basic-auth-server"
+	// SecretNameCAVirtualGardenIstioBasicAuthServer is a constant for the name of a Kubernetes secret object
+	// that contains the CA certificate generated for the istio-basic-auth-server of the virtual garden.
+	SecretNameCAVirtualGardenIstioBasicAuthServer = "ca-virtual-garden-istio-basic-auth-server"
 
 	// SecretNameCloudProvider is a constant for the name of a Kubernetes secret object that contains the provider
 	// specific credentials that shall be used to create/delete the shoot.
@@ -93,14 +102,21 @@ const (
 	// SecretNameGenericGardenKubeconfig is a constant for the name of the kubeconfig used by the extension
 	// components to authenticate against the garden Kubernetes API server.
 	SecretNameGenericGardenKubeconfig = "generic-garden-kubeconfig"
-	// AnnotationKeyGenericTokenKubeconfigSecretName is a constant for the key of an annotation on
-	// extensions.gardener.cloud/v1alpha1.Cluster resources whose value contains the name of the generic token
+
+	// AnnotationKeyGenericTokenKubeconfigSecretName is a constant for the key of an annotation on:
+	// - extensions.gardener.cloud/v1alpha1.Cluster resources whose value contains the name of the generic token
 	// kubeconfig secret in the seed cluster.
+	// - operator.gardener.cloud/v1alpha1.Garden resources whose value contains the name of the generic token
+	// kubeconfig secret in the garden cluster.
 	AnnotationKeyGenericTokenKubeconfigSecretName = "generic-token-kubeconfig.secret.gardener.cloud/name"
 
 	// ExtensionGardenServiceAccountPrefix is the prefix of the default garden ServiceAccount generated for each
 	// ControllerInstallation.
 	ExtensionGardenServiceAccountPrefix = "extension-"
+	// ExtensionShootServiceAccountPrefix is the prefix for garden ServiceAccounts generated for extensions in
+	// self-hosted shoot clusters. The full name is extension-shoot--<shoot-name>--<controller-installation-name>.
+	// The ServiceAccount is located in the shoot's project namespace.
+	ExtensionShootServiceAccountPrefix = "extension-shoot--"
 
 	// ReferenceProtectionFinalizerName is the name of the finalizer used for the reference protection.
 	ReferenceProtectionFinalizerName = "gardener.cloud/reference-protection"
@@ -151,6 +167,8 @@ const (
 	// DaemonSetNameFluentBit is a constant for the name of a Kubernetes Daemonset object that contains
 	// the fluent-bit pod.
 	DaemonSetNameFluentBit = "fluent-bit"
+	// ConfigMapNameFluentBitLua is a constant for the name of a Kubernetes Configmap which holds the lua scripts for fluent-bit.
+	ConfigMapNameFluentBitLua = "fluent-bit-lua-config"
 	// DeploymentNameKubeStateMetrics is a constant for the name of a Kubernetes deployment object that contains
 	// the kube-state-metrics pod.
 	DeploymentNameKubeStateMetrics = "kube-state-metrics"
@@ -164,6 +182,9 @@ const (
 	DeploymentNameVPARecommender = "vpa-recommender"
 	// DeploymentNameVPAUpdater is a constant for the name of the VPA updater deployment.
 	DeploymentNameVPAUpdater = "vpa-updater"
+
+	// DeploymentNameIstioBasicAuthServer is a constant for the name of the istio-basic-auth-server deployment.
+	DeploymentNameIstioBasicAuthServer = "istio-basic-auth-server"
 
 	// DeploymentNameKubernetesDashboard is a constant for the name of the kubernetes dashboard deployment.
 	DeploymentNameKubernetesDashboard = "kubernetes-dashboard"
@@ -301,6 +322,8 @@ const (
 	GardenRoleShootServiceAccountIssuer = "shoot-service-account-issuer"
 	// GardenRoleHelmPullSecret is the value of the GardenRole key indicating type 'helm-pull-secret'.
 	GardenRoleHelmPullSecret = "helm-pull-secret"
+	// GardenRoleOCICABundle is the value of the GardenRole key indicating type 'oci-ca-bundle'.
+	GardenRoleOCICABundle = "oci-ca-bundle"
 	// GardenRoleObservability is the value of the GardenRole key indicating type 'observability'.
 	GardenRoleObservability = "observability"
 
@@ -462,6 +485,8 @@ const (
 	LabelBackupProvider = "backup.gardener.cloud/provider"
 	// LabelSeedProvider is used to identify the seed provider.
 	LabelSeedProvider = "seed.gardener.cloud/provider"
+	// LabelSeedRegion is used to identify the seed region.
+	LabelSeedRegion = "seed.gardener.cloud/region"
 	// LabelShootProvider is used to identify the shoot provider.
 	LabelShootProvider = "shoot.gardener.cloud/provider"
 	// LabelShootProviderPrefix is used to prefix label that indicates the provider type.
@@ -504,6 +529,8 @@ const (
 	LabelPrefixSeedName = "name.seed.gardener.cloud/"
 	// LabelObservability is a constant for a label for observability stack configurations
 	LabelObservability = "observability"
+	// LabelBasicAuthSecretName is a constant for a label used on virtual services to include the referenced secret into the istio-basic-auth-server for basic auth.
+	LabelBasicAuthSecretName = "reference.gardener.cloud/basic-auth-secret-name"
 
 	// LabelExtensionExtensionTypePrefix is used to prefix extension label for extension types.
 	LabelExtensionExtensionTypePrefix = "extensions.extensions.gardener.cloud/"
@@ -517,6 +544,8 @@ const (
 	LabelExtensionOperatingSystemConfigTypePrefix = "operatingsystemconfig.extensions.gardener.cloud/"
 	// LabelExtensionContainerRuntimeTypePrefix is used to prefix extension label for ContainerRuntime types.
 	LabelExtensionContainerRuntimeTypePrefix = "containerruntime.extensions.gardener.cloud/"
+	// LabelExtensionSelfHostedShootExposureTypePrefix is used to prefix extension label for SelfHostedShootExposure types.
+	LabelExtensionSelfHostedShootExposureTypePrefix = "selfhostedshootexposure.extensions.gardener.cloud/"
 
 	// LabelExtensionProviderMutatedByControlplaneWebhook is used to specify extension provider controlplane webhook targets
 	LabelExtensionProviderMutatedByControlplaneWebhook = LabelExtensionProviderTypePrefix + "mutated-by-controlplane-webhook"
@@ -618,6 +647,12 @@ const (
 	LabelProxy = "proxy"
 	// LabelExtensionProjectRole is a constant for a label value for extension project roles
 	LabelExtensionProjectRole = "extension-project-role"
+	// LabelDNSRecordExternal is a constant for a label value for external DNSRecord.
+	LabelDNSRecordExternal = "external"
+	// LabelDNSRecordInternal is a constant for a label value for internal DNSRecord.
+	LabelDNSRecordInternal = "internal"
+	// LabelDNSRecordIngress is a constant for a label value for ingress DNSRecord.
+	LabelDNSRecordIngress = "ingress"
 
 	// LabelShootNamespace is a constant for a label key that indicates a relationship to a shoot in the specified namespace.
 	LabelShootNamespace = "shoot.gardener.cloud/namespace"
@@ -627,6 +662,7 @@ const (
 	LabelShootUID = "shoot.gardener.cloud/uid"
 
 	// LabelPublicKeys is a constant for a label key that indicates that a resource contains public keys.
+	//
 	// Deprecated: Use LabelDiscoveryPublic instead.
 	LabelPublicKeys = "authentication.gardener.cloud/public-keys" // TODO(dimityrmirchev): Deprecate in favour of LabelDiscoveryPublic
 	// LabelPublicKeysServiceAccount is a constant for a label value that indicates that a resource contains service account public keys.
@@ -723,6 +759,9 @@ const (
 	// Kubernetes resources' step. Concretely, after the specified seconds, all the finalizers of the affected resources
 	// are forcefully removed.
 	AnnotationShootCleanupKubernetesResourcesFinalizeGracePeriodSeconds = "shoot.gardener.cloud/cleanup-kubernetes-resources-finalize-grace-period-seconds"
+	// AnnotationShootCleanupKubernetesResourcesStartTime is a key for an annotation on a shoot Namespace
+	// that records the start time of the 'cleanup Kubernetes resources' step.
+	AnnotationShootCleanupKubernetesResourcesStartTime = "shoot.gardener.cloud/cleanup-kubernetes-resources-start-time"
 	// AnnotationShootCloudConfigExecutionMaxDelaySeconds is a key for an annotation on a Shoot resource that declares
 	// the maximum delay in seconds when potentially updated cloud-config user data is executed on the worker nodes.
 	// Concretely, the gardener-node-agent systemd service running on all worker nodes will wait
@@ -797,6 +836,9 @@ const (
 	// ReferencedResourcesPrefix is the prefix used when copying referenced resources to the Shoot namespace in the Seed,
 	// to avoid naming collisions with resources managed by Gardener.
 	ReferencedResourcesPrefix = "ref-"
+	// ReferencedWorkloadIdentityPrefix is the prefix used when naming a Secret deployed in the Seed on behalf of referenced WorkloadIdentity.
+	// The prefix is unique in order to avoid naming collisions with other resources managed by Gardener or referenced Secrets.
+	ReferencedWorkloadIdentityPrefix = "workload-identity-ref-"
 
 	// ClusterIdentity is a constant equal to the name and data key (that stores the identity) of the cluster-identity ConfigMap
 	ClusterIdentity = "cluster-identity"
@@ -921,6 +963,12 @@ const (
 	// EnvSeedName is a constant for the environment variable which holds the name of the Seed that the extension
 	// controller is running on.
 	EnvSeedName = "SEED_NAME"
+	// EnvShootName is a constant for the environment variable which holds the name of the self-hosted Shoot that the
+	// extension controller is running for.
+	EnvShootName = "SHOOT_NAME"
+	// EnvShootNamespace is a constant for the environment variable which holds the namespace of the self-hosted Shoot
+	// that the extension controller is running for.
+	EnvShootNamespace = "SHOOT_NAMESPACE"
 
 	// IngressTLSCertificateValidity is the default validity for ingress TLS certificates.
 	IngressTLSCertificateValidity = 730 * 24 * time.Hour // ~2 years, see https://support.apple.com/en-us/HT210176
@@ -1053,6 +1101,12 @@ const (
 	// should wait with reconciliation of the operating system config (to prevent too many node-agents from restarting
 	// kubelet or other critical units at the same time).
 	AnnotationNodeAgentReconciliationDelay = "node-agent.gardener.cloud/reconciliation-delay"
+	// AnnotationNodeAgentSerialOSCReconciliation is an annotation key on the gardener-node-agent Secret containing
+	// the OperatingSystemConfig that should be reconciled. When set, gardener-node-agent instances watching this Secret
+	// will try to lock the resource (by writing a Lease object with the same name as the Secret).
+	// If they have the lock, they reconcile and release the Lease at the end. If they don't have the lock, they
+	// wait until it is removed again.
+	AnnotationNodeAgentSerialOSCReconciliation = "reconciliation.osc.node-agent.gardener.cloud/serial"
 	// NodeAgentsGroup is the identity group for gardener-node-agents when authenticating to the API server.
 	NodeAgentsGroup = "gardener.cloud:node-agents"
 	// NodeAgentUserNamePrefix is the identity username prefix for gardener-node-agent when authenticating to the API server.
@@ -1060,6 +1114,8 @@ const (
 
 	// GardenPurposeMachineClass is a constant for the 'machineclass' value in a label.
 	GardenPurposeMachineClass = "machineclass"
+	// GardenPurposeShootStaticManifest is a constant for the 'shoot-static-manifest' value in a label.
+	GardenPurposeShootStaticManifest = "shoot-static-manifest"
 
 	// LabelInjectGardenKubeconfig is a constant for a label on workload resources that indicates that a kubeconfig to
 	// the garden cluster should be injected.
@@ -1081,4 +1137,11 @@ const (
 	// LabelShootEndpointAdvertise is the name of the label which controls
 	// whether an endpoint is advertised for a shoot.
 	LabelShootEndpointAdvertise = LabelShootEndpointPrefix + "advertise"
+	// LabelShootEndpointApplication is the name of the label which holds the application name for an endpoint.
+	LabelShootEndpointApplication = LabelShootEndpointPrefix + "application"
+
+	// AnnotationStaticManifestsShootSelector is the name of an annotation on Secrets in the garden namespace of seeds
+	// that contains a label selector for shoots. The static manifests will only be propagated for shoots matching the
+	// selector.
+	AnnotationStaticManifestsShootSelector = "static-manifests.shoot.gardener.cloud/selector"
 )

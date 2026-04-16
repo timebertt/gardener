@@ -15,9 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 )
@@ -52,7 +53,7 @@ func (g *graph) setupShootWatch(ctx context.Context, informer cache.Informer) er
 				v1beta1helper.GetShootAuditPolicyConfigMapName(oldShoot.Spec.Kubernetes.KubeAPIServer) != v1beta1helper.GetShootAuditPolicyConfigMapName(newShoot.Spec.Kubernetes.KubeAPIServer) ||
 				v1beta1helper.GetShootAuthenticationConfigurationConfigMapName(oldShoot.Spec.Kubernetes.KubeAPIServer) != v1beta1helper.GetShootAuthenticationConfigurationConfigMapName(newShoot.Spec.Kubernetes.KubeAPIServer) ||
 				!apiequality.Semantic.DeepEqual(v1beta1helper.GetShootAuthorizationConfiguration(oldShoot.Spec.Kubernetes.KubeAPIServer), v1beta1helper.GetShootAuthorizationConfiguration(newShoot.Spec.Kubernetes.KubeAPIServer)) ||
-				!v1beta1helper.ShootDNSProviderSecretNamesEqual(oldShoot.Spec.DNS, newShoot.Spec.DNS) ||
+				!v1beta1helper.ShootDNSProviderCredentialsRefsEqual(oldShoot.Spec.DNS, newShoot.Spec.DNS) ||
 				!v1beta1helper.ResourceReferencesEqual(oldShoot.Spec.Resources, newShoot.Spec.Resources) ||
 				v1beta1helper.HasManagedIssuer(oldShoot) != v1beta1helper.HasManagedIssuer(newShoot) ||
 				!g.hasExpectedShootBindingEdges(newShoot) {
@@ -107,6 +108,7 @@ func (g *graph) HandleShootCreateOrUpdate(ctx context.Context, shoot *gardencore
 	g.deleteAllIncomingEdges(VertexTypeSecretBinding, VertexTypeShoot, shoot.Namespace, shoot.Name)
 	g.deleteAllIncomingEdges(VertexTypeCredentialsBinding, VertexTypeShoot, shoot.Namespace, shoot.Name)
 	g.deleteAllIncomingEdges(VertexTypeShootState, VertexTypeShoot, shoot.Namespace, shoot.Name)
+	g.deleteAllIncomingEdges(VertexTypeWorkloadIdentity, VertexTypeShoot, shoot.Namespace, shoot.Name)
 	if g.forSelfHostedShoots {
 		g.deleteAllIncomingEdges(VertexTypeLease, VertexTypeShoot, shoot.Namespace, shoot.Name)
 	} else {
@@ -183,16 +185,23 @@ func (g *graph) HandleShootCreateOrUpdate(ctx context.Context, shoot *gardencore
 
 	if shoot.Spec.DNS != nil {
 		for _, provider := range shoot.Spec.DNS.Providers {
-			if provider.SecretName != nil {
-				secretVertex := g.getOrCreateVertex(VertexTypeSecret, shoot.Namespace, *provider.SecretName)
-				g.addEdge(secretVertex, shootVertex)
+			if provider.CredentialsRef != nil {
+				var credentialsVertex *Vertex
+				switch apiVersion, kind := provider.CredentialsRef.APIVersion, provider.CredentialsRef.Kind; {
+				case apiVersion == corev1.SchemeGroupVersion.String() && kind == "Secret":
+					credentialsVertex = g.getOrCreateVertex(VertexTypeSecret, shoot.Namespace, provider.CredentialsRef.Name)
+				case apiVersion == securityv1alpha1.SchemeGroupVersion.String() && kind == "WorkloadIdentity":
+					credentialsVertex = g.getOrCreateVertex(VertexTypeWorkloadIdentity, shoot.Namespace, provider.CredentialsRef.Name)
+				}
+				g.addEdge(credentialsVertex, shootVertex)
 			}
 		}
 	}
 
 	for _, resource := range shoot.Spec.Resources {
-		// only secrets and configMap are supported here
-		if resource.ResourceRef.APIVersion == "v1" {
+		// only v1.Secrets, v1.ConfigMaps, and security.gardener.cloud/v1alpha1.WorkloadIdentities are supported here
+		switch resource.ResourceRef.APIVersion {
+		case corev1.SchemeGroupVersion.String():
 			if resource.ResourceRef.Kind == "Secret" {
 				secretVertex := g.getOrCreateVertex(VertexTypeSecret, shoot.Namespace, resource.ResourceRef.Name)
 				g.addEdge(secretVertex, shootVertex)
@@ -200,6 +209,11 @@ func (g *graph) HandleShootCreateOrUpdate(ctx context.Context, shoot *gardencore
 			if resource.ResourceRef.Kind == "ConfigMap" {
 				configMapVertex := g.getOrCreateVertex(VertexTypeConfigMap, shoot.Namespace, resource.ResourceRef.Name)
 				g.addEdge(configMapVertex, shootVertex)
+			}
+		case securityv1alpha1.SchemeGroupVersion.String():
+			if resource.ResourceRef.Kind == "WorkloadIdentity" {
+				workloadIdentityVertex := g.getOrCreateVertex(VertexTypeWorkloadIdentity, shoot.Namespace, resource.ResourceRef.Name)
+				g.addEdge(workloadIdentityVertex, shootVertex)
 			}
 		}
 	}

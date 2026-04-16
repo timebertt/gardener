@@ -22,7 +22,7 @@ type Registry struct {
 	mu        sync.Mutex
 	artifacts map[string][]byte
 
-	expectedPullSecretNamespace string
+	expectedSecretNamespace string
 }
 
 // NewRegistry returns a new registry
@@ -34,17 +34,17 @@ func NewRegistry() *Registry {
 
 // Pull implements oci.Interface
 func (r *Registry) Pull(ctx context.Context, ociRepo *gardencorev1.OCIRepository) ([]byte, error) {
-	if r.expectedPullSecretNamespace != "" {
-		v := ctx.Value(oci.ContextKeyPullSecretNamespace)
+	if r.expectedSecretNamespace != "" {
+		v := ctx.Value(oci.ContextKeySecretNamespace)
 		if v == nil {
-			return nil, fmt.Errorf("expected pull secret namespace %q, but not found in context", r.expectedPullSecretNamespace)
+			return nil, fmt.Errorf("expected secret namespace %q, but not found in context", r.expectedSecretNamespace)
 		}
 		vs, ok := v.(string)
 		if !ok {
-			return nil, fmt.Errorf("expected pull secret namespace %q, but got %v", r.expectedPullSecretNamespace, v)
+			return nil, fmt.Errorf("expected context value of type string, but got %T instead", v)
 		}
-		if vs != r.expectedPullSecretNamespace {
-			return nil, fmt.Errorf("expected pull secret namespace %q, but got %q", r.expectedPullSecretNamespace, vs)
+		if vs != r.expectedSecretNamespace {
+			return nil, fmt.Errorf("expected secret namespace %q, but got %q", r.expectedSecretNamespace, vs)
 		}
 	}
 	data, ok := r.artifacts[artifactKey(ociRepo)]
@@ -59,11 +59,6 @@ func (r *Registry) AddArtifact(oci *gardencorev1.OCIRepository, data []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.artifacts[artifactKey(oci)] = data
-}
-
-// SetExpectedPullSecretNamespace sets the expected pull secret namespace.
-func (r *Registry) SetExpectedPullSecretNamespace(namespace string) {
-	r.expectedPullSecretNamespace = namespace
 }
 
 func artifactKey(oci *gardencorev1.OCIRepository) string {

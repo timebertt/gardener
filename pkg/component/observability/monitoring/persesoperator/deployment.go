@@ -20,6 +20,7 @@ import (
 
 const (
 	deploymentName  = "perses-operator"
+	containerName   = "perses-operator"
 	healthProbePort = 8081
 	metricsPort     = 8082
 )
@@ -52,12 +53,15 @@ func (p *persesOperator) deployment() *appsv1.Deployment {
 					},
 					Containers: []corev1.Container{
 						{
-							Name:            "perses-operator",
+							Name:            containerName,
 							Image:           p.values.Image,
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Args: []string{
 								fmt.Sprintf("--health-probe-bind-address=:%d", healthProbePort),
 								fmt.Sprintf("--metrics-bind-address=:%d", metricsPort),
+							},
+							Env: []corev1.EnvVar{
+								{Name: "ENABLE_WEBHOOKS", Value: "false"},
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: map[corev1.ResourceName]resource.Quantity{

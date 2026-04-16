@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	clientcmdlatest "k8s.io/client-go/tools/clientcmd/api/latest"
@@ -33,13 +34,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorv1alpha1conversion "github.com/gardener/gardener/pkg/api/operator/v1alpha1/conversion"
+	"github.com/gardener/gardener/pkg/api/operator/v1alpha1/helper"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
-	operatorv1alpha1conversion "github.com/gardener/gardener/pkg/apis/operator/v1alpha1/conversion"
-	"github.com/gardener/gardener/pkg/apis/operator/v1alpha1/helper"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/apiserver"
 	"github.com/gardener/gardener/pkg/component/autoscaling/vpa"
@@ -62,9 +65,11 @@ import (
 	kubeapiserverexposure "github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
 	kubecontrollermanager "github.com/gardener/gardener/pkg/component/kubernetes/controllermanager"
 	"github.com/gardener/gardener/pkg/component/networking/istio"
+	"github.com/gardener/gardener/pkg/component/networking/istiobasicauthserver"
 	"github.com/gardener/gardener/pkg/component/observability/logging"
 	"github.com/gardener/gardener/pkg/component/observability/logging/fluentcustomresources"
 	"github.com/gardener/gardener/pkg/component/observability/logging/fluentoperator"
+	victoriaoperator "github.com/gardener/gardener/pkg/component/observability/logging/victoria/operator"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/alertmanager"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/blackboxexporter"
 	gardenblackboxexporter "github.com/gardener/gardener/pkg/component/observability/monitoring/blackboxexporter/garden"
@@ -75,10 +80,10 @@ import (
 	gardenprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
 	longtermprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/longterm"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheusoperator"
+	"github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector"
 	oteloperator "github.com/gardener/gardener/pkg/component/observability/opentelemetry/operator"
 	"github.com/gardener/gardener/pkg/component/observability/plutono"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils"
@@ -86,7 +91,6 @@ import (
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
@@ -98,6 +102,7 @@ type components struct {
 	extensionCRD     component.DeployWaiter
 	prometheusCRD    component.DeployWaiter
 	persesCRD        component.DeployWaiter
+	victoriaCRD      component.DeployWaiter
 	openTelemetryCRD component.DeployWaiter
 
 	gardenerResourceManager component.DeployWaiter
@@ -106,6 +111,7 @@ type components struct {
 	etcdDruid               component.DeployWaiter
 	istio                   istio.Interface
 	nginxIngressController  component.DeployWaiter
+	istioBasicAuthServer    component.DeployWaiter
 
 	extensions extension.Interface
 
@@ -136,6 +142,7 @@ type components struct {
 	fluentOperatorCustomResources component.DeployWaiter
 	plutono                       plutono.Interface
 	vali                          component.Deployer
+	openTelemetryCollector        collector.Interface
 	prometheusOperator            component.DeployWaiter
 	openTelemetryOperator         component.DeployWaiter
 	alertManager                  alertmanager.Interface
@@ -143,6 +150,8 @@ type components struct {
 	prometheusLongTerm            prometheus.Interface
 	blackboxExporter              component.DeployWaiter
 	persesOperator                component.DeployWaiter
+	victoriaOperator              component.DeployWaiter
+	victoriaLogs                  component.DeployWaiter
 }
 
 func (r *Reconciler) instantiateComponents(
@@ -196,6 +205,10 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
+	c.victoriaCRD, err = victoriaoperator.NewCRDs(r.RuntimeClientSet.Client())
+	if err != nil {
+		return
+	}
 
 	// garden system components
 	c.gardenerResourceManager, err = r.newGardenerResourceManager(garden, secretsManager)
@@ -216,6 +229,10 @@ func (r *Reconciler) instantiateComponents(
 		return
 	}
 	c.nginxIngressController, err = r.newNginxIngressController(garden, c.istio.GetValues().IngressGateway)
+	if err != nil {
+		return
+	}
+	c.istioBasicAuthServer, err = r.newIstioBasicAuthServer(secretsManager)
 	if err != nil {
 		return
 	}
@@ -248,7 +265,7 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
-	c.virtualGardenGardenerResourceManager, err = r.newVirtualGardenGardenerResourceManager(secretsManager)
+	c.virtualGardenGardenerResourceManager, err = r.newVirtualGardenGardenerResourceManager(garden, secretsManager)
 	if err != nil {
 		return
 	}
@@ -259,9 +276,8 @@ func (r *Reconciler) instantiateComponents(
 	c.virtualGardenGardenerAccess = r.newGardenerAccess(garden, secretsManager)
 
 	// gardener control plane components
-	discoveryServerDomain := discoveryServerDomain(garden)
 	workloadIdentityTokenIssuer := workloadIdentityTokenIssuerURL(garden)
-	c.gardenerAPIServer, err = r.newGardenerAPIServer(ctx, garden, secretsManager, workloadIdentityTokenIssuer)
+	c.gardenerAPIServer, err = r.newGardenerAPIServer(ctx, garden, secretsManager, workloadIdentityTokenIssuer, targetVersion)
 	if err != nil {
 		return
 	}
@@ -285,7 +301,7 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
-	c.gardenerDiscoveryServer, err = r.newGardenerDiscoveryServer(secretsManager, discoveryServerDomain, wildcardCertSecretName, workloadIdentityTokenIssuer)
+	c.gardenerDiscoveryServer, err = r.newGardenerDiscoveryServer(garden, secretsManager, wildcardCertSecretName, workloadIdentityTokenIssuer)
 	if err != nil {
 		return
 	}
@@ -311,11 +327,15 @@ func (r *Reconciler) instantiateComponents(
 	if err != nil {
 		return
 	}
-	c.vali, err = r.newVali()
+	c.vali, err = r.newVali(c.istio.GetValues().IngressGateway)
 	if err != nil {
 		return
 	}
-	c.plutono, err = r.newPlutono(garden, secretsManager, primaryIngressDomain.Name, wildcardCertSecretName)
+	c.openTelemetryCollector, err = r.newOpenTelemetryCollector(secretsManager)
+	if err != nil {
+		return
+	}
+	c.plutono, err = r.newPlutono(garden, secretsManager, primaryIngressDomain.Name, wildcardCertSecretName, c.istio.GetValues().IngressGateway)
 	if err != nil {
 		return
 	}
@@ -344,6 +364,14 @@ func (r *Reconciler) instantiateComponents(
 		return
 	}
 	c.persesOperator, err = r.newPersesOperator()
+	if err != nil {
+		return
+	}
+	c.victoriaOperator, err = r.newVictoriaOperator()
+	if err != nil {
+		return
+	}
+	c.victoriaLogs, err = r.newVictoriaLogs()
 	if err != nil {
 		return
 	}
@@ -383,8 +411,6 @@ func (r *Reconciler) enableAdmissionControllerAuthorizers(ctx context.Context, v
 	return true, nil
 }
 
-const namePrefix = "virtual-garden-"
-
 func (r *Reconciler) newGardenerResourceManager(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface) (component.DeployWaiter, error) {
 	var defaultNotReadyTolerationSeconds, defaultUnreachableTolerationSeconds *int64
 	if nodeToleration := r.Config.NodeToleration; nodeToleration != nil {
@@ -414,7 +440,7 @@ func (r *Reconciler) newGardenerResourceManager(garden *operatorv1alpha1.Garden,
 				{
 					NamespaceSelector: map[string]string{v1beta1constants.GardenRole: v1beta1constants.GardenRoleShoot},
 				}, {
-					KubeAPIServerNamePrefix: namePrefix,
+					KubeAPIServerNamePrefix: operatorv1alpha1.VirtualGardenNamePrefix,
 					NamespaceSelector:       map[string]string{"kubernetes.io/metadata.name": v1beta1constants.GardenNamespace},
 					ObjectSelector: &metav1.LabelSelector{
 						MatchExpressions: []metav1.LabelSelectorRequirement{
@@ -432,24 +458,31 @@ func (r *Reconciler) newGardenerResourceManager(garden *operatorv1alpha1.Garden,
 	})
 }
 
-func (r *Reconciler) newVirtualGardenGardenerResourceManager(secretsManager secretsmanager.Interface) (resourcemanager.Interface, error) {
+func (r *Reconciler) newVirtualGardenGardenerResourceManager(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface) (resourcemanager.Interface, error) {
+	var additionalTargetNamespaces []string
+	if garden.Spec.VirtualCluster.Gardener.ResourceManager != nil {
+		additionalTargetNamespaces = garden.Spec.VirtualCluster.Gardener.ResourceManager.AdditionalTargetNamespaces
+	}
+
 	return sharedcomponent.NewTargetGardenerResourceManager(r.RuntimeClientSet.Client(), r.GardenNamespace, secretsManager, resourcemanager.Values{
 		IsWorkerless:             true,
 		LogLevel:                 r.Config.LogLevel,
 		LogFormat:                r.Config.LogFormat,
-		NamePrefix:               namePrefix,
+		NamePrefix:               operatorv1alpha1.VirtualGardenNamePrefix,
 		PriorityClassName:        v1beta1constants.PriorityClassNameGardenSystem400,
 		RuntimeKubernetesVersion: r.RuntimeVersion,
 		SecretNameServerCA:       operatorv1alpha1.SecretNameCARuntime,
-		TargetNamespaces:         []string{v1beta1constants.GardenNamespace, metav1.NamespaceSystem, gardencorev1beta1.GardenerShootIssuerNamespace, gardencorev1beta1.GardenerSystemPublicNamespace},
+		TargetNamespaces: sets.List(sets.New(
+			v1beta1constants.GardenNamespace,
+			metav1.NamespaceSystem,
+			gardencorev1beta1.GardenerShootIssuerNamespace,
+			gardencorev1beta1.GardenerSystemPublicNamespace,
+		).Insert(additionalTargetNamespaces...)),
 	})
 }
 
 func (r *Reconciler) newVerticalPodAutoscaler(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface) (component.DeployWaiter, error) {
-	var (
-		featureGates map[string]bool
-	)
-
+	var featureGates map[string]bool
 	if garden.Spec.RuntimeCluster.Settings.VerticalPodAutoscaler != nil {
 		featureGates = garden.Spec.RuntimeCluster.Settings.VerticalPodAutoscaler.FeatureGates
 	}
@@ -569,7 +602,7 @@ func (r *Reconciler) newEtcd(
 		r.GardenNamespace,
 		secretsManager,
 		etcd.Values{
-			NamePrefix:                  namePrefix,
+			NamePrefix:                  operatorv1alpha1.VirtualGardenNamePrefix,
 			Role:                        role,
 			Class:                       class,
 			Replicas:                    replicas,
@@ -613,7 +646,7 @@ func (r *Reconciler) newKubeAPIServerServiceWithSuffix(log logr.Logger, garden *
 		r.RuntimeClientSet.Client(),
 		r.GardenNamespace,
 		&kubeapiserverexposure.ServiceValues{
-			NamePrefix:                  namePrefix,
+			NamePrefix:                  operatorv1alpha1.VirtualGardenNamePrefix,
 			NameSuffix:                  suffix,
 			TopologyAwareRoutingEnabled: helper.TopologyAwareRoutingEnabled(garden.Spec.RuntimeCluster.Settings) && !features.DefaultFeatureGate.Enabled(features.IstioTLSTermination),
 			RuntimeKubernetesVersion:    r.RuntimeVersion,
@@ -718,9 +751,14 @@ func (r *Reconciler) newKubeAPIServer(
 				fmt.Sprintf("'%s' in request.groups || request.groups.exists(e, e.startsWith('%s%s'))", v1beta1constants.SeedsGroup, serviceaccount.ServiceAccountGroupPrefix, gardenerutils.SeedNamespaceNamePrefix),
 			),
 			newAuthorizationWebhook("shoot", kubeconfigShootAuthz,
-				// only intercept request from shoot gardenlets
-				// TODO(rfranzke): Also handle requests from ServiceAccounts of extensions running in the self-hosted shoot.
-				fmt.Sprintf("'%s' in request.groups", v1beta1constants.ShootsGroup),
+				// Only intercept requests from shoot gardenlets and extension ServiceAccounts in garden/project namespaces.
+				// Extension SA usernames follow the format system:serviceaccount:<garden|garden-*>:extension-shoot--<shoot>--<ci>.
+				fmt.Sprintf("'%s' in request.groups || (request.groups.exists(e, e == '%s%s' || e.startsWith('%s%s')) && request.user.contains(':%s'))",
+					v1beta1constants.ShootsGroup,
+					serviceaccount.ServiceAccountGroupPrefix, v1beta1constants.GardenNamespace,
+					serviceaccount.ServiceAccountGroupPrefix, gardenerutils.ProjectNamespacePrefix,
+					v1beta1constants.ExtensionShootServiceAccountPrefix,
+				),
 			),
 		)
 	}
@@ -734,7 +772,7 @@ func (r *Reconciler) newKubeAPIServer(
 		r.RuntimeVersion,
 		targetVersion,
 		secretsManager,
-		namePrefix,
+		operatorv1alpha1.VirtualGardenNamePrefix,
 		apiServerConfig,
 		kubeAPIServerAutoscalingConfig(garden),
 		kubeapiserver.VPNConfig{Enabled: false},
@@ -861,7 +899,7 @@ func (r *Reconciler) newKubeControllerManager(
 		r.RuntimeVersion,
 		targetVersion,
 		secretsManager,
-		namePrefix,
+		operatorv1alpha1.VirtualGardenNamePrefix,
 		config,
 		v1beta1constants.PriorityClassNameGardenSystem300,
 		true,
@@ -891,29 +929,26 @@ func (r *Reconciler) newKubeStateMetrics() (component.DeployWaiter, error) {
 }
 
 func (r *Reconciler) newIstio(ctx context.Context, garden *operatorv1alpha1.Garden) (istio.Interface, error) {
-	var annotations map[string]string
-	if settings := garden.Spec.RuntimeCluster.Settings; settings != nil && settings.LoadBalancerServices != nil {
-		annotations = settings.LoadBalancerServices.Annotations
-	}
-
 	return sharedcomponent.NewIstio(
 		ctx,
 		r.RuntimeClientSet.Client(),
 		r.RuntimeClientSet.ChartRenderer(),
-		namePrefix,
+		operatorv1alpha1.VirtualGardenNamePrefix,
 		v1beta1constants.DefaultSNIIngressNamespace,
 		v1beta1constants.PriorityClassNameGardenSystemCritical,
 		true,
 		sharedcomponent.GetIstioZoneLabels(nil, nil),
-		gardenerutils.NetworkPolicyLabel(r.GardenNamespace+"-"+kubeapiserverconstants.ServiceName(namePrefix), kubeapiserverconstants.Port),
-		annotations,
+		[]string{
+			gardenerutils.NetworkPolicyLabel(v1beta1constants.GardenNamespace+"-"+operatorv1alpha1.VirtualGardenNamePrefix+v1beta1constants.DeploymentNameIstioBasicAuthServer, istiobasicauthserver.Port),
+		},
+		getLoadBalancerServiceAnnotations(garden),
 		nil,
-		nil,
+		getLoadBalancerServiceExternalTrafficPolicy(garden),
 		nil,
 		[]corev1.ServicePort{
 			{Name: "tcp", Port: 443, TargetPort: intstr.FromInt32(9443)},
 		},
-		nil,
+		getLoadBalancerServiceProxyProtocol(garden),
 		false,
 		garden.Spec.RuntimeCluster.Provider.Zones,
 		len(garden.Spec.RuntimeCluster.Networking.IPFamilies) == 2,
@@ -962,7 +997,7 @@ func (r *Reconciler) newSNI(ctx context.Context, garden *operatorv1alpha1.Garden
 
 	return kubeapiserverexposure.NewSNI(
 		r.RuntimeClientSet.Client(),
-		namePrefix+v1beta1constants.DeploymentNameKubeAPIServer,
+		operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer,
 		r.GardenNamespace,
 		secretsManager,
 		func() *kubeapiserverexposure.SNIValues {
@@ -985,7 +1020,7 @@ func (r *Reconciler) newGardenerAccess(garden *operatorv1alpha1.Garden, secretsM
 		r.GardenNamespace,
 		secretsManager,
 		gardeneraccess.Values{
-			ServerInCluster:       fmt.Sprintf("%s%s.%s.svc.cluster.local", namePrefix, v1beta1constants.DeploymentNameKubeAPIServer, r.GardenNamespace),
+			ServerInCluster:       fmt.Sprintf("%s.%s.svc.cluster.local", kubeapiserverconstants.ServiceName(operatorv1alpha1.VirtualGardenNamePrefix), r.GardenNamespace),
 			ServerOutOfCluster:    v1beta1helper.GetAPIServerDomain(garden.Spec.VirtualCluster.DNS.Domains[0].Name),
 			ManagedResourceLabels: map[string]string{v1beta1constants.LabelCareConditionType: string(operatorv1alpha1.VirtualComponentsHealthy)},
 			IsGardenCluster:       true,
@@ -1019,18 +1054,6 @@ func getAPIServerDomains(domains []operatorv1alpha1.DNSDomain) []operatorv1alpha
 	return apiServerDomains
 }
 
-func getIngressWildcardDomains(domains []operatorv1alpha1.DNSDomain) []operatorv1alpha1.DNSDomain {
-	wildcardDomains := make([]operatorv1alpha1.DNSDomain, 0, len(domains))
-	for _, domain := range domains {
-		wildcardDomains = append(wildcardDomains,
-			operatorv1alpha1.DNSDomain{
-				Name:     "*." + domain.Name,
-				Provider: domain.Provider,
-			})
-	}
-	return wildcardDomains
-}
-
 func (r *Reconciler) newNginxIngressController(garden *operatorv1alpha1.Garden, ingressGatewayValues []istio.IngressGatewayValues) (component.DeployWaiter, error) {
 	providerConfig, err := getNginxIngressConfig(garden)
 	if err != nil {
@@ -1041,7 +1064,7 @@ func (r *Reconciler) newNginxIngressController(garden *operatorv1alpha1.Garden, 
 		return nil, fmt.Errorf("exactly one Istio Ingress Gateway is required for the SNI config")
 	}
 
-	ingressDomains := toDomainNames(getIngressWildcardDomains(garden.Spec.RuntimeCluster.Ingress.Domains))
+	ingressDomains := toDomainNames(helper.GetAllIngressDomains(garden))
 
 	return sharedcomponent.NewNginxIngress(
 		r.RuntimeClientSet.Client(),
@@ -1062,6 +1085,19 @@ func (r *Reconciler) newNginxIngressController(garden *operatorv1alpha1.Garden, 
 	)
 }
 
+func (r *Reconciler) newIstioBasicAuthServer(secretsManager secretsmanager.Interface) (component.DeployWaiter, error) {
+	return sharedcomponent.NewIstioBasicAuthServer(
+		r.RuntimeClientSet.Client(),
+		r.GardenNamespace,
+		secretsManager,
+		true,
+		1,
+		v1beta1constants.PriorityClassNameGardenSystem100,
+		true,
+		v1beta1constants.SecretNameCAVirtualGardenIstioBasicAuthServer,
+	)
+}
+
 func (r *Reconciler) newGardenerMetricsExporter(secretsManager secretsmanager.Interface) (component.DeployWaiter, error) {
 	image, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameGardenerMetricsExporter)
 	if err != nil {
@@ -1071,7 +1107,20 @@ func (r *Reconciler) newGardenerMetricsExporter(secretsManager secretsmanager.In
 	return gardenermetricsexporter.New(r.RuntimeClientSet.Client(), r.GardenNamespace, secretsManager, gardenermetricsexporter.Values{Image: image.String()}), nil
 }
 
-func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, ingressDomain string, wildcardCertSecretName *string) (plutono.Interface, error) {
+func (r *Reconciler) newPlutono(
+	garden *operatorv1alpha1.Garden,
+	secretsManager secretsmanager.Interface,
+	ingressDomain string,
+	wildcardCertSecretName *string,
+	ingressGatewayValues []istio.IngressGatewayValues,
+) (
+	plutono.Interface,
+	error,
+) {
+	if len(ingressGatewayValues) != 1 {
+		return nil, fmt.Errorf("exactly one Istio Ingress Gateway is required for the plutono config")
+	}
+
 	return sharedcomponent.NewPlutono(
 		r.RuntimeClientSet.Client(),
 		r.GardenNamespace,
@@ -1088,6 +1137,7 @@ func (r *Reconciler) newPlutono(garden *operatorv1alpha1.Garden, secretsManager 
 		vpaEnabled(garden.Spec.RuntimeCluster.Settings),
 		wildcardCertSecretName,
 		false,
+		ingressGatewayValues[0].Labels,
 	)
 }
 
@@ -1117,7 +1167,25 @@ func getNginxIngressConfig(garden *operatorv1alpha1.Garden) (map[string]string, 
 	return utils.InterfaceMapToStringMap(utils.MergeMaps(defaultConfig, providerConfig)), nil
 }
 
-// GetLoadBalancerServiceAnnotations returns the load balancer annotations set for the garden if any.
+// getLoadBalancerServiceExternalTrafficPolicy returns the external traffic policy for the garden's load balancer services.
+func getLoadBalancerServiceExternalTrafficPolicy(garden *operatorv1alpha1.Garden) *corev1.ServiceExternalTrafficPolicy {
+	if garden.Spec.RuntimeCluster.Settings != nil && garden.Spec.RuntimeCluster.Settings.LoadBalancerServices != nil {
+		return garden.Spec.RuntimeCluster.Settings.LoadBalancerServices.ExternalTrafficPolicy
+	}
+	return nil
+}
+
+// getLoadBalancerServiceProxyProtocol returns whether proxy protocol termination is enabled for the garden's load balancer services.
+func getLoadBalancerServiceProxyProtocol(garden *operatorv1alpha1.Garden) *bool {
+	if garden.Spec.RuntimeCluster.Settings != nil && garden.Spec.RuntimeCluster.Settings.LoadBalancerServices != nil {
+		if pp := garden.Spec.RuntimeCluster.Settings.LoadBalancerServices.ProxyProtocol; pp != nil {
+			return &pp.Allowed
+		}
+	}
+	return nil
+}
+
+// getLoadBalancerServiceAnnotations returns the load balancer annotations set for the garden if any.
 func getLoadBalancerServiceAnnotations(garden *operatorv1alpha1.Garden) map[string]string {
 	if garden.Spec.RuntimeCluster.Settings != nil && garden.Spec.RuntimeCluster.Settings.LoadBalancerServices != nil {
 		// return copy of annotations to prevent any accidental mutation by components
@@ -1130,7 +1198,7 @@ func (r *Reconciler) newVirtualSystem(enableSeedAuthorizer bool) component.Deplo
 	return virtualgardensystem.New(r.RuntimeClientSet.Client(), r.GardenNamespace, virtualgardensystem.Values{SeedAuthorizerEnabled: enableSeedAuthorizer})
 }
 
-func (r *Reconciler) newGardenerAPIServer(ctx context.Context, garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, workloadIdentityTokenIssuer string) (gardenerapiserver.Interface, error) {
+func (r *Reconciler) newGardenerAPIServer(ctx context.Context, garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface, workloadIdentityTokenIssuer string, targetVersion *semver.Version) (gardenerapiserver.Interface, error) {
 	var (
 		err                error
 		apiServerConfig    *operatorv1alpha1.GardenerAPIServerConfig
@@ -1162,6 +1230,7 @@ func (r *Reconciler) newGardenerAPIServer(ctx context.Context, garden *operatorv
 		garden.Spec.VirtualCluster.Gardener.ClusterIdentity,
 		workloadIdentityTokenIssuer,
 		goAwayChance,
+		targetVersion,
 	)
 }
 
@@ -1361,8 +1430,12 @@ func (r *Reconciler) newFluentCustomResources() (component.DeployWaiter, error) 
 	)
 }
 
-func (r *Reconciler) newVali() (component.Deployer, error) {
-	return sharedcomponent.NewVali(
+func (r *Reconciler) newVali(ingressGatewayValues []istio.IngressGatewayValues) (component.Deployer, error) {
+	if len(ingressGatewayValues) != 1 {
+		return nil, fmt.Errorf("exactly one Istio Ingress Gateway is required for the vali config")
+	}
+
+	deployer, err := sharedcomponent.NewVali(
 		r.RuntimeClientSet.Client(),
 		r.GardenNamespace,
 		nil,
@@ -1373,7 +1446,40 @@ func (r *Reconciler) newVali() (component.Deployer, error) {
 		nil,
 		"",
 		true,
+		ingressGatewayValues[0].Labels,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Destroy Vali if RemoveVali feature gate is enabled (requires VictoriaLogsBackend as well)
+	if features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) &&
+		features.DefaultFeatureGate.Enabled(features.RemoveVali) {
+		return component.OpDestroy(deployer), nil
+	}
+
+	return deployer, nil
+}
+
+func (r *Reconciler) newVictoriaLogs() (component.DeployWaiter, error) {
+	deployer, err := sharedcomponent.NewVictoriaLogs(
+		r.RuntimeClientSet.Client(),
+		r.GardenNamespace,
+		component.ClusterTypeSeed,
+		1,
+		v1beta1constants.PriorityClassNameGardenSystem100,
+		nil,
+		true,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) {
+		return component.OpDestroyAndWait(deployer), nil
+	}
+
+	return deployer, nil
 }
 
 func (r *Reconciler) newPrometheusOperator() (component.DeployWaiter, error) {
@@ -1412,6 +1518,7 @@ func (r *Reconciler) newPrometheusGarden(log logr.Logger, garden *operatorv1alph
 		ScrapeTimeout:     "50s", // This is intentionally smaller than the scrape interval of 1m.
 		RuntimeVersion:    r.RuntimeVersion,
 		ExternalLabels:    map[string]string{"landscape": garden.Spec.VirtualCluster.Gardener.ClusterIdentity},
+		HealthCheckBy:     prometheus.GardenerOperator,
 		AdditionalPodLabels: map[string]string{
 			v1beta1constants.LabelNetworkPolicyToPublicNetworks:                                                v1beta1constants.LabelNetworkPolicyAllowed,
 			v1beta1constants.LabelNetworkPolicyToPrivateNetworks:                                               v1beta1constants.LabelNetworkPolicyAllowed,
@@ -1422,26 +1529,9 @@ func (r *Reconciler) newPrometheusGarden(log logr.Logger, garden *operatorv1alph
 		},
 		CentralConfigs: prometheus.CentralConfigs{
 			AdditionalScrapeConfigs: gardenprometheus.AdditionalScrapeConfigs(),
-			PrometheusRules:         gardenprometheus.CentralPrometheusRules(garden.Spec.VirtualCluster.Gardener.DiscoveryServer != nil),
 			ServiceMonitors:         gardenprometheus.CentralServiceMonitors(),
 		},
 		Alerting: &prometheus.AlertingValues{Alertmanagers: []*prometheus.Alertmanager{{Name: "alertmanager-garden"}}},
-		AdditionalAlertRelabelConfigs: []monitoringv1.RelabelConfig{
-			{
-				SourceLabels: []monitoringv1.LabelName{"project", "name"},
-				Regex:        "(.+);(.+)",
-				Action:       "replace",
-				Replacement:  ptr.To("https://dashboard." + ingressDomain + "/namespace/garden-$1/shoots/$2"),
-				TargetLabel:  "shoot_dashboard_url",
-			},
-			{
-				SourceLabels: []monitoringv1.LabelName{"project", "name"},
-				Regex:        "garden;(.+)",
-				Action:       "replace",
-				Replacement:  ptr.To("https://dashboard." + ingressDomain + "/namespace/garden/shoots/$1"),
-				TargetLabel:  "shoot_dashboard_url",
-			},
-		},
 		Ingress: &prometheus.IngressValues{
 			Host:                   "prometheus-garden." + ingressDomain,
 			SecretsManager:         secretsManager,
@@ -1466,6 +1556,7 @@ func (r *Reconciler) newPrometheusLongTerm(log logr.Logger, garden *operatorv1al
 		RetentionSize:     "80GB",
 		ScrapeTimeout:     "50s", // This is intentionally smaller than the scrape interval of 1m.
 		RuntimeVersion:    r.RuntimeVersion,
+		HealthCheckBy:     prometheus.GardenerOperator,
 		AdditionalPodLabels: map[string]string{
 			gardenerutils.NetworkPolicyLabel("prometheus-garden", 9090): v1beta1constants.LabelNetworkPolicyAllowed,
 		},
@@ -1492,6 +1583,7 @@ func (r *Reconciler) newBlackboxExporter(garden *operatorv1alpha1.Garden, secret
 		primaryIngressDomain    = garden.Spec.RuntimeCluster.Ingress.Domains[0].Name
 		kubeAPIServerTargets    = []monitoringv1alpha1.Target{monitoringv1alpha1.Target("https://" + gardenerDNSNamePrefix + primaryVirtualDNSDomain + "/healthz")}
 		gardenerDashboardTarget = monitoringv1alpha1.Target("https://dashboard." + primaryIngressDomain + "/healthz")
+		discoveryServerEnabled  = garden.Spec.VirtualCluster.Gardener.DiscoveryServer != nil
 	)
 
 	if garden.Spec.VirtualCluster.Kubernetes.KubeAPIServer != nil && garden.Spec.VirtualCluster.Kubernetes.KubeAPIServer.SNI != nil {
@@ -1521,8 +1613,8 @@ func (r *Reconciler) newBlackboxExporter(garden *operatorv1alpha1.Garden, secret
 				gardenerutils.NetworkPolicyLabel(gardenerdiscoveryserver.ServiceName, 8081):                                                                             v1beta1constants.LabelNetworkPolicyAllowed,
 			},
 			PriorityClassName: v1beta1constants.PriorityClassNameGardenSystem100,
-			Config:            gardenblackboxexporter.Config(isDashboardCertificateIssuedByGardener, garden.Spec.VirtualCluster.Gardener.DiscoveryServer != nil),
-			ScrapeConfigs:     gardenblackboxexporter.ScrapeConfig(r.GardenNamespace, kubeAPIServerTargets, gardenerDashboardTarget),
+			Config:            gardenblackboxexporter.Config(isDashboardCertificateIssuedByGardener, discoveryServerEnabled),
+			ScrapeConfigs:     gardenblackboxexporter.ScrapeConfig(r.GardenNamespace, kubeAPIServerTargets, gardenerDashboardTarget, discoveryServerEnabled),
 			Replicas:          1,
 		},
 	)
@@ -1536,9 +1628,17 @@ func (r *Reconciler) newPersesOperator() (component.DeployWaiter, error) {
 	)
 }
 
+func (r *Reconciler) newVictoriaOperator() (component.DeployWaiter, error) {
+	return sharedcomponent.NewVictoriaOperator(
+		r.RuntimeClientSet.Client(),
+		r.GardenNamespace,
+		v1beta1constants.PriorityClassNameGardenSystem100,
+	)
+}
+
 func (r *Reconciler) newGardenerDiscoveryServer(
+	garden *operatorv1alpha1.Garden,
 	secretsManager secretsmanager.Interface,
-	domain string,
 	wildcardCertSecretName *string,
 	workloadIdentityTokenIssuer string,
 ) (component.DeployWaiter, error) {
@@ -1553,8 +1653,8 @@ func (r *Reconciler) newGardenerDiscoveryServer(
 		secretsManager,
 		gardenerdiscoveryserver.Values{
 			Image:                       image.String(),
-			Domain:                      domain,
-			TLSSecretName:               wildcardCertSecretName,
+			Domain:                      helper.DiscoveryServerDomain(garden),
+			TLSSecretName:               discoveryServerTLSSecretName(garden, wildcardCertSecretName),
 			WorkloadIdentityTokenIssuer: workloadIdentityTokenIssuer,
 		},
 	), nil
@@ -1566,6 +1666,17 @@ func (r *Reconciler) newOpenTelemetryOperator() (component.DeployWaiter, error) 
 		r.GardenNamespace,
 		true,
 		v1beta1constants.PriorityClassNameGardenSystem100,
+	)
+}
+
+func (r *Reconciler) newOpenTelemetryCollector(secretsManager secretsmanager.Interface) (collector.Interface, error) {
+	return sharedcomponent.NewOpenTelemetryCollector(r.RuntimeClientSet.Client(),
+		r.GardenNamespace,
+		v1beta1constants.PriorityClassNameGardenSystem100,
+		secretsManager,
+		operatorv1alpha1.SecretNameCARuntime,
+		component.ClusterTypeSeed,
+		true,
 	)
 }
 
@@ -1633,10 +1744,13 @@ func (r *Reconciler) newExtensions(log logr.Logger, garden *operatorv1alpha1.Gar
 	return extension.New(log, r.RuntimeClientSet.Client(), values, extension.DefaultInterval, extension.DefaultSevereThreshold, extension.DefaultTimeout)
 }
 
-func discoveryServerDomain(garden *operatorv1alpha1.Garden) string {
-	return "discovery." + garden.Spec.RuntimeCluster.Ingress.Domains[0].Name
+func discoveryServerTLSSecretName(garden *operatorv1alpha1.Garden, wildcardCertSecretName *string) *string {
+	if config := garden.Spec.VirtualCluster.Gardener.DiscoveryServer; config != nil && config.TLSSecretName != nil {
+		return config.TLSSecretName
+	}
+	return wildcardCertSecretName
 }
 
 func workloadIdentityTokenIssuerURL(garden *operatorv1alpha1.Garden) string {
-	return "https://" + discoveryServerDomain(garden) + "/garden/workload-identity/issuer"
+	return "https://" + helper.DiscoveryServerDomain(garden) + "/garden/workload-identity/issuer"
 }

@@ -26,7 +26,7 @@ var _ = Describe("CRD", func() {
 		c           client.Client
 		ctx         = context.TODO()
 		crdDeployer component.Deployer
-		k8sVersion  = semver.MustParse("1.30")
+		k8sVersion  = semver.MustParse("1.32")
 	)
 
 	Describe("Deployer", func() {
@@ -38,7 +38,7 @@ var _ = Describe("CRD", func() {
 		})
 
 		JustBeforeEach(func() {
-			Expect(crdDeployer.Deploy(ctx)).To(Succeed(), "Etcd/EtcdCopyBackupsTask CRD deployment succeeds")
+			Expect(crdDeployer.Deploy(ctx)).To(Succeed(), "Etcd/EtcdCopyBackupsTask/EtcdOpsTask CRD deployment succeeds")
 		})
 
 		DescribeTable("CRD is deployed",
@@ -48,6 +48,7 @@ var _ = Describe("CRD", func() {
 
 			Entry("Etcd", "etcds.druid.gardener.cloud"),
 			Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
+			Entry("EtcdOpsTask", "etcdopstasks.druid.gardener.cloud"),
 		)
 
 		DescribeTable("should re-create CRD if it is deleted",
@@ -60,6 +61,7 @@ var _ = Describe("CRD", func() {
 
 			Entry("Etcd", "etcds.druid.gardener.cloud"),
 			Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
+			Entry("EtcdOpsTask", "etcdopstasks.druid.gardener.cloud"),
 		)
 
 		Describe("CRD is destroyed", func() {
@@ -75,34 +77,8 @@ var _ = Describe("CRD", func() {
 
 				Entry("Etcd", "etcds.druid.gardener.cloud"),
 				Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
+				Entry("EtcdOpsTask", "etcdopstasks.druid.gardener.cloud"),
 			)
-		})
-	})
-
-	Describe("Getter", func() {
-		var (
-			crdGetter CRDGetter
-			err       error
-		)
-		crdGetter, err = NewCRDGetter(k8sVersion)
-		Expect(err).NotTo(HaveOccurred())
-
-		DescribeTable("Get CRD",
-			func(crdName string) {
-				crd, err := crdGetter.GetCRD(crdName)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(crd).NotTo(BeNil())
-			},
-
-			Entry("Etcd", "etcds.druid.gardener.cloud"),
-			Entry("EtcdCopyBackupsTask", "etcdcopybackupstasks.druid.gardener.cloud"),
-		)
-
-		Describe("Get all CRDs", func() {
-			allCRDs := crdGetter.GetAllCRDs()
-			Expect(allCRDs).To(HaveLen(2))
-			Expect(allCRDs).To(HaveKey("etcds.druid.gardener.cloud"))
-			Expect(allCRDs).To(HaveKey("etcdcopybackupstasks.druid.gardener.cloud"))
 		})
 	})
 })

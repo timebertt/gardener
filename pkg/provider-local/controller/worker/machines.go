@@ -16,14 +16,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/gardener/gardener/extensions/pkg/controller/worker"
 	genericworkeractuator "github.com/gardener/gardener/extensions/pkg/controller/worker/genericactuator"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	localv1alpha1 "github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 	"github.com/gardener/gardener/pkg/provider-local/controller/infrastructure"
 	"github.com/gardener/gardener/pkg/provider-local/local"
@@ -39,13 +38,13 @@ func (w *workerDelegate) DeployMachineClasses(ctx context.Context) error {
 	}
 
 	for _, obj := range w.machineClassSecrets {
-		if err := w.client.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
+		if err := w.runtimeClient.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
 			return fmt.Errorf("failed to apply machine class secret %s: %w", obj.GetName(), err)
 		}
 	}
 
 	for _, obj := range w.machineClasses {
-		if err := w.client.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
+		if err := w.runtimeClient.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
 			return fmt.Errorf("failed to apply machine class %s: %w", obj.GetName(), err)
 		}
 	}
@@ -84,115 +83,135 @@ func (w *workerDelegate) generateMachineConfig(ctx context.Context) error {
 		}
 		machineImages = appendMachineImage(machineImages, *image, w.cluster.CloudProfile.Spec.MachineCapabilities)
 
-		userData, err := worker.FetchUserData(ctx, w.client, w.worker.Namespace, pool)
+		userData, err := worker.FetchUserData(ctx, w.runtimeClient, w.worker.Namespace, pool)
 		if err != nil {
 			return err
 		}
 
-		var (
-			deploymentName = fmt.Sprintf("%s-%s", w.worker.Namespace, pool.Name)
-			className      = fmt.Sprintf("%s-%s", deploymentName, workerPoolHash)
-		)
-
-		machineClassSecrets = append(machineClassSecrets, &corev1.Secret{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: corev1.SchemeGroupVersion.String(),
-				Kind:       "Secret",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      className,
-				Namespace: w.worker.Namespace,
-				Labels:    map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.GardenPurposeMachineClass},
-			},
-			Type: corev1.SecretTypeOpaque,
-			Data: map[string][]byte{"userData": userData},
-		})
-
-		providerConfig := map[string]interface{}{
-			"image": image.Image,
+		zones := pool.Zones
+		if len(pool.Zones) == 0 {
+			zones = []string{w.worker.Spec.Region} // fallback zone if no zones are defined as this field must be filled for MCM to work.
 		}
+		zoneLen := int32(len(zones)) // #nosec: G115 - We do check if pool Zones exceeds max_int32.
+		for zoneIndex, zone := range zones {
+			var (
+				zoneIdx        = int32(zoneIndex) // #nosec: G115 - We do check if pool Zones exceeds max_int32.
+				deploymentName = fmt.Sprintf("%s-%s-z%d", w.cluster.Shoot.Status.TechnicalID, pool.Name, zoneIdx+1)
+				className      = fmt.Sprintf("%s-%s", deploymentName, workerPoolHash)
+			)
 
-		for _, ipFamily := range w.cluster.Shoot.Spec.Networking.IPFamilies {
-			key := "ipPoolNameV4"
-			if ipFamily == gardencorev1beta1.IPFamilyIPv6 {
-				key = "ipPoolNameV6"
+			machineClassSecrets = append(machineClassSecrets, &corev1.Secret{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: corev1.SchemeGroupVersion.String(),
+					Kind:       "Secret",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      className,
+					Namespace: w.worker.Namespace,
+					Labels:    map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.GardenPurposeMachineClass},
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{"userData": userData},
+			})
+
+			providerConfig := map[string]any{
+				"image":     image.Image,
+				"namespace": w.cluster.Shoot.Status.TechnicalID,
 			}
 
-			providerConfig[key] = infrastructure.IPPoolName(w.worker.Namespace, string(ipFamily))
-		}
+			for _, ipFamily := range w.cluster.Shoot.Spec.Networking.IPFamilies {
+				key := "ipPoolNameV4"
+				if ipFamily == gardencorev1beta1.IPFamilyIPv6 {
+					key = "ipPoolNameV6"
+				}
 
-		providerConfigBytes, err := json.Marshal(providerConfig)
-		if err != nil {
-			return err
-		}
+				providerConfig[key] = infrastructure.IPPoolName(w.cluster.Shoot.Status.TechnicalID, string(ipFamily))
+			}
 
-		machineClasses = append(machineClasses, &machinev1alpha1.MachineClass{
-			TypeMeta: metav1.TypeMeta{
-				APIVersion: machinev1alpha1.SchemeGroupVersion.String(),
-				Kind:       "MachineClass",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      className,
-				Namespace: w.worker.Namespace,
-			},
-			SecretRef: &corev1.SecretReference{
-				Name:      className,
-				Namespace: w.worker.Namespace,
-			},
-			CredentialsSecretRef: &corev1.SecretReference{
-				Name:      w.worker.Spec.SecretRef.Name,
-				Namespace: w.worker.Spec.SecretRef.Namespace,
-			},
-			Provider:     local.Type,
-			ProviderSpec: runtime.RawExtension{Raw: providerConfigBytes},
-		})
+			providerConfigBytes, err := json.Marshal(providerConfig)
+			if err != nil {
+				return err
+			}
 
-		updateConfiguration := machinev1alpha1.UpdateConfiguration{
-			MaxUnavailable: &pool.MaxUnavailable,
-			MaxSurge:       &pool.MaxSurge,
-		}
+			arch := ptr.Deref(pool.Architecture, v1beta1constants.ArchitectureAMD64)
 
-		machineDeploymentStrategy := machinev1alpha1.MachineDeploymentStrategy{
-			Type: machinev1alpha1.RollingUpdateMachineDeploymentStrategyType,
-			RollingUpdate: &machinev1alpha1.RollingUpdateMachineDeployment{
-				UpdateConfiguration: updateConfiguration,
-			},
-		}
-
-		switch ptr.Deref(pool.UpdateStrategy, "") {
-		case gardencorev1beta1.AutoInPlaceUpdate:
-			machineDeploymentStrategy = machinev1alpha1.MachineDeploymentStrategy{
-				Type: machinev1alpha1.InPlaceUpdateMachineDeploymentStrategyType,
-				InPlaceUpdate: &machinev1alpha1.InPlaceUpdateMachineDeployment{
-					UpdateConfiguration: updateConfiguration,
-					OrchestrationType:   machinev1alpha1.OrchestrationTypeAuto,
+			machineClass := &machinev1alpha1.MachineClass{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: machinev1alpha1.SchemeGroupVersion.String(),
+					Kind:       "MachineClass",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      className,
+					Namespace: w.worker.Namespace,
+				},
+				SecretRef: &corev1.SecretReference{
+					Name:      className,
+					Namespace: w.worker.Namespace,
+				},
+				CredentialsSecretRef: &corev1.SecretReference{
+					Name:      w.worker.Spec.SecretRef.Name,
+					Namespace: w.worker.Spec.SecretRef.Namespace,
+				},
+				Provider:     local.Type,
+				ProviderSpec: runtime.RawExtension{Raw: providerConfigBytes},
+				NodeTemplate: &machinev1alpha1.NodeTemplate{
+					Capacity:        pool.NodeTemplate.Capacity,
+					VirtualCapacity: pool.NodeTemplate.VirtualCapacity,
+					InstanceType:    pool.MachineType,
+					Region:          w.worker.Spec.Region,
+					Zone:            zone,
+					Architecture:    &arch,
 				},
 			}
-		case gardencorev1beta1.ManualInPlaceUpdate:
-			machineDeploymentStrategy = machinev1alpha1.MachineDeploymentStrategy{
-				Type: machinev1alpha1.InPlaceUpdateMachineDeploymentStrategyType,
-				InPlaceUpdate: &machinev1alpha1.InPlaceUpdateMachineDeployment{
+			machineClasses = append(machineClasses, machineClass)
+
+			updateConfiguration := machinev1alpha1.UpdateConfiguration{
+				MaxUnavailable: &pool.MaxUnavailable,
+				MaxSurge:       &pool.MaxSurge,
+			}
+
+			machineDeploymentStrategy := machinev1alpha1.MachineDeploymentStrategy{
+				Type: machinev1alpha1.RollingUpdateMachineDeploymentStrategyType,
+				RollingUpdate: &machinev1alpha1.RollingUpdateMachineDeployment{
 					UpdateConfiguration: updateConfiguration,
-					OrchestrationType:   machinev1alpha1.OrchestrationTypeManual,
 				},
 			}
-		}
 
-		machineDeployments = append(machineDeployments, worker.MachineDeployment{
-			Name:                         deploymentName,
-			ClassName:                    className,
-			SecretName:                   className,
-			Minimum:                      pool.Minimum,
-			Maximum:                      pool.Maximum,
-			Strategy:                     machineDeploymentStrategy,
-			PoolName:                     pool.Name,
-			Priority:                     pool.Priority,
-			Labels:                       pool.Labels,
-			Annotations:                  pool.Annotations,
-			Taints:                       pool.Taints,
-			MachineConfiguration:         genericworkeractuator.ReadMachineConfiguration(pool),
-			ClusterAutoscalerAnnotations: extensionsv1alpha1helper.GetMachineDeploymentClusterAutoscalerAnnotations(pool.ClusterAutoscaler),
-		})
+			switch ptr.Deref(pool.UpdateStrategy, "") {
+			case gardencorev1beta1.AutoInPlaceUpdate:
+				machineDeploymentStrategy = machinev1alpha1.MachineDeploymentStrategy{
+					Type: machinev1alpha1.InPlaceUpdateMachineDeploymentStrategyType,
+					InPlaceUpdate: &machinev1alpha1.InPlaceUpdateMachineDeployment{
+						UpdateConfiguration: updateConfiguration,
+						OrchestrationType:   machinev1alpha1.OrchestrationTypeAuto,
+					},
+				}
+			case gardencorev1beta1.ManualInPlaceUpdate:
+				machineDeploymentStrategy = machinev1alpha1.MachineDeploymentStrategy{
+					Type: machinev1alpha1.InPlaceUpdateMachineDeploymentStrategyType,
+					InPlaceUpdate: &machinev1alpha1.InPlaceUpdateMachineDeployment{
+						UpdateConfiguration: updateConfiguration,
+						OrchestrationType:   machinev1alpha1.OrchestrationTypeManual,
+					},
+				}
+			}
+
+			machineDeployments = append(machineDeployments, worker.MachineDeployment{
+				Name:                         deploymentName,
+				ClassName:                    className,
+				SecretName:                   className,
+				Minimum:                      worker.DistributeOverZones(zoneIdx, pool.Minimum, zoneLen),
+				Maximum:                      worker.DistributeOverZones(zoneIdx, pool.Maximum, zoneLen),
+				Strategy:                     machineDeploymentStrategy,
+				PoolName:                     pool.Name,
+				Priority:                     pool.Priority,
+				Labels:                       pool.Labels,
+				Annotations:                  pool.Annotations,
+				Taints:                       pool.Taints,
+				MachineConfiguration:         genericworkeractuator.ReadMachineConfiguration(pool),
+				ClusterAutoscalerAnnotations: extensionsv1alpha1helper.GetMachineDeploymentClusterAutoscalerAnnotations(pool.ClusterAutoscaler),
+			})
+		}
 	}
 
 	w.machineClassSecrets = machineClassSecrets
@@ -229,6 +248,11 @@ func (w *workerDelegate) PreReconcileHook(ctx context.Context) error {
 				Resources: []string{"services"},
 				Verbs:     []string{"create", "patch", "delete"},
 			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
 		},
 	}
 
@@ -254,11 +278,12 @@ func (w *workerDelegate) PreReconcileHook(ctx context.Context) error {
 	}
 
 	for _, obj := range []client.Object{role, roleBinding} {
-		if err := controllerutil.SetControllerReference(w.worker, obj, w.client.Scheme()); err != nil {
-			return fmt.Errorf("error setting controller reference on %T %s: %w", obj, obj.GetName(), err)
-		}
-
-		if err := w.client.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
+		// We cannot set an ownerReference here, because the Role/RoleBinding might live in another cluster than the Worker.
+		// E.g., this is the case for `gardenadm bootstrap`, where the Worker lives in the self-hosted shoot cluster and the
+		// machine pods and thus also the Role/RoleBinding live in the bootstrap kind cluster.
+		// On the other hand, not setting an ownerReference is not a problem, because when the worker is deleted, the
+		// namespace will also be deleted, automatically cleaning up these objects as well.
+		if err := w.providerClient.Patch(ctx, obj, client.Apply, local.FieldOwner, client.ForceOwnership); err != nil {
 			return fmt.Errorf("error applying %T %s: %w", obj, obj.GetName(), err)
 		}
 	}
@@ -271,7 +296,7 @@ func (w *workerDelegate) PostReconcileHook(ctx context.Context) error {
 	// Overwrite only if Machine Image Version is not present to prevent overwriting the new version after an in-place update.
 
 	podList := &corev1.PodList{}
-	if err := w.client.List(ctx, podList, client.InNamespace(w.worker.Namespace), client.MatchingLabels{
+	if err := w.providerClient.List(ctx, podList, client.InNamespace(w.cluster.Shoot.Status.TechnicalID), client.MatchingLabels{
 		"app":              "machine",
 		"machine-provider": "local",
 	}); err != nil {

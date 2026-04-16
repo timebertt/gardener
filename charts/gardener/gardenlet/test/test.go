@@ -8,12 +8,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
@@ -28,11 +30,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -173,7 +175,7 @@ func getGardenletClusterRole(labels map[string]string) *rbacv1.ClusterRole {
 				Verbs:         []string{"delete"},
 			},
 			{
-				APIGroups: []string{""},
+				APIGroups: []string{"", eventsv1.GroupName},
 				Resources: []string{"events"},
 				Verbs:     []string{"get", "list", "create", "patch", "update"},
 			},
@@ -193,6 +195,7 @@ func getGardenletClusterRole(labels map[string]string) *rbacv1.ClusterRole {
 				ResourceNames: []string{
 					"etcds.druid.gardener.cloud",
 					"etcdcopybackupstasks.druid.gardener.cloud",
+					"etcdopstasks.druid.gardener.cloud",
 					"destinationrules.networking.istio.io",
 					"envoyfilters.networking.istio.io",
 					"gateways.networking.istio.io",
@@ -247,15 +250,18 @@ func getGardenletClusterRole(labels map[string]string) *rbacv1.ClusterRole {
 					"clusters.extensions.gardener.cloud",
 					"controlplanes.extensions.gardener.cloud",
 					"networks.extensions.gardener.cloud",
+					"selfhostedshootexposures.extensions.gardener.cloud",
 					"verticalpodautoscalers.autoscaling.k8s.io",
 					"verticalpodautoscalercheckpoints.autoscaling.k8s.io",
 					"perses.perses.dev",
 					"persesdashboards.perses.dev",
 					"persesdatasources.perses.dev",
+					"persesglobaldatasources.perses.dev",
 					"opentelemetrycollectors.opentelemetry.io",
 					"targetallocators.opentelemetry.io",
 					"opampbridges.opentelemetry.io",
 					"instrumentations.opentelemetry.io",
+					"vlsingles.operator.victoriametrics.com",
 				},
 				Verbs: []string{"delete"},
 			},
@@ -276,29 +282,23 @@ func getGardenletClusterRole(labels map[string]string) *rbacv1.ClusterRole {
 			},
 			{
 				APIGroups: []string{"druid.gardener.cloud"},
-				Resources: []string{"etcds", "etcdcopybackupstasks"},
+				Resources: []string{"etcds", "etcdcopybackupstasks", "etcdopstasks"},
 				Verbs:     []string{"create", "delete", "get", "list", "watch", "patch", "update"},
 			},
 			{
 				APIGroups: []string{"extensions.gardener.cloud"},
-				Resources: []string{"backupbuckets", "backupentries", "bastions", "clusters", "containerruntimes", "controlplanes", "dnsrecords", "extensions", "infrastructures", "networks", "operatingsystemconfigs", "workers"},
+				Resources: []string{"backupbuckets", "backupentries", "bastions", "clusters", "containerruntimes", "controlplanes", "dnsrecords", "extensions", "infrastructures", "networks", "operatingsystemconfigs", "selfhostedshootexposures", "workers"},
 				Verbs:     []string{"create", "delete", "get", "list", "watch", "patch", "update"},
 			},
 			{
 				APIGroups: []string{"extensions.gardener.cloud"},
-				Resources: []string{"backupbuckets/status", "backupentries/status", "containerruntimes/status", "controlplanes/status", "dnsrecords/status", "extensions/status", "infrastructures/status", "networks/status", "operatingsystemconfigs/status", "workers/status"},
+				Resources: []string{"backupbuckets/status", "backupentries/status", "containerruntimes/status", "controlplanes/status", "dnsrecords/status", "extensions/status", "infrastructures/status", "networks/status", "operatingsystemconfigs/status", "selfhostedshootexposures/status", "workers/status"},
 				Verbs:     []string{"patch", "update"},
 			},
 			{
 				APIGroups: []string{"resources.gardener.cloud"},
 				Resources: []string{"managedresources"},
 				Verbs:     []string{"create", "delete", "deletecollection", "get", "list", "watch", "patch", "update"},
-			},
-			{
-				// TODO(vpnachev): Drop patch managedresources/status permissions after v1.133.0 is released.
-				APIGroups: []string{"resources.gardener.cloud"},
-				Resources: []string{"managedresources/status"},
-				Verbs:     []string{"patch"},
 			},
 			{
 				APIGroups: []string{"networking.k8s.io"},
@@ -369,8 +369,13 @@ func getGardenletClusterRole(labels map[string]string) *rbacv1.ClusterRole {
 			},
 			{
 				APIGroups: []string{"monitoring.coreos.com"},
-				Resources: []string{"servicemonitors", "scrapeconfigs", "prometheusrules"},
+				Resources: []string{"servicemonitors", "scrapeconfigs", "prometheusrules", "prometheuses"},
 				Verbs:     []string{"list", "watch", "get", "create", "patch", "update", "delete"},
+			},
+			{
+				APIGroups: []string{"operator.victoriametrics.com"},
+				Resources: []string{"vlsingles"},
+				Verbs:     []string{"get", "list", "watch"},
 			},
 		},
 	}
@@ -771,7 +776,8 @@ func ComputeExpectedGardenletConfiguration(
 				ConcurrentSyncs: &five,
 			},
 			TokenRequestorWorkloadIdentity: &gardenletconfigv1alpha1.TokenRequestorWorkloadIdentityControllerConfiguration{
-				ConcurrentSyncs: &five,
+				ConcurrentSyncs:         &five,
+				TokenExpirationDuration: &metav1.Duration{Duration: 6 * time.Hour},
 			},
 			VPAEvictionRequirements: &gardenletconfigv1alpha1.VPAEvictionRequirementsControllerConfiguration{
 				ConcurrentSyncs: &five,
@@ -807,6 +813,12 @@ func ComputeExpectedGardenletConfiguration(
 				Enabled: ptr.To(false),
 				Garden: &gardenletconfigv1alpha1.GardenVali{
 					Storage: &gardenletconfigv1alpha1.DefaultCentralValiStorage,
+				},
+			},
+			VictoriaLogs: &gardenletconfigv1alpha1.VictoriaLogs{
+				Enabled: ptr.To(false),
+				Garden: &gardenletconfigv1alpha1.GardenVictoriaLogs{
+					Storage: &gardenletconfigv1alpha1.DefaultCentralVictoriaLogsStorage,
 				},
 			},
 			ShootEventLogging: &gardenletconfigv1alpha1.ShootEventLogging{
@@ -900,11 +912,11 @@ func VerifyGardenletComponentConfigConfigMap(
 		}
 		list := &corev1.ConfigMapList{}
 		Expect(c.List(ctx, list)).ToNot(HaveOccurred())
-		cmNames := ""
+		var cmNames strings.Builder
 		for _, cm := range list.Items {
-			cmNames += " " + cm.Name
+			cmNames.WriteString(" " + cm.Name)
 		}
-		ginkgo.Fail("Could not find unique gardenlet configmap " + uniqueName + ", possibly the unique name has changed. Found:" + cmNames)
+		ginkgo.Fail("Could not find unique gardenlet configmap " + uniqueName + ", possibly the unique name has changed. Found:" + cmNames.String())
 	}
 
 	Expect(componentConfigCm.Labels).To(DeepEqual(expectedComponentConfigCm.Labels))
@@ -1119,6 +1131,10 @@ func ComputeExpectedGardenletDeploymentSpec(
 
 		if deploymentConfiguration.PodAnnotations != nil {
 			deployment.Template.Annotations = utils.MergeStringMaps(deployment.Template.Annotations, deploymentConfiguration.PodAnnotations)
+		}
+
+		if deploymentConfiguration.Tolerations != nil {
+			deployment.Template.Spec.Tolerations = append(deployment.Template.Spec.Tolerations, deploymentConfiguration.Tolerations...)
 		}
 
 		if deploymentConfiguration.Resources != nil {

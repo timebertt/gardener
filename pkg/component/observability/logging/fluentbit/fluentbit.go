@@ -6,7 +6,10 @@ package fluentbit
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	fluentbitv1alpha2 "github.com/fluent/fluent-operator/v3/apis/fluentbit/v1alpha2"
@@ -27,6 +30,7 @@ import (
 	valiconstants "github.com/gardener/gardener/pkg/component/observability/logging/vali/constants"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/aggregate"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
@@ -35,6 +39,15 @@ import (
 const (
 	managedResourceName = "fluent-bit"
 	fluentBitConfigName = "fluent-bit-config"
+)
+
+var (
+	//go:embed lua/modify_severity.lua
+	modify_severity_lua string
+	//go:embed lua/add_tag_to_record.lua
+	add_tag_to_record_lua string
+	//go:embed lua/add_time_and_systemd_attr.lua
+	add_time_and_systemd_attr_lua string
 )
 
 // Values is the values for fluent-bit configurations
@@ -74,65 +87,14 @@ func (f *fluentBit) Deploy(ctx context.Context) error {
 
 		configMap = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      v1beta1constants.DaemonSetNameFluentBit + "-lua-config",
+				Name:      v1beta1constants.ConfigMapNameFluentBitLua,
 				Namespace: f.namespace,
 			},
-			// spellchecker:off
 			Data: map[string]string{
-				"modify_severity.lua": `
-function cb_modify(tag, timestamp, record)
-  local unified_severity = cb_modify_unify_severity(record)
-
-  if not unified_severity then
-    return 0, 0, 0
-  end
-
-  return 1, timestamp, record
-end
-
-function cb_modify_unify_severity(record)
-  local modified = false
-  local severity = record["severity"]
-  if severity == nil or severity == "" then
-	return modified
-  end
-
-  severity = trim(severity):upper()
-
-  if severity == "I" or severity == "INF" or severity == "INFO" then
-    record["severity"] = "INFO"
-    modified = true
-  elseif severity == "W" or severity == "WRN" or severity == "WARN" or severity == "WARNING" then
-    record["severity"] = "WARN"
-    modified = true
-  elseif severity == "E" or severity == "ERR" or severity == "ERROR" or severity == "EROR" then
-    record["severity"] = "ERR"
-    modified = true
-  elseif severity == "D" or severity == "DBG" or severity == "DEBUG" then
-    record["severity"] = "DBG"
-    modified = true
-  elseif severity == "N" or severity == "NOTICE" then
-    record["severity"] = "NOTICE"
-    modified = true
-  elseif severity == "F" or severity == "FATAL" then
-    record["severity"] = "FATAL"
-    modified = true
-  end
-
-  return modified
-end
-
-function trim(s)
-  return (s:gsub("^%s*(.-)%s*$", "%1"))
-end`,
-				"add_tag_to_record.lua": `
-function add_tag_to_record(tag, timestamp, record)
-  record["tag"] = tag
-  return 1, timestamp, record
-end
-`,
+				"modify_severity.lua":           modify_severity_lua,
+				"add_tag_to_record.lua":         add_tag_to_record_lua,
+				"add_time_and_systemd_attr.lua": add_time_and_systemd_attr_lua,
 			},
-			// spellchecker:on
 		}
 		serviceMonitor = &monitoringv1.ServiceMonitor{
 			ObjectMeta: monitoringutils.ConfigObjectMeta("fluent-bit", f.namespace, aggregate.Label),
@@ -143,7 +105,7 @@ end
 					RelabelConfigs: []monitoringv1.RelabelConfig{
 						{
 							TargetLabel: "__metrics_path__",
-							Replacement: ptr.To("/api/v1/metrics/prometheus"),
+							Replacement: ptr.To("/api/v2/metrics/prometheus"),
 						},
 						{
 							Action: "labelmap",
@@ -160,6 +122,10 @@ end
 						"fluentbit_output_retries_failed_total",
 						"fluentbit_filter_add_records_total",
 						"fluentbit_filter_drop_records_total",
+						"fluentbit_storage_mem_chunks",
+						"fluentbit_storage_fs_chunks",
+						"fluentbit_storage_fs_chunks_up",
+						"fluentbit_storage_fs_chunks_down",
 					),
 				}},
 			},
@@ -184,13 +150,47 @@ end
 						},
 					},
 					MetricRelabelConfigs: monitoringutils.StandardMetricRelabelConfig(
-						"valitail_dropped_entries_total",
-						"fluentbit_vali_gardener_errors_total",
-						"fluentbit_vali_gardener_logs_without_metadata_total",
-						"fluentbit_vali_gardener_incoming_logs_total",
-						"fluentbit_vali_gardener_incoming_logs_with_endpoint_total",
-						"fluentbit_vali_gardener_forwarded_logs_total",
-						"fluentbit_vali_gardener_dropped_logs_total",
+						"fluentbit_gardener_buffered_logs",
+						"fluentbit_gardener_incoming_logs_total",
+						"fluentbit_gardener_output_client_logs_total",
+						"fluentbit_gardener_clients_total",
+						"fluentbit_gardener_errors_total",
+						"fluentbit_gardener_dropped_logs_total",
+						"fluentbit_gardener_dque_size",
+						"fluentbit_gardener_exported_client_logs_total",
+						"fluentbit_gardener_throttled_logs_total",
+						"output_plugin_otel_sdk_exporter_log_exported_total",
+						"output_plugin_otel_sdk_log_created_total",
+						"output_plugin_otel_sdk_exporter_log_inflight",
+						"output_plugin_otel_sdk_exporter_operation_duration_seconds_bucket",
+						"output_plugin_otel_sdk_exporter_operation_duration_seconds_sum",
+						"output_plugin_otel_sdk_exporter_operation_duration_seconds_count",
+						"output_plugin_rpc_client_call_duration_seconds_bucket",
+						"output_plugin_rpc_client_call_duration_seconds_sum",
+						"output_plugin_rpc_client_call_duration_seconds_count",
+						"output_plugin_rpc_client_request_size_bytes_bucket",
+						"output_plugin_rpc_client_request_size_bytes_sum",
+						"output_plugin_rpc_client_request_size_bytes_count",
+						"output_plugin_rpc_client_response_size_bytes_bucket",
+						"output_plugin_rpc_client_response_size_bytes_sum",
+						"output_plugin_rpc_client_response_size_bytes_count",
+						"process_cpu_seconds_total",
+						"process_resident_memory_bytes",
+						"process_virtual_memory_bytes",
+						"process_network_transmit_bytes_total",
+						"process_network_receive_bytes_total",
+						"process_virtual_memory_max_bytes",
+						"go_memstats_heap_alloc_bytes",
+						"go_memstats_heap_inuse_bytes",
+						"go_memstats_heap_idle_bytes",
+						"go_memstats_heap_objects",
+						"go_memstats_mallocs_total",
+						"go_memstats_frees_total",
+						"go_goroutines",
+						"go_gc_duration_seconds",
+						"go_gc_duration_seconds_sum",
+						"go_gc_duration_seconds_count",
+						"target_info",
 					),
 				}},
 			},
@@ -333,12 +333,27 @@ func (f *fluentBit) WaitCleanup(ctx context.Context) error {
 }
 
 func getLabels() map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		v1beta1constants.LabelApp:                             v1beta1constants.DaemonSetNameFluentBit,
 		v1beta1constants.LabelRole:                            v1beta1constants.LabelLogging,
 		v1beta1constants.GardenRole:                           v1beta1constants.GardenRoleLogging,
 		v1beta1constants.LabelNetworkPolicyToDNS:              v1beta1constants.LabelNetworkPolicyAllowed,
 		v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer: v1beta1constants.LabelNetworkPolicyAllowed,
+	}
+	return utils.MergeStringMaps(labels, getTargetNetworkPolicyLabels())
+}
+
+func getTargetNetworkPolicyLabels() map[string]string {
+	if slices.ContainsFunc(features.DefaultFeatureGate.KnownFeatures(), func(s string) bool {
+		return strings.HasPrefix(s, string(features.OpenTelemetryCollector)+"=")
+	}) && features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+		return map[string]string{
+			gardenerutils.NetworkPolicyLabel("opentelemetry-collector-collector", 4317):                    v1beta1constants.LabelNetworkPolicyAllowed,
+			"networking.resources.gardener.cloud/to-all-shoots-opentelemetry-collector-collector-tcp-4317": v1beta1constants.LabelNetworkPolicyAllowed,
+		}
+	}
+
+	return map[string]string{
 		gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort): v1beta1constants.LabelNetworkPolicyAllowed,
 		"networking.resources.gardener.cloud/to-all-shoots-logging-tcp-3100":                v1beta1constants.LabelNetworkPolicyAllowed,
 	}
@@ -352,18 +367,26 @@ func getCustomResourcesLabels() map[string]string {
 
 func (f *fluentBit) getFluentBit() *fluentbitv1alpha2.FluentBit {
 	annotations := map[string]string{
-		resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix + v1beta1constants.LabelNetworkPolicySeedScrapeTargets + resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"port":2020,"protocol":"TCP"},{"port":2021,"protocol":"TCP"}]`,
+		resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+			v1beta1constants.LabelNetworkPolicySeedScrapeTargets +
+			resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"port":2020,"protocol":"TCP"},{"port":2021,"protocol":"TCP"}]`,
 	}
 
 	return &fluentbitv1alpha2.FluentBit{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%v-%v", v1beta1constants.DaemonSetNameFluentBit, utils.ComputeSHA256Hex([]byte(fmt.Sprintf("%v%v", getLabels(), annotations)))[:5]),
+			Name:      fmt.Sprintf("%v-%v", v1beta1constants.DaemonSetNameFluentBit, utils.ComputeSHA256Hex(fmt.Appendf(nil, "%v%v", getLabels(), annotations))[:5]),
 			Namespace: f.namespace,
 			Labels:    getLabels(),
 		},
 		Spec: fluentbitv1alpha2.FluentBitSpec{
 			FluentBitConfigName: fluentBitConfigName,
-			Image:               f.values.Image,
+			EnvVars: []corev1.EnvVar{
+				{
+					Name:  "OTEL_GO_X_OBSERVABILITY",
+					Value: "true",
+				},
+			},
+			Image: f.values.Image,
 			Command: []string{
 				"/fluent-bit/bin/fluent-bit-watcher",
 				"-e",
@@ -384,7 +407,7 @@ func (f *fluentBit) getFluentBit() *fluentbitv1alpha2.FluentBit {
 			},
 			Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("650Mi"),
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
 				},
 				Requests: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("150m"),
@@ -407,8 +430,8 @@ func (f *fluentBit) getFluentBit() *fluentbitv1alpha2.FluentBit {
 						Port: intstr.FromInt32(2021),
 					},
 				},
-				PeriodSeconds:       300,
-				InitialDelaySeconds: 90,
+				PeriodSeconds:       60,
+				InitialDelaySeconds: 120,
 			},
 			Tolerations: []corev1.Toleration{
 				{
@@ -511,6 +534,15 @@ func (f *fluentBit) getClusterFluentBitConfig() *fluentbitv1alpha2.ClusterFluent
 				HttpServer:   ptr.To(true),
 				HttpListen:   "::",
 				HttpPort:     ptr.To[int32](2020),
+				Storage: &fluentbitv1alpha2.Storage{
+					Path:                      "/var/fluentbit/chunks",
+					Sync:                      "normal",
+					Metrics:                   "on",
+					Checksum:                  "off",
+					MaxChunksUp:               ptr.To[int64](200),
+					BacklogMemLimit:           "50M",
+					DeleteIrrecoverableChunks: "on",
+				},
 			},
 			InputSelector: metav1.LabelSelector{
 				MatchLabels: getCustomResourcesLabels(),

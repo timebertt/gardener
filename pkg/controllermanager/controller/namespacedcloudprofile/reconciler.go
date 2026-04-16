@@ -7,12 +7,12 @@ package namespacedcloudprofile
 import (
 	"context"
 	"fmt"
+	"slices"
 
-	"golang.org/x/exp/maps"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -20,11 +20,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/pkg/api"
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -34,7 +34,7 @@ import (
 type Reconciler struct {
 	Client   client.Client
 	Config   controllermanagerconfigv1alpha1.NamespacedCloudProfileControllerConfiguration
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // Reconcile performs the main reconciliation logic.
@@ -77,7 +77,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		}
 
 		message := fmt.Sprintf("Cannot delete NamespacedCloudProfile, because the following Shoots are still referencing it: %+v", associatedShoots)
-		r.Recorder.Event(namespacedCloudProfile, corev1.EventTypeNormal, v1beta1constants.EventResourceReferenced, message)
+		r.Recorder.Eventf(namespacedCloudProfile, nil, corev1.EventTypeNormal, v1beta1constants.EventResourceReferenced, gardencorev1beta1.EventActionReconcile, message)
 		return reconcile.Result{}, fmt.Errorf("%s", message)
 	}
 
@@ -216,20 +216,25 @@ func mergeMachineImageVersions(base, override gardencorev1beta1.MachineImageVers
 }
 
 func mergeDeep[T any](baseArr, override []T, keyFunc func(T) string, mergeFunc func(T, T) T, allowAdditional bool) []T {
-	existing := utils.CreateMapFromSlice(baseArr, keyFunc)
+	existing := utils.CreateOrderedMapFromSlice(baseArr, keyFunc)
 	for _, value := range override {
 		key := keyFunc(value)
-		if _, exists := existing[key]; !exists {
+		existingValue, exists := existing.Get(key)
+		if !exists {
 			if allowAdditional {
-				existing[key] = value
+				existing.Set(key, value)
 			}
 			continue
 		}
 		if mergeFunc != nil {
-			existing[key] = mergeFunc(existing[key], value)
+			existing.Set(key, mergeFunc(existingValue, value))
 		} else {
-			existing[key] = value
+			existing.Set(key, value)
 		}
 	}
-	return maps.Values(existing)
+	if res := slices.Collect(existing.Values()); res != nil {
+		return res
+	}
+	// If the merged result is empty, slices.Collect returns nil. Instead, return the baseArr as-is (which might be an empty slice but not nil).
+	return baseArr
 }

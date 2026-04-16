@@ -154,3 +154,10 @@ config.yaml: |
 gardener-operator-configmap-{{ include "operator.config.data" . | sha256sum | trunc 8 }}
 {{- end -}}
 
+{{- define "operator.inject-protected-label" -}}
+{{- $crd := . | fromYaml -}}
+{{- $existingLabels := default dict $crd.metadata.labels -}}
+{{- $newLabels := dict "gardener.cloud/deletion-protected" "true" -}}
+{{- $_ := set $crd.metadata "labels" (merge $newLabels $existingLabels) -}}
+{{ toYaml $crd }}
+{{- end -}}

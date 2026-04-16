@@ -14,18 +14,16 @@ VERSION="$(cat VERSION)"
 CLUSTER_NAME=""
 SEED_NAME=""
 
-ensure_glgc_resolves_to_localhost
-
 # copy_kubeconfig_from_kubeconfig_env_var copies the kubeconfig to appropriate location based on kind setup
 function copy_kubeconfig_from_kubeconfig_env_var() {
   case "$SHOOT_FAILURE_TOLERANCE_TYPE" in
   node)
     cp $KIND_KUBECONFIG dev-setup/gardenlet/components/kubeconfigs/seed-local/kubeconfig
-    cp $KIND_KUBECONFIG example/gardener-local/kind/multi-zone/kubeconfig
+    cp $KIND_KUBECONFIG dev-setup/kubeconfigs/runtime/kubeconfig
     ;;
   zone)
     cp $KIND_KUBECONFIG dev-setup/gardenlet/components/kubeconfigs/seed-local/kubeconfig
-    cp $KIND_KUBECONFIG example/gardener-local/kind/multi-zone/kubeconfig
+    cp $KIND_KUBECONFIG dev-setup/kubeconfigs/runtime/kubeconfig
     ;;
   *)
     cp $KUBECONFIG example/provider-local/seed-kind/base/kubeconfig
@@ -35,15 +33,21 @@ function copy_kubeconfig_from_kubeconfig_env_var() {
 }
 
 function gardener_up() {
+  # TODO(timebertt): remove sed and SKAFFOLD_DEFAULT_REPO override after v1.134 has been released
+  # see https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/13551/pull-gardener-e2e-kind-upgrade/1993794625793429504
+  sed -i 's|garden.local.gardener.cloud:5001|registry.local.gardener.cloud:5001|g' skaffold*.yaml
+  # TODO(LucaBernstein,timebertt): remove sed override after v1.135 has been released
+  # due to reverting the port of the local registry from 5000 to 5001 again: https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/13661/pull-gardener-e2e-kind-upgrade/2000609122042515456
+  sed -i 's|registry.local.gardener.cloud:5000|registry.local.gardener.cloud:5001|g' skaffold*.yaml
   case "$SHOOT_FAILURE_TOLERANCE_TYPE" in
   node)
-    make operator-seed-up
+    make operator-seed-up SKAFFOLD_DEFAULT_REPO=registry.local.gardener.cloud:5001
     ;;
   zone)
-    make operator-seed-up
+    make operator-seed-up SKAFFOLD_DEFAULT_REPO=registry.local.gardener.cloud:5001
     ;;
   *)
-    make gardener-up
+    make gardener-up SKAFFOLD_DEFAULT_REPO=registry.local.gardener.cloud:5001
     ;;
   esac
 }
@@ -93,70 +97,31 @@ function kind_down() {
 function install_previous_release() {
   pushd $GARDENER_RELEASE_DOWNLOAD_PATH/gardener-releases/$GARDENER_PREVIOUS_RELEASE >/dev/null
   copy_kubeconfig_from_kubeconfig_env_var
+  configure_node_mirror_new_local_registry
+  patch_helmregistry_registry_url_port
   gardener_up
-  migrate_secretbinding_secret_ref_namespace
-  migrate_credentialsbinding_name
   popd >/dev/null
 }
 
-# TODO(rfranzke): Remove this after v1.121 has been released.
-# See https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/12213/pull-gardener-e2e-kind-ha-single-zone-upgrade/1928362346820931584
-# and https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/12213/pull-gardener-e2e-kind-upgrade/1928362357759676416#1:build-log.txt%3A1255.
-function migrate_secretbinding_secret_ref_namespace() {
-  if [[ ! -f "example/provider-local/garden/base/secretbinding.yaml" ]]; then
-    return
-  fi
-
-  kubectl -n garden-local delete secretbinding local --ignore-not-found
-  cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: local
-  namespace: garden-local
-type: Opaque
----
-apiVersion: core.gardener.cloud/v1beta1
-kind: SecretBinding
-metadata:
-  name: local
-  namespace: garden-local
-provider:
-  type: local
-secretRef:
-  name: local
-EOF
+# TODO(LucaBernstein,timebertt): Remove this after v1.135 has been released.
+# See https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/13551/pull-gardener-e2e-kind-upgrade/1994379234188988416
+# and https://gcsweb.prow.gardener.cloud/gcs/gardener-prow/pr-logs/pull/gardener_gardener/13551/pull-gardener-e2e-kind-upgrade/1994379234188988416/artifacts/shoot--local--e2e-upgrade/machine-shoot--local--e2e-upgrade-local-68bbd-8wwvp/journal.log
+function configure_node_mirror_new_local_registry() {
+  # Get the directory of the new gardener version from the directory stack
+  # (the original directory of the job before doing pushd)
+  next_version_dir="$(dirs -l +1)"
+  # copy the new registry mirror config in the node image to the previous version's source code
+  # this is necessary because we already push the images to the new local registry (see the SKAFFOLD_DEFAULT_REPO hack above)
+  # and need to configure containerd to use HTTP for pulling from the local registry
+  cp "$next_version_dir/pkg/provider-local/node/Dockerfile" "$PWD/pkg/provider-local/node"
+  cp -r "$next_version_dir/pkg/provider-local/node/containerd/registry.local.gardener.cloud_5001" "$PWD/pkg/provider-local/node/containerd"
 }
 
-# TODO(vpnachev): Remove this after v1.133 has been released.
-# See https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/13491/pull-gardener-e2e-kind-upgrade/1991099554581188608#1:build-log.txt%3A1418
-function migrate_credentialsbinding_name() {
-  if [[ $(kubectl -n garden-local get --ignore-not-found credentialsbinding local -o jsonpath='{.credentialsRef.kind}') == "Secret" ]]; then
-    return
-  fi
-
-  kubectl -n garden-local delete credentialsbinding local --ignore-not-found
-  cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: local
-  namespace: garden-local
-type: Opaque
----
-apiVersion: security.gardener.cloud/v1alpha1
-kind: CredentialsBinding
-metadata:
-  name: local
-  namespace: garden-local
-credentialsRef:
-  apiVersion: v1
-  kind: Secret
-  name: local
-  namespace: garden-local
-provider:
-  type: local
-EOF
+# TODO(LucaBernstein): remove this after v1.135 has been released.
+# To avoid issues in the upgrade test where the registry is already listening on port 5001 instead of 5000, but the helmregistry only disables tls for registry on port 5000.
+# see: https://prow.gardener.cloud/view/gs/gardener-prow/pr-logs/pull/gardener_gardener/13661/pull-gardener-e2e-kind-upgrade/2000837721429381120
+function patch_helmregistry_registry_url_port() {
+  sed -i 's|registry.local.gardener.cloud:5000|registry.local.gardener.cloud:5001|g' "$PWD/pkg/utils/oci/helmregistry.go"
 }
 
 function upgrade_to_next_release() {
@@ -244,12 +209,12 @@ function run_post_upgrade_test() {
   make "$test_command" GARDENER_PREVIOUS_RELEASE="$GARDENER_PREVIOUS_RELEASE" GARDENER_NEXT_RELEASE="$GARDENER_NEXT_RELEASE"
 }
 
-# TODO(rfranzke): Remove this after v1.122 has been released.
+# TODO(rfranzke): Remove this after legacy helm-based dev setup has been dropped.
 if [[ "$SHOOT_FAILURE_TOLERANCE_TYPE" == "zone" ]] || [[ "$SHOOT_FAILURE_TOLERANCE_TYPE" == "node" ]]; then
   echo "WARNING: The Gardener upgrade tests for the zone/node failure tolerance types are not executed in this release because the dev/e2e test setup is currently reworked."
   echo "See https://github.com/gardener/gardener/issues/11958 for more information."
   echo "Skipping the tests."
-  echo "After v1.122 has been released, this early exit can be removed again (TODO(rfranzke))."
+  echo "After the rework has been finished, this early exit can be removed again (TODO(rfranzke))."
   exit 0
 fi
 
@@ -268,7 +233,10 @@ kind_up
 # export all container logs and events after test execution
 trap "
   ( rm -rf "$GARDENER_RELEASE_DOWNLOAD_PATH/gardener-releases" )
+  ( export_artifacts_host_services; export_artifacts_infra )
   ( export_artifacts "$CLUSTER_NAME" )
+  ( export KUBECONFIG=$GARDENER_LOCAL_KUBECONFIG; export cluster_name='virtual-garden'; export_resource_yamls_for gardenlet seeds shoots; export_events_for_shoots )
+  ( gardener_down )
   ( kind_down )
 " EXIT
 
@@ -296,5 +264,3 @@ sleep 60
 
 echo "Running gardener post-upgrade tests"
 run_post_upgrade_test
-
-gardener_down

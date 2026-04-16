@@ -23,13 +23,14 @@
       // Generic detection for pod-like image specifications.
       customType: 'regex',
       managerFilePatterns: [
+        '/^.github/workflows/.+\\.yaml$/',
         '/^example/.+\\.yaml$/',
         '/^hack/.+\\.yaml$/',
         '/^\\.test-defs/.+\\.yaml$/',
         '/^charts/.+\\.yaml$/',
       ],
       matchStrings: [
-        'image: ["|\']?(?<depName>.*?):(?<currentValue>.*?)["|\']?\\s',
+        '["|\']?image["|\']?: ["|\']?(?<depName>.*?):(?<currentValue>.*?)["|\']?\\s',
       ],
       datasourceTemplate: 'docker',
     },
@@ -113,17 +114,18 @@
       ],
       postUpgradeTasks: {
         commands: [
-          'make generate MODE=sequential',
+          '/bin/bash -c "PATH=$PATH:$(go env GOROOT)/bin make generate MODE=sequential"',
         ],
         executionMode: 'branch',
       },
       matchPackageNames: [
-        '/.+/api/.+/',
-        '/.+/apis/.+/',
+        '/.+/api(/.+|$)/',
+        '/.+/apis(/.+|$)/',
         '/.*gardener/etcd-druid$/',
         '/.*gardener/machine-controller-manager$/',
         '/.*gardener/terminal-controller-manager$/',
         '/.*open-telemetry/opentelemetry-operator$/',
+        '/sigs\\.k8s\\.io/controller-tools/',
       ],
     },
     {
@@ -254,7 +256,8 @@
         'github-releases',
       ],
       matchPackageNames: [
-        '/.*?gardener/dependency-watchdog$/',
+        '/github\\.com/gardener/dependency-watchdog/',
+        '/gardener/dependency-watchdog/',
       ],
     },
     {
@@ -268,6 +271,19 @@
       matchPackageNames: [
         'github.com/prometheus/blackbox_exporter',
         'quay.io/prometheus/blackbox-exporter',
+      ],
+    },
+    {
+      // Group Perses operator updates in one PR.
+      groupName: 'perses-operator',
+      matchDatasources: [
+        'docker',
+        'go',
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'github.com/perses/perses-operator',
+        'perses/perses-operator',
       ],
     },
     {
@@ -302,7 +318,7 @@
       postUpgradeTasks: {
         commands: [
           'go install github.com/mikefarah/yq/v4@latest',
-          'bash -c "yq -i \'(.images[] | select(.sourceRepository == \\"github.com/envoyproxy/envoy\\") | key) as \\$imagePos | .images[\\$imagePos].tag = \\"distroless-{{{newValue}}}\\"\' imagevector/containers.yaml"',
+          'bash -c "yq -i \'(.images[] | select(.sourceRepository == \\"github.com/envoyproxy/envoy\\")).tag = \\"distroless-{{{newValue}}}\\"\' imagevector/containers.yaml"',
         ],
         executionMode: 'update',
       },
@@ -353,7 +369,7 @@
         'minor',
       ],
       matchFileNames: [
-        'hack/tools/image/variants\\.yaml',
+        '\\.github/workflows/golang-test-images\\.yaml',
       ],
       enabled: false,
     },
@@ -412,7 +428,7 @@
       ],
       enabled: false,
       matchPackageNames: [
-        '/quay.io/coreos/etcd/',
+        '/gcr.io/etcd-development/etcd/',
       ],
     },
     {
@@ -482,18 +498,6 @@
       enabled: false,
     },
     {
-      // TODO(marc1404): Remove when support for Kubernetes v1.27 is dropped.
-      // Restrict updates of ingress-nginx/controller-chroot@v1.11.x for Kubernetes v1.27 to stay below v1.12.0.
-      matchFileNames: [
-        'imagevector/containers.yaml',
-      ],
-      matchPackageNames: [
-        'registry.k8s.io/ingress-nginx/controller-chroot',
-      ],
-      matchCurrentValue: 'v1.11.*',
-      allowedVersions: '<v1.12.0',
-    },
-    {
       // TODO(marc1404): Remove when supported for containerd v1 is dropped or the following issue is resolved: https://github.com/gardener/gardener/issues/12600
       // Disable major updates of go-toml to stay on v1.x.x.
       // Related issue: https://github.com/gardener/gardener/issues/12600
@@ -514,9 +518,17 @@
         'cmd/**',
         'extensions/**',
         'pkg/**',
+        '!pkg/apis/go.mod',
         'plugin/**',
         'test/**',
         'third_party/**',
+      ],
+      enabled: false,
+    },
+    {
+      // Ignore updates for internal packages.
+      matchPackageNames: [
+        'github.com/gardener/gardener/pkg/apis',
       ],
       enabled: false,
     },

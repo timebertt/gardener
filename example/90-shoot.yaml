@@ -150,7 +150,7 @@ spec:
     # sysctls: # optional, allows to specify kernel settings to override defaults
     #   net.ipv4.tcp_wmem: "4096 131072 16777216"
     #   net.ipv4.tcp_rmem: "4096 131072 16777216"
-    # controlPlane: # mark the shoot as "self-hosted shoot cluster", see GEP-28
+    # controlPlane: # mark the shoot as "self-hosted shoot cluster", see GEP-0028
     #   backup:
     #     provider: <provider-name> # e.g., aws, azure, gcp, ...
     #     providerConfig:
@@ -161,11 +161,16 @@ spec:
     #       kind: Secret
     #       name: backup-secret
     #       namespace: kube-system
+    #   exposure: # either `extension` or `dns` or omitted/empty
+    #     extension:
+    #       type: local # defaults to `.spec.provider.type`, but could also be different
+    #       providerConfig: {} # *runtime.RawExtension
+    #     dns: {}
   # workersSettings:
   #   sshAccess:
   #     enabled: false
   kubernetes:
-  # version: 1.33.3
+  # version: 1.35.0
   # etcd:
   #   main:
   #     autoscaling:
@@ -198,9 +203,9 @@ spec:
   #     - RS256
   #     requiredClaims:
   #       key: value
-  #   structuredAuthentication: # requires Kubernetes version >= 1.30
+  #   structuredAuthentication:
   #     configMapName: name-of-configmap-containing-authentication-config
-  #   structuredAuthorization: # requires Kubernetes version >= 1.30
+  #   structuredAuthorization:
   #     configMapName: name-of-configmap-containing-authorization-config
   #     kubeconfigs:
   #     - authorizerName: name-of-authorizer-in-authorization-config
@@ -219,7 +224,6 @@ spec:
   #       configMapRef:
   #         name: auditpolicy
   #   watchCacheSizes: # See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
-  #     default: 100
   #     resources:
   #     - resource: secrets
   #       size: 500
@@ -248,12 +252,15 @@ spec:
   #     resources: # secrets are always encrypted
   #     - configmaps
   #     - customresource.fancyoperator.io
+  #     provider:
+  #       type: "aescbc"
   #   autoscaling:
   #     minAllowed:
   #       cpu: "1"
   #       memory: 3Gi
   # kubeControllerManager:
   #   nodeCIDRMaskSize: 24
+  #   nodeCIDRMaskSizeIPv6: 80
   #   podEvictionTimeout: 2m0s # This field is no-op and is forbidden to be set starting from Kubernetes 1.33
   #   nodeMonitorGracePeriod: 40s
   #   featureGates:
@@ -267,12 +274,11 @@ spec:
   # kubeScheduler:
   #   featureGates:
   #     SomeKubernetesFeature: true
-  #   kubeMaxPDVols: "30" # https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits
   #   profile: "balanced"
   # kubeProxy:
   #   featureGates:
   #     SomeKubernetesFeature: true
-  #   mode: IPVS
+  #   mode: IPTables # {IPTables,NFTables}
   #   enabled: true
   # kubelet:
   #   cpuCFSQuota: true
@@ -367,6 +373,7 @@ spec:
   #   maxAllowed:
   #     cpu: 8
   #     memory: 32Gi
+  #   recommenderUpdateWorkerCount: 10
   dns:
     # When the shoot shall use a cluster domain no domain and no providers need to be provided - Gardener will
     # automatically compute a correct domain based on the default domains in the garden cluster.
@@ -374,7 +381,11 @@ spec:
     # Provider configuration required if custom shoot domain is configured.
   # providers:
   # - type: aws-route53
-  #   secretName: my-custom-domain-secret
+  #   secretName: my-custom-domain-secret # Deprecated. Forbidden for Kubernetes >= 1.35. Use `credentialsRef` instead.
+  #   credentialsRef:
+  #     apiVersion: v1
+  #     kind: Secret
+  #     name: my-custom-domain-secret
   extensions:
   - type: foobar
   # providerConfig:
@@ -394,7 +405,7 @@ spec:
     #   <some-networking-provider-specific-config>
     #   https://github.com/gardener/gardener-extension-networking-calico/blob/master/example/20-network.yaml#L46-L56
     #   https://github.com/gardener/gardener-extension-networking-cilium/blob/master/example/20-network.yaml#L42-L57
-    #   For networking extensibility see also: https://github.com/gardener/gardener/blob/master/docs/proposals/03-networking-extensibility.md
+    #   For networking extensibility see also: https://github.com/gardener/enhancements/tree/main/geps/0003-networking-extensibility
   maintenance:
     timeWindow:
       begin: 220000+0100
@@ -402,6 +413,14 @@ spec:
     autoUpdate:
       kubernetesVersion: true
       machineImageVersion: true
+  # autoRotation:
+  #   credentials:
+  #     observability:
+  #       rotationPeriod: 168h
+  #     sshKeypair:
+  #       rotationPeriod: 168h
+  #     etcdEncryptionKey:
+  #       rotationPeriod: 168h
   # confineSpecUpdateRollout: false # If set to true then changes/updates to the shoot spec will only be rolled out during
                                     # the maintenance time window
   monitoring:
@@ -414,16 +433,6 @@ spec:
 #   - start: "0 20 * * *" # Start hibernation every day at 8PM
 #     end: "0 6 * * *"    # Stop hibernation every day at 6AM
 #     location: "America/Los_Angeles" # Specify a location for the cron to run in
-  addons:
-    nginxIngress:
-      enabled: false
-    # loadBalancerSourceRanges: []
-    # externalTrafficPolicy: Cluster
-    # config:
-    #   enable-access-log-for-default-backend: "false"
-    kubernetesDashboard:
-      enabled: true
-    # authenticationMode: token # allowed values: token
 # tolerations:
 # - key: <some-key>
 # Explicitly specify the seed that will run the shoot control plane. Only possible for users having RBAC for

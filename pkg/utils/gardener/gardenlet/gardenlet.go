@@ -11,9 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,17 +19,17 @@ import (
 	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement/encoding"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	operatorclient "github.com/gardener/gardener/pkg/operator/client"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/bootstraptoken"
 )
 
-// SeedIsGarden returns 'true' if the cluster is registered as a Garden cluster.
-func SeedIsGarden(ctx context.Context, seedClient client.Reader) (bool, error) {
+// ClusterIsGarden returns 'true' if the cluster is registered as a Garden cluster.
+func ClusterIsGarden(ctx context.Context, seedClient client.Reader) (bool, error) {
 	seedIsGarden, err := kubernetesutils.ResourcesExist(ctx, seedClient, &operatorv1alpha1.GardenList{}, operatorclient.RuntimeScheme)
 	if err != nil {
 		if !meta.IsNoMatchError(err) {
@@ -44,13 +42,11 @@ func SeedIsGarden(ctx context.Context, seedClient client.Reader) (bool, error) {
 
 // SeedIsSelfHostedShoot returns 'true' if the cluster is a self-hosted shoot cluster.
 func SeedIsSelfHostedShoot(ctx context.Context, seedClient client.Reader) (bool, error) {
-	if err := seedClient.Get(ctx, client.ObjectKey{Name: v1beta1constants.DeploymentNameGardenlet, Namespace: metav1.NamespaceSystem}, &appsv1.Deployment{}); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: metav1.NamespaceSystem}}
+	if err := seedClient.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil {
+		return false, fmt.Errorf("failed reading %q namespace: %w", namespace.Name, err)
 	}
-	return true, nil
+	return namespace.Labels[v1beta1constants.GardenRole] == v1beta1constants.GardenRoleShoot, nil
 }
 
 // SetDefaultGardenClusterAddress sets the default garden cluster address in the given gardenlet configuration if it is not already set.
@@ -90,33 +86,44 @@ func IsResponsibleForSelfHostedShoot() bool {
 	return os.Getenv("NAMESPACE") == metav1.NamespaceSystem
 }
 
+// SelfHostedShootInfo contains information about the self-hosted shoot (extracted from the shoot-info ConfigMap within
+// the cluster).
+type SelfHostedShootInfo struct {
+	// Meta is the namespace and name of the shoot.
+	Meta types.NamespacedName
+	// UID is the .metadata.uid of the shoot.
+	UID types.UID
+	// StatusUID is the .status.uid of the shoot.
+	StatusUID types.UID
+}
+
 // ShootMetaFromBootstrapToken extracts the shoot namespace and name from the description of the given bootstrap token
-// secret. This only works if the secret has been created with 'gardenadm token create' which writes a proper
-// description.
-func ShootMetaFromBootstrapToken(ctx context.Context, reader client.Reader, bootstrapTokenSecretName string) (types.NamespacedName, error) {
+// secret. The returned bool indicates whether the secret contains shoot metadata (i.e., it is a self-hosted shoot
+// bootstrap token). If false, the token is likely for a ManagedSeed rather than a self-hosted shoot.
+func ShootMetaFromBootstrapToken(ctx context.Context, reader client.Reader, bootstrapTokenSecretName string) (types.NamespacedName, bool, error) {
 	bootstrapTokenSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName, Namespace: metav1.NamespaceSystem}}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(bootstrapTokenSecret), bootstrapTokenSecret); err != nil {
-		return types.NamespacedName{}, fmt.Errorf("failed to read bootstrap token secret %s: %w", client.ObjectKeyFromObject(bootstrapTokenSecret), err)
+		return types.NamespacedName{}, false, fmt.Errorf("failed to read bootstrap token secret %s: %w", client.ObjectKeyFromObject(bootstrapTokenSecret), err)
 	}
 
 	return extractShootMetaFromBootstrapToken(bootstrapTokenSecret)
 }
 
-func extractShootMetaFromBootstrapToken(bootstrapTokenSecret *corev1.Secret) (types.NamespacedName, error) {
+func extractShootMetaFromBootstrapToken(bootstrapTokenSecret *corev1.Secret) (types.NamespacedName, bool, error) {
 	description := string(bootstrapTokenSecret.Data[bootstraptokenapi.BootstrapTokenDescriptionKey])
 	if !strings.HasPrefix(description, bootstraptoken.SelfHostedShootBootstrapTokenSecretDescriptionPrefix) {
-		return types.NamespacedName{}, fmt.Errorf("bootstrap token description does not start with %q: %s", bootstraptoken.SelfHostedShootBootstrapTokenSecretDescriptionPrefix, description)
+		return types.NamespacedName{}, false, nil
 	}
 
 	parts := strings.Fields(strings.TrimPrefix(description, bootstraptoken.SelfHostedShootBootstrapTokenSecretDescriptionPrefix))
 	if len(parts) == 0 {
-		return types.NamespacedName{}, fmt.Errorf("could not extract shoot meta from bootstrap token description: %s", description)
+		return types.NamespacedName{}, false, fmt.Errorf("could not extract shoot meta from bootstrap token description: %s", description)
 	}
 
 	split := strings.Split(parts[0], "/")
 	if len(split) != 2 {
-		return types.NamespacedName{}, fmt.Errorf("could not extract shoot namespace and name from bootstrap token description: %s", description)
+		return types.NamespacedName{}, false, fmt.Errorf("could not extract shoot namespace and name from bootstrap token description: %s", description)
 	}
 
-	return types.NamespacedName{Namespace: split[0], Name: split[1]}, nil
+	return types.NamespacedName{Namespace: split[0], Name: split[1]}, true, nil
 }

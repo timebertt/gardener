@@ -24,13 +24,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	"github.com/gardener/gardener/pkg/component/extensions/bastion"
+	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	"github.com/gardener/gardener/pkg/gardenadm"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
@@ -52,18 +53,20 @@ const GardenadmBaseDir = "/var/lib/gardenadm"
 type GardenadmBotanist struct {
 	*botanistpkg.Botanist
 
-	HostName   string
-	DBus       dbus.DBus
-	FS         afero.Afero
-	Extensions []Extension
-	Resources  gardenadm.Resources
+	HostName string
+	DBus     dbus.DBus
+	FS       afero.Afero
 
-	// Bastion is only set for `gardenadm bootstrap`.
-	Bastion *bastion.Bastion
+	Resources  gardenadm.Resources
+	Components Components
+	Extensions []Extension
+	// Zone is the availability zone in which the new node is being added. This is used to set the
+	// topology.kubernetes.io/zone label on the node resource.
+	// This field is only relevant for shoot with unmanaged infrastructure.
+	Zone *string
 
 	operatingSystemConfigSecret       *corev1.Secret
 	gardenerResourceManagerServiceIPs []string
-	staticPodNameToHash               map[string]string
 	useEtcdManagedByDruid             bool
 
 	// controlPlaneMachines is set by ListControlPlaneMachines during `gardenadm bootstrap`.
@@ -71,6 +74,15 @@ type GardenadmBotanist struct {
 	// sshConnection is the SSH connection to the first control plane machine. It is set by ConnectToControlPlaneMachine
 	// during `gardenadm bootstrap`.
 	sshConnection *sshutils.Connection
+}
+
+// Components contains deployable components for self-hosted shoots.
+type Components struct {
+	// Bastion is only set for `gardenadm bootstrap`.
+	Bastion *bastion.Bastion
+	// RuntimeResourceManager is the gardener-resource-manager instance responsible for runtime operations running in
+	// the garden namespace.
+	RuntimeResourceManager resourcemanager.Interface
 }
 
 // Extension contains the resources needed for an extension registration.
@@ -151,8 +163,13 @@ func NewGardenadmBotanist(
 		return nil, fmt.Errorf("failed creating botanist: %w", err)
 	}
 
-	if !gardenadmBotanist.Shoot.RunsControlPlane() {
-		gardenadmBotanist.Bastion = gardenadmBotanist.DefaultBastion()
+	if gardenadmBotanist.Shoot.RunsControlPlane() {
+		gardenadmBotanist.Components.RuntimeResourceManager, err = gardenadmBotanist.NewRuntimeGardenerResourceManager()
+		if err != nil {
+			return nil, fmt.Errorf("failed creating runtime gardener resource manager: %w", err)
+		}
+	} else {
+		gardenadmBotanist.Components.Bastion = gardenadmBotanist.DefaultBastion()
 
 		// For `gardenadm bootstrap`, we don't initialize the control plane machines with a "full OSC".
 		// Instead, we provide a small alternative OSC, that only fetches the `gardenadm` binary from the registry.
@@ -259,6 +276,9 @@ func initializeFakeGardenResources(
 	for _, secret := range resources.Secrets {
 		objects = append(objects, secret.DeepCopy())
 	}
+	for _, workloadIdentity := range resources.WorkloadIdentities {
+		objects = append(objects, workloadIdentity.DeepCopy())
+	}
 
 	if resources.SecretBinding != nil {
 		objects = append(objects, resources.SecretBinding.DeepCopy())
@@ -334,7 +354,6 @@ func newShootObject(
 	// However, when bootstrapping a self-hosted shoot cluster with `gardenadm bootstrap` using a temporary local cluster,
 	// we want to avoid conflicts with kube-system components of the bootstrap cluster by placing all shoot-related
 	// components in another namespace. In this case, we use the technical ID as the control plane namespace, as usual.
-	// TODO(timebertt): double-check if this causes problems when importing the state into the self-hosted shoot cluster
 	if !runsControlPlane {
 		obj.ControlPlaneNamespace = resources.Shoot.Status.TechnicalID
 	}
@@ -382,17 +401,17 @@ func initializeShootResource(resources gardenadm.Resources, fs afero.Afero, runs
 		}
 		shoot.Status.UID = uid
 
-		if v1beta1helper.HasManagedInfrastructure(resources.Shoot) {
-			// When running `gardenadm init` for a shoot with managed infrastructure, we need to restore state (secrets,
-			// extensions, etc.) from the ShootState exported by `gardenadm bootstrap`.
-			if resources.ShootState == nil {
-				return fmt.Errorf("shoot has managed infrastructure, but ShootState is missing " +
-					"(the ShootState is usually exported by `gardenadm bootstrap` and read by `gardenadm init`): " +
-					"you should either use `gardenadm bootstrap` to create the self-hosted shoot cluster with managed infrastructure or " +
-					"remove the `Shoot.spec.{secret,credentials}BindingName` field to mark the shoot as having unmanaged infrastructure")
-			}
+		if v1beta1helper.HasManagedInfrastructure(resources.Shoot) && resources.ShootState == nil {
+			return fmt.Errorf("shoot has managed infrastructure, but ShootState is missing " +
+				"(the ShootState is usually exported by `gardenadm bootstrap` and read by `gardenadm init`): " +
+				"you should either use `gardenadm bootstrap` to create the self-hosted shoot cluster with managed infrastructure or " +
+				"remove the `Shoot.spec.{secret,credentials}BindingName` field to mark the shoot as having unmanaged infrastructure")
+		}
 
+		if resources.ShootState != nil {
 			// Instruct the botanist and shoot package to read the ShootState and restore the state of extensions, secrets, etc.
+			// For managed infrastructure, this restores the state exported by `gardenadm bootstrap`.
+			// For unmanaged infrastructure on retry, this restores the bootstrap secrets persisted by `gardenadm init`.
 			shoot.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				Type: gardencorev1beta1.LastOperationTypeRestore,
 			}

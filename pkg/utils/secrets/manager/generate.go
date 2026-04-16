@@ -7,6 +7,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,8 +34,17 @@ func (m *manager) Generate(ctx context.Context, config secretsutils.ConfigInterf
 		bundleFor = ptr.To(strings.TrimSuffix(config.GetName(), nameSuffixBundle))
 	}
 
+	namespace := m.opts.Namespaces[0]
+	if len(options.Namespace) > 0 {
+		namespace = options.Namespace
+		if !slices.Contains(m.opts.Namespaces, namespace) {
+			return nil, fmt.Errorf("namespace %q is not managed by this secrets manager", namespace)
+		}
+	}
+
 	objectMeta, err := ObjectMeta(
-		m.namespace,
+		namespace,
+		options.Labels,
 		m.identity,
 		config,
 		options.IgnoreConfigChecksumForCASecretName,
@@ -72,7 +82,7 @@ func (m *manager) Generate(ctx context.Context, config secretsutils.ConfigInterf
 		if ignore, err := m.shouldIgnoreOldSecrets(desiredLabels[LabelKeyIssuedAtTime], options); err != nil {
 			return nil, fmt.Errorf("failed checking whether old secrets should be ignored for config %s: %w", config.GetName(), err)
 		} else if !ignore {
-			if err := m.storeOldSecrets(ctx, config.GetName(), secret.Name); err != nil {
+			if err := m.storeOldSecrets(ctx, config.GetName(), secret.Name, secret.Namespace); err != nil {
 				return nil, fmt.Errorf("failed adding old secrets for config %s to internal store: %w", config.GetName(), err)
 			}
 		}
@@ -100,7 +110,7 @@ func (m *manager) generateAndCreate(ctx context.Context, config secretsutils.Con
 		return nil, fmt.Errorf("failed generating data: %w", err)
 	}
 
-	dataMap, err := m.keepExistingSecretsIfNeeded(ctx, config.GetName(), data.SecretData())
+	dataMap, err := m.keepExistingSecretsIfNeeded(ctx, config.GetName(), data.SecretData(), objectMeta.Namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed taking over data from existing secret when needed: %w", err)
 	}
@@ -116,13 +126,13 @@ func (m *manager) generateAndCreate(ctx context.Context, config secretsutils.Con
 		}
 	}
 
-	m.logger.Info("Generated new secret", "configName", config.GetName(), "secretName", secret.Name)
+	m.logger.Info("Generated new secret", "configName", config.GetName(), "secret", client.ObjectKeyFromObject(secret))
 	return secret, nil
 }
 
-func (m *manager) keepExistingSecretsIfNeeded(ctx context.Context, configName string, newData map[string][]byte) (map[string][]byte, error) {
+func (m *manager) keepExistingSecretsIfNeeded(ctx context.Context, configName string, newData map[string][]byte, namespace string) (map[string][]byte, error) {
 	existingSecrets := &corev1.SecretList{}
-	if err := m.client.List(ctx, existingSecrets, client.InNamespace(m.namespace), client.MatchingLabels{LabelKeyUseDataForName: configName}); err != nil {
+	if err := m.client.List(ctx, existingSecrets, client.InNamespace(namespace), client.MatchingLabels{LabelKeyUseDataForName: configName}); err != nil {
 		return nil, err
 	}
 
@@ -164,9 +174,9 @@ func (m *manager) shouldIgnoreOldSecrets(issuedAt string, options *GenerateOptio
 	return false, nil
 }
 
-func (m *manager) storeOldSecrets(ctx context.Context, name, currentSecretName string) error {
+func (m *manager) storeOldSecrets(ctx context.Context, name, currentSecretName, namespace string) error {
 	secretList := &corev1.SecretList{}
-	if err := m.client.List(ctx, secretList, client.InNamespace(m.namespace), client.MatchingLabels{
+	if err := m.client.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels{
 		LabelKeyName:            name,
 		LabelKeyManagedBy:       LabelValueSecretsManager,
 		LabelKeyManagerIdentity: m.identity,
@@ -380,6 +390,10 @@ type GenerateOptions struct {
 	// IgnoreConfigChecksumForCASecretName specifies whether the secret config checksum should be ignored when
 	// computing the secret name for CA secrets.
 	IgnoreConfigChecksumForCASecretName bool
+	// Namespace overwrites the namespace in which the secret should be created.
+	Namespace string
+	// Labels are additional labels that should be added to the secret.
+	Labels map[string]string
 
 	signingCAChecksum *string
 	isBundleSecret    bool
@@ -416,6 +430,10 @@ type SignedByCAOptions struct {
 	// the old CA by default, however one might want to use the current CA instead. Similarly, client certificates are
 	// signed with the current CA by default, however one might want to use the old CA instead.
 	CAClass *secretClass
+	// LoadMissingCAFromClusterCtx enables loading a missing signing CA from the cluster when it is not found in the
+	// internal store, and specifies the context.Context to use for the LIST call. This is useful when generating
+	// certificates signed by CAs that were not created by this secrets manager instance.
+	LoadMissingCAFromClusterCtx context.Context
 }
 
 // ApplyOptions applies the given update options on these options, and then returns itself (for convenient chaining).
@@ -441,6 +459,19 @@ func (o useCAClassOption) ApplyToOptions(options *SignedByCAOptions) {
 	options.CAClass = &o.class
 }
 
+type signedByCAOptionFunc func(*SignedByCAOptions)
+
+func (f signedByCAOptionFunc) ApplyToOptions(o *SignedByCAOptions) {
+	f(o)
+}
+
+// LoadMissingCAFromCluster sets the LoadMissingCAFromClusterCtx field to 'ctx' in the SignedByCAOptions.
+func LoadMissingCAFromCluster(ctx context.Context) SignedByCAOption {
+	return signedByCAOptionFunc(func(o *SignedByCAOptions) {
+		o.LoadMissingCAFromClusterCtx = ctx
+	})
+}
+
 // SignedByCA returns a function which sets the 'SigningCA' field in case the ConfigInterface provided to the
 // Generate request is a CertificateSecretConfig. Additionally, in such case it stores a checksum of the signing
 // CA in the options.
@@ -461,7 +492,15 @@ func SignedByCA(name string, opts ...SignedByCAOption) GenerateOption {
 
 		secrets, found := mgr.getFromStore(name)
 		if !found {
-			return fmt.Errorf("secrets for name %q not found in internal store", name)
+			if signedByCAOptions.LoadMissingCAFromClusterCtx == nil {
+				return fmt.Errorf("secrets for name %q not found in internal store", name)
+			}
+
+			mgr.logger.Info("Signing CA secret not found in internal store, trying to load it from cluster", "signingCASecretName", name)
+			if err := loadCASecretsFromClusterIntoStore(signedByCAOptions.LoadMissingCAFromClusterCtx, mgr, name); err != nil {
+				return fmt.Errorf("failed to load missing CA secret from cluster: %w", err)
+			}
+			secrets, _ = mgr.getFromStore(name)
 		}
 
 		secret := secrets.current
@@ -489,6 +528,31 @@ func SignedByCA(name string, opts ...SignedByCAOption) GenerateOption {
 		options.signingCAChecksum = ptr.To(kubernetesutils.TruncateLabelValue(secret.dataChecksum))
 		return nil
 	}
+}
+
+func loadCASecretsFromClusterIntoStore(ctx context.Context, mgr *manager, name string) error {
+	secretList, err := mgr.listSecrets(ctx, client.MatchingLabels{LabelKeyName: name})
+	if err != nil {
+		return fmt.Errorf("failed to list secrets for name %q: %w", name, err)
+	}
+
+	if len(secretList.Items) == 0 {
+		return fmt.Errorf("secrets for name %q not found in cluster", name)
+	}
+
+	kubernetesutils.ByCreationTimestamp().Sort(secretList)
+
+	if err := mgr.addToStore(name, &secretList.Items[len(secretList.Items)-1], current); err != nil {
+		return fmt.Errorf("failed to load current secret for name %q from cluster into internal store: %w", name, err)
+	}
+
+	if len(secretList.Items) > 1 {
+		if err := mgr.addToStore(name, &secretList.Items[len(secretList.Items)-2], old); err != nil {
+			return fmt.Errorf("failed to load old secret for name %q from cluster into internal store: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 // Persist returns a function which sets the 'Persist' field to true.
@@ -553,6 +617,22 @@ func IgnoreConfigChecksumForCASecretName() GenerateOption {
 func isBundleSecret() GenerateOption {
 	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
 		options.isBundleSecret = true
+		return nil
+	}
+}
+
+// Namespace returns a function which sets the 'Namespace' field.
+func Namespace(namespace string) GenerateOption {
+	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+		options.Namespace = namespace
+		return nil
+	}
+}
+
+// WithLabels returns a function which sets the 'Labels' field.
+func WithLabels(labels map[string]string) GenerateOption {
+	return func(_ Interface, _ secretsutils.ConfigInterface, options *GenerateOptions) error {
+		options.Labels = labels
 		return nil
 	}
 }

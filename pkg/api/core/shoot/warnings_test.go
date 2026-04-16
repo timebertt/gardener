@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	gomegatypes "github.com/onsi/gomega/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
 	. "github.com/gardener/gardener/pkg/api/core/shoot"
@@ -270,15 +271,10 @@ var _ = Describe("Warnings", func() {
 			Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(ContainElement(Equal("you are setting the operation annotation to rotate-etcd-encryption-key-complete. This annotation has been deprecated and is forbidden to be set starting from Kubernetes 1.34. Instead, use the rotate-etcd-encryption-key annotation, which performs a full rotation of the ETCD encryption key.")))
 		})
 
-		It("should return a warning when enableAnonymousAuthentication is set", func() {
-			shoot.Spec.Kubernetes.KubeAPIServer = &core.KubeAPIServerConfig{EnableAnonymousAuthentication: ptr.To(true)}
-			Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(ContainElement(Equal("you are setting the spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication field. The field is deprecated. Using Kubernetes v1.32 and above, please use anonymous authentication configuration. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration")))
-		})
-
-		DescribeTable("shoot.spec.secretBindingName",
-			func(secretBindingName *string, expectedWarning gomegatypes.GomegaMatcher) {
+		DescribeTable("spec.secretBindingName",
+			func(secretBindingName *string, matcher gomegatypes.GomegaMatcher) {
 				shoot.Spec.SecretBindingName = secretBindingName
-				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(expectedWarning)
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(matcher)
 			},
 
 			Entry("should return a warning when secretBindingName is set", ptr.To("my-secret-binding"),
@@ -286,7 +282,7 @@ var _ = Describe("Warnings", func() {
 			Entry("should not return a warning when secretBindingName is not set", nil, BeEmpty()),
 		)
 
-		Describe("shoot.spec.cloudProfileName", func() {
+		Context("spec.cloudProfileName", func() {
 			It("should not return a warning when cloudProfileName is set and the Kubernetes version is < v1.33", func() {
 				shoot.Spec.Kubernetes.Version = "1.32.3"
 				shoot.Spec.CloudProfileName = ptr.To("local-profile")
@@ -304,5 +300,272 @@ var _ = Describe("Warnings", func() {
 				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(BeEmpty())
 			})
 		})
+
+		Describe("spec.addons", func() {
+			It("should print a warning when addons are set", func() {
+				shoot.Spec.Addons = &core.Addons{}
+
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(ContainElement(ContainSubstring("you are setting the spec.addons field. The field is deprecated and will be forbidden starting with Kubernetes 1.35.")))
+			})
+		})
+
+		Describe("spec.kubernetes.kubeProxy.mode", func() {
+			It("should print a warning when kube-proxy mode is set to 'IPVS' and the Kubernetes version is >= v1.35", func() {
+				shoot.Spec.Kubernetes.Version = "1.35.0"
+				shoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: ptr.To(true),
+					Mode:    ptr.To(core.ProxyModeIPVS),
+				}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(ContainElement(ContainSubstring("you are using IPVS mode for kube-proxy")))
+			})
+
+			It("should not print a warning when kube-proxy mode is set to 'IPVS' and the Kubernetes version is < v1.35", func() {
+				shoot.Spec.Kubernetes.Version = "1.34.0"
+				shoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: ptr.To(true),
+					Mode:    ptr.To(core.ProxyModeIPVS),
+				}
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(BeEmpty())
+			})
+
+			It("should print a warning when kube-proxy mode is switched to 'IPVS' for Kubernetes versions < 1.35", func() {
+				shoot.Spec.Kubernetes.Version = "1.34.0"
+				shoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: ptr.To(true),
+					Mode:    ptr.To(core.ProxyModeIPVS),
+				}
+				oldShoot := shoot.DeepCopy()
+				oldShoot.Spec.Kubernetes.KubeProxy = &core.KubeProxyConfig{
+					Enabled: ptr.To(true),
+					Mode:    ptr.To(core.ProxyModeIPTables),
+				}
+
+				Expect(GetWarnings(ctx, shoot, oldShoot, credentialsRotationInterval)).To(ContainElement(ContainSubstring("you have switched to IPVS mode for kube-proxy")))
+			})
+		})
+
+		Describe("spec.kubernetes.kubeScheduler.kubeMaxPDVols", func() {
+			It("should print a warning when kubeMaxPDVols is set", func() {
+				shoot.Spec.Kubernetes.KubeScheduler = &core.KubeSchedulerConfig{
+					KubeMaxPDVols: ptr.To("20"),
+				}
+
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(ContainElement(ContainSubstring("you are setting the spec.kubernetes.kubeScheduler.kubeMaxPDVols field")))
+			})
+		})
+
+		DescribeTable("spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.Kubernetes.KubeAPIServer = kubeAPIServerConfig
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when enableAnonymousAuthentication is nil",
+				&core.KubeAPIServerConfig{EventTTL: nil},
+				BeEmpty(),
+			),
+			Entry("should return a warning when enableAnonymousAuthentication is set",
+				&core.KubeAPIServerConfig{EnableAnonymousAuthentication: ptr.To(true)},
+				ContainElement(Equal("you are setting the spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication field. The field is deprecated. Using Kubernetes v1.32 and above, please use anonymous authentication configuration. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration")),
+			),
+		)
+
+		DescribeTable("spec.kubernetes.kubeAPIServer.watchCacheSizes.default",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.Kubernetes.KubeAPIServer = kubeAPIServerConfig
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes.default is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: nil}},
+				BeEmpty(),
+			),
+			Entry("should return a warning when watchCacheSizes.default is set",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: ptr.To[int32](50)}},
+				ContainElement(Equal("you are setting the spec.kubernetes.kubeAPIServer.watchCacheSizes.default field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The cache size is automatically sized by the kube-apiserver.")),
+			),
+		)
+
+		DescribeTable("spec.kubernetes.kubeAPIServer.eventTTL",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.Kubernetes.KubeAPIServer = kubeAPIServerConfig
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when eventTTL is nil",
+				&core.KubeAPIServerConfig{EventTTL: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning for valid eventTTL duration",
+				&core.KubeAPIServerConfig{EventTTL: &metav1.Duration{Duration: time.Hour * 24}},
+				BeEmpty(),
+			),
+			Entry("should return a warning for invalid eventTTL duration",
+				&core.KubeAPIServerConfig{EventTTL: &metav1.Duration{Duration: time.Hour * 24 * 10}},
+				ContainElement(Equal("you are setting the spec.kubernetes.kubeAPIServer.eventTTL field to an invalid value. Invalid value: '240h0m0s', valid values: [0, 24h]. Invalid values for existing resources will be no longer allowed in Gardener v1.142.0. See: https://github.com/gardener/gardener/issues/13825")),
+			),
+		)
+
+		DescribeTable("spec.dns.providers[].secretName",
+			func(dns *core.DNS, matcher gomegatypes.GomegaMatcher) {
+				shoot.Spec.DNS = dns
+				Expect(GetWarnings(ctx, shoot, nil, credentialsRotationInterval)).To(matcher)
+			},
+			Entry("should not return a warning when dns is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when dns.providers is nil",
+				&core.DNS{Providers: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning when secretName is not set",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: nil}}},
+				BeEmpty(),
+			),
+			Entry("should return a warning when secretName is set",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: ptr.To("secret")}}},
+				ContainElement(Equal("you are setting the spec.dns.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[0].credentialsRef instead.")),
+			),
+		)
+	})
+
+	Describe("#GetKubeAPIServerWarnings", func() {
+		DescribeTable("enableAnonymousAuthentication",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetKubeAPIServerWarnings(kubeAPIServerConfig, field.NewPath("kubeAPIServer"))).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when enableAnonymousAuthentication is nil",
+				&core.KubeAPIServerConfig{EventTTL: nil},
+				BeEmpty(),
+			),
+			Entry("should return a warning when enableAnonymousAuthentication is set",
+				&core.KubeAPIServerConfig{EnableAnonymousAuthentication: ptr.To(true)},
+				ContainElement(Equal("you are setting the kubeAPIServer.enableAnonymousAuthentication field. The field is deprecated. Using Kubernetes v1.32 and above, please use anonymous authentication configuration. See: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration")),
+			),
+		)
+
+		DescribeTable("watchCacheSizes.default",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetKubeAPIServerWarnings(kubeAPIServerConfig, field.NewPath("kubeAPIServer"))).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning when watchCacheSizes.default is nil",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: nil}},
+				BeEmpty(),
+			),
+			Entry("should return a warning when watchCacheSizes.default is set",
+				&core.KubeAPIServerConfig{WatchCacheSizes: &core.WatchCacheSizes{Default: ptr.To[int32](50)}},
+				ContainElement(Equal("you are setting the kubeAPIServer.watchCacheSizes.default field. The field has been deprecated and is forbidden to be set starting from Kubernetes 1.35. The cache size is automatically sized by the kube-apiserver.")),
+			),
+		)
+
+		DescribeTable("eventTTL",
+			func(kubeAPIServerConfig *core.KubeAPIServerConfig, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetKubeAPIServerWarnings(kubeAPIServerConfig, field.NewPath("kubeAPIServer"))).To(matcher)
+			},
+
+			Entry("should not return a warning when kubeAPIServerConfig is nil",
+				nil,
+				BeEmpty(),
+			),
+			Entry("should not return a warning when eventTTL is nil",
+				&core.KubeAPIServerConfig{EventTTL: nil},
+				BeEmpty(),
+			),
+			Entry("should not return a warning for valid eventTTL duration",
+				&core.KubeAPIServerConfig{EventTTL: &metav1.Duration{Duration: time.Hour * 24}},
+				BeEmpty(),
+			),
+			Entry("should return a warning for invalid eventTTL duration",
+				&core.KubeAPIServerConfig{EventTTL: &metav1.Duration{Duration: time.Hour * 24 * 10}},
+				ContainElement(Equal("you are setting the kubeAPIServer.eventTTL field to an invalid value. Invalid value: '240h0m0s', valid values: [0, 24h]. Invalid values for existing resources will be no longer allowed in Gardener v1.142.0. See: https://github.com/gardener/gardener/issues/13825")),
+			),
+		)
+	})
+
+	Describe("#GetDNSProviderWarnings", func() {
+		DescribeTable("providers[].secretName",
+			func(dns *core.DNS, fldPath *field.Path, matcher gomegatypes.GomegaMatcher) {
+				Expect(GetDNSProviderWarnings(dns, fldPath)).To(matcher)
+			},
+
+			Entry("should not return a warning when dns.providers is nil",
+				&core.DNS{Providers: nil},
+				field.NewPath("spec", "dns"),
+				BeEmpty(),
+			),
+			Entry("should not return a warning when dns.providers is empty",
+				&core.DNS{Providers: []core.DNSProvider{}},
+				field.NewPath("spec", "dns"),
+				BeEmpty(),
+			),
+			Entry("should not return a warning when secretName is not set",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: nil}}},
+				field.NewPath("spec", "dns"),
+				BeEmpty(),
+			),
+			Entry("should return a warning when secretName is set for a single provider",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: ptr.To("secret")}}},
+				field.NewPath("spec", "dns"),
+				ContainElement(Equal("you are setting the spec.dns.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[0].credentialsRef instead.")),
+			),
+			Entry("should return warnings when secretName is set for multiple providers",
+				&core.DNS{Providers: []core.DNSProvider{
+					{SecretName: ptr.To("secret1")},
+					{SecretName: ptr.To("secret2")},
+				}},
+				field.NewPath("spec", "dns"),
+				And(
+					ContainElement(Equal("you are setting the spec.dns.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[0].credentialsRef instead.")),
+					ContainElement(Equal("you are setting the spec.dns.providers[1].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[1].credentialsRef instead.")),
+				),
+			),
+			Entry("should return warning only for provider with secretName set",
+				&core.DNS{Providers: []core.DNSProvider{
+					{SecretName: nil},
+					{SecretName: ptr.To("secret")},
+				}},
+				field.NewPath("spec", "dns"),
+				And(
+					ContainElement(Equal("you are setting the spec.dns.providers[1].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use spec.dns.providers[1].credentialsRef instead.")),
+					Not(ContainElement(ContainSubstring("spec.dns.providers[0].secretName"))),
+				),
+			),
+			Entry("should use custom field path in warning message",
+				&core.DNS{Providers: []core.DNSProvider{{SecretName: ptr.To("secret")}}},
+				field.NewPath("custom", "path"),
+				ContainElement(Equal("you are setting the custom.path.providers[0].secretName field. The field is deprecated and is forbidden to be set starting from Kubernetes 1.35. Use custom.path.providers[0].credentialsRef instead.")),
+			),
+		)
 	})
 })

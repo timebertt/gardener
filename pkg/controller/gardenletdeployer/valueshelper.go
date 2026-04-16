@@ -6,14 +6,15 @@ package gardenletdeployer
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"k8s.io/component-base/version"
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/imagevector"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/gardener/gardener/pkg/utils/secrets"
@@ -86,8 +87,12 @@ func (vp *valuesHelper) MergeGardenletConfiguration(config *gardenletconfigv1alp
 		return nil, err
 	}
 
-	// Delete gardenClientConnection.bootstrapKubeconfig, seedClientConnection.kubeconfig, and seedConfig in parent config values
+	// Delete gardenClientConnection.bootstrapKubeconfig, gardenClientConnection.kubeconfigSecret, seedClientConnection.kubeconfig, and seedConfig in parent config values
 	parentConfigValues, err = utils.DeleteFromValuesMap(parentConfigValues, "gardenClientConnection", "bootstrapKubeconfig")
+	if err != nil {
+		return nil, err
+	}
+	parentConfigValues, err = utils.DeleteFromValuesMap(parentConfigValues, "gardenClientConnection", "kubeconfigSecret")
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +218,7 @@ func (vp *valuesHelper) getGardenletConfigurationValues(config *gardenletconfigv
 		return nil, err
 	}
 	if kubeconfigPath != nil && kubeconfigPath.(string) != "" {
-		kubeconfig, err := os.ReadFile(kubeconfigPath.(string))
+		kubeconfig, err := os.ReadFile(filepath.Clean(kubeconfigPath.(string)))
 		if err != nil {
 			return nil, err
 		}
@@ -229,7 +234,7 @@ func (vp *valuesHelper) getGardenletConfigurationValues(config *gardenletconfigv
 		return nil, err
 	}
 	if certPath != nil && certPath.(string) != "" && !strings.Contains(certPath.(string), secrets.TemporaryDirectoryForSelfGeneratedTLSCertificatesPattern) {
-		cert, err := os.ReadFile(certPath.(string))
+		cert, err := os.ReadFile(filepath.Clean(certPath.(string)))
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +250,7 @@ func (vp *valuesHelper) getGardenletConfigurationValues(config *gardenletconfigv
 		return nil, err
 	}
 	if keyPath != nil && keyPath.(string) != "" && !strings.Contains(keyPath.(string), secrets.TemporaryDirectoryForSelfGeneratedTLSCertificatesPattern) {
-		key, err := os.ReadFile(keyPath.(string))
+		key, err := os.ReadFile(filepath.Clean(keyPath.(string)))
 		if err != nil {
 			return nil, err
 		}
@@ -277,6 +282,7 @@ func getParentGardenletDeployment() (*seedmanagementv1alpha1.GardenletDeployment
 
 	return &seedmanagementv1alpha1.GardenletDeployment{
 		Image: &seedmanagementv1alpha1.Image{
+			Ref:        gardenletImage.Ref,
 			Repository: gardenletImage.Repository,
 			Tag:        gardenletImage.Tag,
 		},
@@ -286,7 +292,7 @@ func getParentGardenletDeployment() (*seedmanagementv1alpha1.GardenletDeployment
 func getParentImageVectorOverwrite() (*string, error) {
 	var imageVectorOverwrite *string
 	if overWritePath := os.Getenv(imagevectorutils.OverrideEnv); len(overWritePath) > 0 {
-		data, err := os.ReadFile(overWritePath) // #nosec: G304 -- ImageVectorOverwrite is a feature. In reality files can be read from the Pod's file system only.
+		data, err := os.ReadFile(overWritePath) // #nosec: G304,G703 -- ImageVectorOverwrite is a feature. In reality files can be read from the Pod's file system only.
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +304,7 @@ func getParentImageVectorOverwrite() (*string, error) {
 func getParentComponentImageVectorOverwrites() (*string, error) {
 	var componentImageVectorOverwrites *string
 	if overWritePath := os.Getenv(imagevectorutils.ComponentOverrideEnv); len(overWritePath) > 0 {
-		data, err := os.ReadFile(overWritePath) // #nosec: G304 -- ImageVectorOverwrite is a feature. In reality files can be read from the Pod's file system only.
+		data, err := os.ReadFile(overWritePath) // #nosec: G304,G703 -- ImageVectorOverwrite is a feature. In reality files can be read from the Pod's file system only.
 		if err != nil {
 			return nil, err
 		}

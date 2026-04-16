@@ -12,7 +12,7 @@ import (
 	auth "k8s.io/apiserver/pkg/authorization/authorizer"
 )
 
-func (a *authorizer) authorizeGardenadmRequests(requestLog logr.Logger, shootNamespace, _ string, attrs auth.Attributes) (auth.Decision, string, error) {
+func (a *authorizer) authorizeGardenadmRequests(requestLog logr.Logger, shootNamespace, shootName string, attrs auth.Attributes) (auth.Decision, string, error) {
 	if attrs.IsResourceRequest() {
 		requestResource := schema.GroupResource{Group: attrs.GetAPIGroup(), Resource: attrs.GetResource()}
 		switch requestResource {
@@ -21,18 +21,19 @@ func (a *authorizer) authorizeGardenadmRequests(requestLog logr.Logger, shootNam
 				return auth.DecisionAllow, "", nil
 			}
 
-		case projectResource:
+		case backupBucketResource, backupEntryResource, projectResource:
 			if isGardenadmRequestAllowed(attrs, nil, "create") {
 				return auth.DecisionAllow, "", nil
 			}
 
-		case configMapResource, secretResource, secretBindingResource, credentialsBindingResource:
+		case configMapResource, secretResource, secretBindingResource, credentialsBindingResource, workloadIdentityResource:
 			if isGardenadmRequestAllowed(attrs, &shootNamespace, "create") {
 				return auth.DecisionAllow, "", nil
 			}
 
 		case shootResource:
-			if isGardenadmRequestAllowed(attrs, &shootNamespace, "create", "mark-self-hosted") {
+			if isGardenadmRequestAllowed(attrs, &shootNamespace, "create", "mark-self-hosted") ||
+				(shootNamespace == attrs.GetNamespace() && shootName == attrs.GetName() && attrs.GetVerb() == "patch" && attrs.GetSubresource() == "status") {
 				return auth.DecisionAllow, "", nil
 			}
 

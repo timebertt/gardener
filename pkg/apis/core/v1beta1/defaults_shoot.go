@@ -14,7 +14,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 )
 
 // SetDefaults_Shoot sets default values for Shoot objects.
@@ -73,6 +73,10 @@ func SetDefaults_Shoot(obj *Shoot) {
 				}
 			}
 		}
+
+		if worker.ControlPlane != nil && worker.ControlPlane.Exposure != nil && worker.ControlPlane.Exposure.Extension != nil && worker.ControlPlane.Exposure.Extension.Type == nil {
+			worker.ControlPlane.Exposure.Extension.Type = ptr.To(obj.Spec.Provider.Type)
+		}
 	}
 
 	// these fields are relevant only for shoot with workers
@@ -88,8 +92,32 @@ func SetDefaults_Shoot(obj *Shoot) {
 			obj.Spec.Kubernetes.KubeControllerManager = &KubeControllerManagerConfig{}
 		}
 
-		if obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize == nil {
+		if IsIPv4SingleStack(obj.Spec.Networking.IPFamilies) &&
+			obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize == nil {
 			obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize = calculateDefaultNodeCIDRMaskSize(&obj.Spec)
+		}
+
+		if IsIPv6SingleStack(obj.Spec.Networking.IPFamilies) &&
+			obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize == nil &&
+			obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6 == nil {
+			// For IPv6 don't be stingy and allocate larger pod CIDRs per node.
+			// The default is mostly only relevant for the local setup.
+			// For most providers, the values is dependent on the infrastructure.
+			// Either this value is ignored or should be set explicitly by the user.
+			obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize = ptr.To[int32](64)
+		}
+
+		if IsDualStack(obj.Spec.Networking.IPFamilies) {
+			if obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize == nil {
+				obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize = calculateDefaultNodeCIDRMaskSize(&obj.Spec)
+			}
+			if obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6 == nil {
+				// For IPv6 don't be stingy and allocate larger pod CIDRs per node.
+				// The default is mostly only relevant for the local setup.
+				// For most providers, the values is dependent on the infrastructure.
+				// Either this value is ignored or should be set explicitly by the user.
+				obj.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6 = ptr.To[int32](64)
+			}
 		}
 
 		if obj.Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod == nil {
@@ -115,15 +143,11 @@ func SetDefaults_Shoot(obj *Shoot) {
 			obj.Spec.Kubernetes.KubeProxy.Enabled = ptr.To(true)
 		}
 
-		if obj.Spec.Addons == nil {
-			obj.Spec.Addons = &Addons{}
-		}
-		if obj.Spec.Addons.KubernetesDashboard == nil {
-			obj.Spec.Addons.KubernetesDashboard = &KubernetesDashboard{}
-		}
-		if obj.Spec.Addons.KubernetesDashboard.AuthenticationMode == nil {
-			defaultAuthMode := KubernetesDashboardAuthModeToken
-			obj.Spec.Addons.KubernetesDashboard.AuthenticationMode = &defaultAuthMode
+		if obj.Spec.Addons != nil && obj.Spec.Addons.KubernetesDashboard != nil && obj.Spec.Addons.KubernetesDashboard.Enabled {
+			if obj.Spec.Addons.KubernetesDashboard.AuthenticationMode == nil {
+				defaultAuthMode := KubernetesDashboardAuthModeToken
+				obj.Spec.Addons.KubernetesDashboard.AuthenticationMode = &defaultAuthMode
+			}
 		}
 
 		if obj.Spec.Kubernetes.Kubelet == nil {
@@ -193,6 +217,13 @@ func SetDefaults_Shoot(obj *Shoot) {
 	}
 }
 
+// SetDefaults_MaintenanceRotationConfig sets default values for MaintenanceRotationConfig objects.
+func SetDefaults_MaintenanceRotationConfig(obj *MaintenanceRotationConfig) {
+	if obj.RotationPeriod == nil {
+		obj.RotationPeriod = &metav1.Duration{Duration: 7 * 24 * time.Hour}
+	}
+}
+
 // SetDefaults_KubeAPIServerConfig sets default values for KubeAPIServerConfig objects.
 func SetDefaults_KubeAPIServerConfig(obj *KubeAPIServerConfig) {
 	if obj.Requests == nil {
@@ -212,6 +243,12 @@ func SetDefaults_KubeAPIServerConfig(obj *KubeAPIServerConfig) {
 	}
 	if obj.Logging.Verbosity == nil {
 		obj.Logging.Verbosity = ptr.To[int32](2)
+	}
+	if obj.EncryptionConfig == nil {
+		obj.EncryptionConfig = &EncryptionConfig{}
+	}
+	if obj.EncryptionConfig.Provider.Type == nil {
+		obj.EncryptionConfig.Provider.Type = ptr.To(EncryptionProviderTypeAESCBC)
 	}
 }
 
@@ -285,6 +322,9 @@ func SetDefaults_VerticalPodAutoscaler(obj *VerticalPodAutoscaler) {
 	}
 	if obj.MemoryAggregationIntervalCount == nil {
 		obj.MemoryAggregationIntervalCount = ptr.To(DefaultMemoryAggregationIntervalCount)
+	}
+	if obj.RecommenderUpdateWorkerCount == nil {
+		obj.RecommenderUpdateWorkerCount = ptr.To(DefaultRecommenderUpdateWorkerCount)
 	}
 }
 
@@ -397,13 +437,6 @@ func SetDefaults_NginxIngress(obj *NginxIngress) {
 // Helper functions
 
 func calculateDefaultNodeCIDRMaskSize(shoot *ShootSpec) *int32 {
-	if IsIPv6SingleStack(shoot.Networking.IPFamilies) {
-		// If shoot is using IPv6 single-stack, don't be stingy and allocate larger pod CIDRs per node.
-		// We don't calculate a nodeCIDRMaskSize matching the maxPods settings in this case, and simply apply
-		// kube-controller-manager's default value for the --node-cidr-mask-size flag.
-		return ptr.To[int32](64)
-	}
-
 	var maxPods int32 = 110 // default maxPods setting on kubelet
 
 	if shoot != nil && shoot.Kubernetes.Kubelet != nil && shoot.Kubernetes.Kubelet.MaxPods != nil {

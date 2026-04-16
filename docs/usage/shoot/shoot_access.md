@@ -8,9 +8,9 @@ After creation of a shoot cluster, end-users require a `kubeconfig` to access it
 
 ## `shoots/adminkubeconfig` Subresource
 
-The [`shoots/adminkubeconfig`](../../proposals/16-adminkubeconfig-subresource.md) subresource allows users to dynamically generate temporary `kubeconfig`s that can be used to access shoot cluster with `cluster-admin` privileges. The credentials associated with this `kubeconfig` are client certificates which have a very short validity and must be renewed before they expire (by calling the subresource endpoint again).
+The [`shoots/adminkubeconfig`](https://github.com/gardener/enhancements/tree/main/geps/0016-adminkubeconfig-subresource) subresource allows users to dynamically generate temporary `kubeconfig`s that can be used to access shoot cluster with `cluster-admin` privileges. The credentials associated with this `kubeconfig` are client certificates which have a very short validity and must be renewed before they expire (by calling the subresource endpoint again).
 
-The username associated with such `kubeconfig` will be the same which is used for authenticating to the Gardener API, with a random prefix added in front.
+The username associated with such `kubeconfig` will be the same which is used for authenticating to the Gardener API, with the prefix `gardener.cloud:admin:` added in front.
 If the user is considered Gardener system administrator, i.e. has the permissions to read all secrets in the Garden cluster, then the group `gardener.cloud:system:admins` is associated with the `kubeconfig`, otherwise the group `gardener.cloud:project:admins`.
 The created `kubeconfig` will not be persisted anywhere.
 
@@ -30,18 +30,43 @@ kubectl create \
 You also can use controller-runtime `client` (>= v0.14.3) to create such a kubeconfig from your go code like so:
 
 ```go
-expiration := 10 * time.Minute
-expirationSeconds := int64(expiration.Seconds())
-adminKubeconfigRequest := &authenticationv1alpha1.AdminKubeconfigRequest{
-  Spec: authenticationv1alpha1.AdminKubeconfigRequestSpec{
-    ExpirationSeconds: &expirationSeconds,
-  },
-}
-err := client.SubResource("adminkubeconfig").Create(ctx, shoot, adminKubeconfigRequest)
-if err != nil {
-  return err
-}
-config = adminKubeconfigRequest.Status.Kubeconfig
+import (
+  "context"
+  "time"
+
+  authenticationv1alpha1 "github.com/gardener/gardener/pkg/apis/authentication/v1alpha1"
+  gardenercorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+  "github.com/gardener/gardener/pkg/client/kubernetes"
+  metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+  "sigs.k8s.io/controller-runtime/pkg/client"
+  "sigs.k8s.io/controller-runtime/pkg/client/config"
+)
+
+...
+    expiration := 10 * time.Minute
+    expirationSeconds := int64(expiration.Seconds())
+    adminKubeconfigRequest := &authenticationv1alpha1.AdminKubeconfigRequest{
+      Spec: authenticationv1alpha1.AdminKubeconfigRequestSpec{
+        ExpirationSeconds: &expirationSeconds,
+      },
+    }
+    shoot := &gardenercorev1beta1.Shoot{
+      ObjectMeta: metav1.ObjectMeta{
+        Name:      "my-shoot",
+        Namespace: "my-namespace",
+      },
+    }
+
+    kubeClient, err := client.New(config.GetConfigOrDie(), client.Options{Scheme: kubernetes.GardenScheme})
+    if err != nil {
+      return err
+    }
+    err = kubeClient.SubResource("adminkubeconfig").Create(context.TODO(), shoot, adminKubeconfigRequest)
+    if err != nil {
+      return err
+    }
+    config := adminKubeconfigRequest.Status.Kubeconfig
+...
 ```
 
 In Python, you can use the native [`kubernetes` client](https://github.com/kubernetes-client/python) to create such a kubeconfig like this:
@@ -93,9 +118,10 @@ v1 = client.CoreV1Api(shoot_api_client)
 
 ## `shoots/viewerkubeconfig` Subresource
 
-The `shoots/viewerkubeconfig` subresource works similar to the [`shoots/adminkubeconfig`](#shootsadminkubeconfig-subresource) with two differences.
-One is that it returns a kubeconfig with read-only access for all APIs except the `core/v1.Secret` API and the resources which are specified in the `spec.kubernetes.kubeAPIServer.encryptionConfig` field in the Shoot (see [this document](../security/etcd_encryption_config.md)).
-The other difference is the group associated with the `kubeconfig` - if the user is considered Gardener system viewer, i.e. has the permissions to read all projects in the Garden cluster, then the group `gardener.cloud:system:viewers` is associated with the `kubeconfig`, otherwise the group `gardener.cloud:project:viewers`.
+The `shoots/viewerkubeconfig` subresource works similar to the [`shoots/adminkubeconfig`](#shootsadminkubeconfig-subresource) with the following differences:
+- The username has a `gardener.cloud:viewer:` prefix instead of `gardener.cloud:admin:`.
+- The returned kubeconfig grants users read-only access for all APIs. Exceptions apply to `Secret`s and resources specified in the `spec.kubernetes.kubeAPIServer.encryptionConfig` field of the Shoot (see [this document](../security/etcd_encryption_config.md)), which are not accessible doe to security reasons.
+- A different group is associated with the `kubeconfig` - if the user is considered Gardener system viewer, i.e. has the permissions to read all projects in the Garden cluster, then the group `gardener.cloud:system:viewers` is associated with the `kubeconfig`, otherwise the group `gardener.cloud:project:viewers`.
 
 In order to request such a `kubeconfig`, you can run almost the same code as above - the only difference is that you need to use the `viewerkubeconfig` subresource.
 For example, in bash this looks like this:
@@ -120,7 +146,7 @@ The examples for other programming languages are similar to [the above](#shootsa
 
 ## Structured Authentication
 
-For shoots with Kubernetes version `>= 1.30`, which have `StructuredAuthenticationConfiguration` feature gate enabled (enabled by default), `kube-apiserver` of shoot clusters can be provided with [Structured Authentication configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration) via the Shoot spec:
+For shoots, which have `StructuredAuthenticationConfiguration` feature gate enabled (enabled by default), `kube-apiserver` of shoot clusters can be provided with [Structured Authentication configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration) via the Shoot spec:
 
 ```yaml
 apiVersion: core.gardener.cloud/v1beta1
@@ -168,6 +194,45 @@ data:
 The user is responsible for the validity of the configured `JWTAuthenticator`s.
 Be aware that changing the configuration in the `ConfigMap` will be applied in the next `Shoot` reconciliation, but this is not automatically triggered.
 If you want the changes to roll out immediately, [trigger a reconciliation explicitly](../shoot-operations/shoot_operations.md#immediate-reconciliation).
+
+### Configuring Anonymous Authentication
+
+Gardener disables anonymous authentication by default for all Kubernetes versions.
+For clusters with Kubernetes version `>= 1.35`, the `.spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication` field is no longer available.
+If you need to enable anonymous authentication for your shoot cluster, you can configure it using [Structured Authentication Configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration) with the [anonymous authenticator](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration).
+
+Here is an example of a `ConfigMap` that enables anonymous authentication for the `/livez` endpoint:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentication-config-with-anonymous
+  namespace: garden-my-project
+data:
+  config.yaml: |
+    apiVersion: apiserver.config.k8s.io/v1beta1
+    kind: AuthenticationConfiguration
+    anonymous:
+      enabled: true
+      conditions:
+      - path: /livez
+```
+
+Reference this `ConfigMap` in your `Shoot` spec:
+
+```yaml
+apiVersion: core.gardener.cloud/v1beta1
+kind: Shoot
+spec:
+  kubernetes:
+    kubeAPIServer:
+      structuredAuthentication:
+        configMapName: authentication-config-with-anonymous
+```
+
+> [!WARNING]
+> Enabling anonymous authentication allows unauthenticated requests to reach your API server. Use with caution and ensure appropriate authorization policies are in place.
 
 ### Migrating from OIDC to Structured Authentication Config
 
@@ -242,7 +307,7 @@ spec:
 
 ## Structured Authorization
 
-For shoots with Kubernetes version `>= 1.30`, which have `StructuredAuthorizationConfiguration` feature gate enabled (enabled by default), `kube-apiserver` of shoot clusters can be provided with [Structured Authorization configuration](https://kubernetes.io/docs/reference/access-authn-authz/authorization/#using-configuration-file-for-authorization) via the Shoot spec:
+For shoots, which have `StructuredAuthorizationConfiguration` feature gate enabled (enabled by default), `kube-apiserver` of shoot clusters can be provided with [Structured Authorization configuration](https://kubernetes.io/docs/reference/access-authn-authz/authorization/#using-configuration-file-for-authorization) via the Shoot spec:
 
 ```yaml
 apiVersion: core.gardener.cloud/v1beta1
@@ -336,6 +401,6 @@ Shoots have to "opt-in" for such defaulting by using the `oidc=enable` label.
 
 For further information on `(Cluster)OpenIDConnectPreset`, refer to [ClusterOpenIDConnectPreset and OpenIDConnectPreset](../security/openidconnect-presets.md).
 
-For shoots with Kubernetes version `>= 1.30`, which have `StructuredAuthenticationConfiguration` feature gate enabled (enabled by default), it is advised to use Structured Authentication instead of configuring `.spec.kubernetes.kubeAPIServer.oidcConfig` and/or `(Cluster)OpenIDConnectPreset`.
+For shoots, which have `StructuredAuthenticationConfiguration` feature gate enabled (enabled by default), it is advised to use Structured Authentication instead of configuring `.spec.kubernetes.kubeAPIServer.oidcConfig` and/or `(Cluster)OpenIDConnectPreset`.
 
 If `oidcConfig` is configured, it is translated into an `AuthenticationConfiguration` file to use for [Structured Authentication configuration](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration).

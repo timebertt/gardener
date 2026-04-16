@@ -21,15 +21,12 @@ BUILD_DATE                                 := $(shell date '+%Y-%m-%dT%H:%M:%S%z
 REPO_ROOT                                  := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 GARDENER_LOCAL_KUBECONFIG                  := $(REPO_ROOT)/example/gardener-local/kind/local/kubeconfig
 GARDENER_LOCAL2_KUBECONFIG                 := $(REPO_ROOT)/example/gardener-local/kind/local2/kubeconfig
-GARDENER_EXTENSIONS_KUBECONFIG             := $(REPO_ROOT)/example/gardener-local/kind/extensions/kubeconfig
-GARDENER_LOCAL_MULTI_ZONE_KUBECONFIG       := $(REPO_ROOT)/example/gardener-local/kind/multi-zone/kubeconfig
+GARDENER_LOCAL_MULTI_ZONE_KUBECONFIG       := $(REPO_ROOT)/dev-setup/kubeconfigs/runtime/kubeconfig
 GARDENER_LOCAL_MULTI_NODE2_KUBECONFIG      := $(REPO_ROOT)/example/gardener-local/kind/multi-node2/kubeconfig
 GARDENER_PREVIOUS_RELEASE                  := ""
 GARDENER_NEXT_RELEASE                      := $(VERSION)
 LOCAL_GARDEN_LABEL                         := local-garden
 REMOTE_GARDEN_LABEL                        := remote-garden
-SEED_NAME                                  := provider-extensions
-SEED_KUBECONFIG                            := $(REPO_ROOT)/example/provider-extensions/seed/kubeconfig
 DEV_SETUP_WITH_WEBHOOKS                    := false
 IPFAMILY                                   ?= ipv4
 PARALLEL_E2E_TESTS                         ?= 5
@@ -39,9 +36,9 @@ DEV_SETUP_WITH_WORKLOAD_IDENTITY_SUPPORT   ?= false
 TARGET_PLATFORMS                           ?= linux/$(shell go env GOARCH)
 PRINT_HELP ?=
 
-ifneq ($(SEED_NAME),provider-extensions)
-	SEED_KUBECONFIG := $(REPO_ROOT)/example/provider-extensions/seed/kubeconfig-$(SEED_NAME)
-endif
+# Disable globally go workspaces until https://github.com/gardener/gardener/issues/8811 is resolved.
+# This resolves issues presented with error like 'pattern ./...: directory prefix . does not contain modules listed in go.work or their selected dependencies'
+export GOWORK=off
 
 ifndef ARTIFACTS
 	export ARTIFACTS=/tmp/artifacts
@@ -64,6 +61,7 @@ TOOLS_DIR := hack/tools
 include hack/tools.mk
 
 LOGCHECK_DIR := $(TOOLS_DIR)/logcheck
+PKG_APIS_DIR := $(REPO_ROOT)/pkg/apis
 
 #########################################
 # Rules for local development scenarios #
@@ -143,6 +141,7 @@ docker-push:
 tidy:
 	@GO111MODULE=on go mod tidy
 	@cd $(LOGCHECK_DIR); go mod tidy
+	@cd $(PKG_APIS_DIR); go mod tidy
 
 .PHONY: clean
 clean:
@@ -161,10 +160,14 @@ check-plutono-dashboards:
 	@hack/check-plutono-dashboards.sh
 
 .PHONY: check
-check: $(GO_ADD_LICENSE) $(GOIMPORTS) $(GOLANGCI_LINT) $(HELM) $(IMPORT_BOSS) $(LOGCHECK) $(YQ) $(VGOPATH) $(TYPOS) logcheck-symlinks
+check: $(GO_ADD_LICENSE) $(GOIMPORTS) $(GOLANGCI_LINT) $(HELM) $(IMPORT_BOSS) $(LOGCHECK) $(YQ) $(TYPOS) logcheck-symlinks
 	@sed ./.golangci.yaml.in -e "s#<<LOGCHECK_PLUGIN_PATH>>#$(TOOLS_BIN_DIR)#g" > ./.golangci.yaml
 	@hack/check.sh --golangci-lint-config=./.golangci.yaml ./charts/... ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
-	@VGOPATH=$(VGOPATH) hack/check-imports.sh ./charts/... ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
+	@hack/check-imports.sh ./charts/... ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
+
+	@echo "> Check $(PKG_APIS_DIR)"
+	@cd $(PKG_APIS_DIR); ../../hack/check.sh --golangci-lint-config=../../.golangci.yaml ./...
+	@cd $(PKG_APIS_DIR); ../../hack/check-imports.sh ./...
 
 	@echo "> Check $(LOGCHECK_DIR)"
 	@cd $(LOGCHECK_DIR); $(abspath $(GOLANGCI_LINT)) run -c $(REPO_ROOT)/.golangci.yaml --timeout 10m ./...
@@ -182,18 +185,20 @@ check: $(GO_ADD_LICENSE) $(GOIMPORTS) $(GOLANGCI_LINT) $(HELM) $(IMPORT_BOSS) $(
 logcheck-symlinks:
 	@LOGCHECK_DIR=$(LOGCHECK_DIR) ./hack/generate-logcheck-symlinks.sh
 
-tools-for-generate: $(CONTROLLER_GEN) $(EXTENSION_GEN) $(GEN_CRD_API_REFERENCE_DOCS) $(GOIMPORTS) $(GO_TO_PROTOBUF) $(HELM) $(MOCKGEN) $(OPENAPI_GEN) $(PROTOC) $(PROTOC_GEN_GOGO) $(YQ) $(VGOPATH)
+tools-for-generate: $(CONTROLLER_GEN) $(EXTENSION_GEN) $(CRD_REF_DOCS) $(GOIMPORTS) $(GO_TO_PROTOBUF) $(HELM) $(MOCKGEN) $(OPENAPI_GEN) $(PROTOC) $(PROTOC_GEN_GOGO) $(YQ)
+	@go mod download
 
 define GENERATE_HELP_INFO
-# Usage: make generate [WHAT="<targets>"] [MODE="<mode>"] [CODEGEN_GROUPS="<groups>"] [MANIFESTS_DIRS="<folders>"]
+# Usage: make generate [WHAT="<targets>"] [MODE="<mode>"] [CODEGEN_GROUPS="<groups>"] [MANIFESTS_DIRS="<folders>"] [MAX_PARALLEL_WORKERS="<num>"]
 #
 # Options:
-#   WHAT              - Specify the targets to run (e.g., "protobuf codegen manifests logcheck")
-#   CODEGEN_GROUPS    - Specify which groups to run the 'codegen' target for, not applicable for other targets (e.g., "authentication_groups core_groups extensions_groups resources_groups
-#                       operator_groups seedmanagement_groups operations_groups settings_groups operatorconfig_groups controllermanager_groups admissioncontroller_groups scheduler_groups
-#                       gardenlet_groups resourcemanager_groups shoottolerationrestriction_groups shootdnsrewriting_groups shootresourcereservation_groups provider_local_groups extensions_config_groups")
-#   MANIFESTS_DIRS    - Specify which directories to run the 'manifests' target in, not applicable for other targets (Default directories are "charts cmd example extensions imagevector pkg plugin test")
-#   MODE              - Specify the mode for the 'manifests' (default=parallel) or 'codegen' (default=sequential) target (e.g., "parallel" or "sequential")
+#   WHAT                   - Specify the targets to run (e.g., "protobuf codegen manifests logcheck")
+#   CODEGEN_GROUPS         - Specify which groups to run the 'codegen' target for, not applicable for other targets (e.g., "authentication_groups core_groups extensions_groups resources_groups
+#                            operator_groups seedmanagement_groups operations_groups settings_groups operatorconfig_groups controllermanager_groups admissioncontroller_groups scheduler_groups
+#                            gardenlet_groups resourcemanager_groups shoottolerationrestriction_groups shootdnsrewriting_groups shootresourcereservation_groups provider_local_groups extensions_config_groups")
+#   MANIFESTS_DIRS         - Specify which directories to run the 'manifests' target in, not applicable for other targets (Default directories are "charts cmd example extensions imagevector pkg plugin test")
+#   MODE                   - Specify the mode for the 'manifests' (default=parallel) or 'codegen' (default=sequential) target (e.g., "parallel" or "sequential")
+#   MAX_PARALLEL_WORKERS   - Specify the number of maximum parallel workers that will be used when MODE='parallel' (default=4)
 #
 # Examples:
 #   make generate
@@ -202,6 +207,7 @@ define GENERATE_HELP_INFO
 #   make generate WHAT="manifests" MANIFESTS_DIRS="pkg/component plugin" MODE="sequential"
 #   make generate WHAT="codegen" CODEGEN_GROUPS="core_groups extensions_groups"
 #   make generate WHAT="codegen manifests" CODEGEN_GROUPS="operator_groups controllermanager_groups" MANIFESTS_DIRS="charts extensions/pkg"
+#   make generate WHAT="manifests" MAX_PARALLEL_WORKERS=8
 #
 endef
 export GENERATE_HELP_INFO
@@ -212,13 +218,14 @@ generate:
 else
 generate: tools-for-generate
 	@printf "\nFor more info on the generate command, Run 'make generate PRINT_HELP=y'\n"
-	@REPO_ROOT=$(REPO_ROOT) VGOPATH=$(VGOPATH) LOGCHECK_DIR=$(LOGCHECK_DIR) hack/generate.sh --what "$(WHAT)" --codegen-groups "$(CODEGEN_GROUPS)" --manifests-dirs "$(MANIFESTS_DIRS)" --mode "$(MODE)"
+	@cd $(PKG_APIS_DIR); REPO_ROOT=$(REPO_ROOT) ../../hack/generate.sh --what "manifests" --manifests-dirs "./pkg/apis" --mode "$(MODE)"
+	@REPO_ROOT=$(REPO_ROOT) LOGCHECK_DIR=$(LOGCHECK_DIR) hack/generate.sh --what "$(WHAT)" --codegen-groups "$(CODEGEN_GROUPS)" --manifests-dirs "$(MANIFESTS_DIRS)" --mode "$(MODE)"
 	$(MAKE) format
 endif
 
 .PHONY: format
 format: $(GOIMPORTS) $(GOIMPORTSREVISER)
-	@./hack/format.sh ./charts ./cmd ./extensions ./pkg ./plugin ./test ./hack
+	@MODE=$(MODE) ./hack/format.sh ./charts ./cmd ./extensions ./pkg ./plugin ./test ./hack
 	@cd $(LOGCHECK_DIR); $(abspath $(GOIMPORTS)) -l -w .
 
 .PHONY: sast
@@ -232,6 +239,7 @@ sast-report: $(GOSEC)
 .PHONY: test
 test: $(REPORT_COLLECTOR) $(PROMTOOL) $(HELM) logcheck-symlinks
 	@./hack/test.sh ./charts/... ./cmd/... ./extensions/pkg/... ./pkg/... ./plugin/...
+	@cd $(PKG_APIS_DIR); ../../hack/test.sh ./...
 	@cd $(LOGCHECK_DIR); go test -race -timeout=2m ./... | grep -v 'no test files'
 
 .PHONY: test-integration
@@ -247,18 +255,14 @@ test-cov-clean:
 	@./hack/test-cover-clean.sh
 
 .PHONY: check-apidiff
-check-apidiff: $(GO_APIDIFF)
-	@./hack/check-apidiff.sh
-
-.PHONY: check-vulnerabilities
-check-vulnerabilities: $(GO_VULN_CHECK)
-	$(GO_VULN_CHECK) ./...
+check-apidiff:
+	@REPO_ROOT=$(REPO_ROOT) ./hack/check-apidiff.sh
 
 .PHONY: verify
-verify: check format test test-integration sast
+verify: check format test test-integration
 
 .PHONY: verify-extended
-verify-extended: check-generate check format test-cov test-cov-clean test-integration sast-report
+verify-extended: check-generate check format test-cov test-cov-clean test-integration
 
 #####################################################################
 # Rules for local environment                                       #
@@ -269,10 +273,9 @@ kind-% kind2-% gardener-% operator-% garden-% seed-% ci-e2e-kind: export IPFAMIL
 kind-up kind-down gardener-up gardener-dev gardener-debug gardener-down: export KUBECONFIG = $(GARDENER_LOCAL_KUBECONFIG)
 test-e2e-local-simple test-e2e-local-migration test-e2e-local-workerless test-e2e-local ci-e2e-kind ci-e2e-kind-upgrade: export KUBECONFIG = $(GARDENER_LOCAL_KUBECONFIG)
 kind2-up kind2-down gardenlet-kind2-up gardenlet-kind2-dev gardenlet-kind2-debug gardenlet-kind2-down: export KUBECONFIG = $(GARDENER_LOCAL2_KUBECONFIG)
-kind-extensions-up kind-extensions-down gardener-extensions-up gardener-extensions-down: export KUBECONFIG = $(GARDENER_EXTENSIONS_KUBECONFIG)
 kind-multi-node2-up kind-multi-node2-down: export KUBECONFIG = $(GARDENER_LOCAL_MULTI_NODE2_KUBECONFIG)
-kind-single-node-up kind-single-node-down kind-multi-node-up kind-multi-node-down kind-multi-zone-up kind-multi-zone-down operator%up operator-dev operator-debug operator%down operator-seed-dev test-e2e-local-operator ci-e2e-kind-operator garden-up garden-down gardenadm-up gardenadm-down seed-up seed-down test-e2e-local-gardenadm% ci-e2e-kind-gardenadm: export KUBECONFIG = $(GARDENER_LOCAL_MULTI_ZONE_KUBECONFIG)
-garden-up garden-down operator-seed-% test-e2e-local-ha-% ci-e2e-kind-ha-% ci-e2e-kind-ha-%-upgrade test-e2e-local-migration-ha-multi-node seed-% gardenadm-%: export VIRTUAL_GARDEN_KUBECONFIG = $(REPO_ROOT)/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+kind-single-node-up kind-single-node-down kind-multi-node-up kind-multi-node-down kind-multi-zone-up kind-multi-zone-down operator%up operator-dev operator-debug operator%down operator-seed-dev test-e2e-local-operator ci-e2e-kind-operator garden-up garden-down gardenadm-up gardenadm-down seed-up seed-down test-e2e-local-gardenadm% ci-e2e-kind-gardenadm% remote-%: export KUBECONFIG = $(GARDENER_LOCAL_MULTI_ZONE_KUBECONFIG)
+garden-up garden-down operator-seed-% test-e2e-local-ha-% ci-e2e-kind-ha-% ci-e2e-kind-ha-%-upgrade test-e2e-local-migration-ha-multi-node seed-% gardenadm-% remote-%: export VIRTUAL_GARDEN_KUBECONFIG = $(REPO_ROOT)/dev-setup/kubeconfigs/virtual-garden/kubeconfig
 test-e2e-local-ha-% test-e2e-local-migration-ha-multi-node ci-e2e-kind-ha-% ci-e2e-kind-ha-%-upgrade: export KUBECONFIG = $(VIRTUAL_GARDEN_KUBECONFIG)
 # CLUSTER_NAME
 kind-up kind-down: export CLUSTER_NAME = gardener-local
@@ -293,7 +296,6 @@ kind-multi-node-up kind-multi-node-down: export CLUSTER_VALUES = $(REPO_ROOT)/ex
 kind-multi-zone-up kind-multi-zone-down: export CLUSTER_VALUES = $(REPO_ROOT)/example/gardener-local/kind/multi-zone/values.yaml
 kind-multi-node2-up kind-multi-node2-down: export CLUSTER_VALUES = $(REPO_ROOT)/example/gardener-local/kind/multi-node2/values.yaml
 # ADDITIONAL_PARAMETERS
-kind2-up kind-multi-node2-up: export ADDITIONAL_PARAMETERS = --skip-registry
 kind2-down kind-multi-node2-down: export ADDITIONAL_PARAMETERS = --keep-backupbuckets-dir
 kind-multi-zone-up: export ADDITIONAL_PARAMETERS = --multi-zonal
 
@@ -309,13 +311,6 @@ kind-down kind2-down kind-multi-node2-down: $(KIND)
 		--cluster-name $(CLUSTER_NAME) \
 		--path-kubeconfig $(KIND_KUBECONFIG) \
 		$(ADDITIONAL_PARAMETERS)
-
-kind-extensions-up: $(KIND) $(KUBECTL)
-	REPO_ROOT=$(REPO_ROOT) ./hack/kind-extensions-up.sh
-kind-extensions-down:
-	docker stop gardener-extensions-control-plane
-kind-extensions-clean: $(KIND)
-	./hack/kind-down.sh --cluster-name gardener-extensions --path-kubeconfig $(REPO_ROOT)/example/provider-extensions/garden/kubeconfig
 
 kind-single-node-up kind-multi-node-up kind-multi-zone-up: $(KIND) $(KUBECTL) $(HELM) $(YQ) $(KUSTOMIZE)
 	./hack/kind-up.sh \
@@ -336,7 +331,7 @@ kind-single-node-down kind-multi-node-down kind-multi-zone-down: $(KIND)
 export SKAFFOLD_BUILD_CONCURRENCY = 0
 # build the images for the platform matching the nodes of the active kubernetes cluster, even in `skaffold build`, which doesn't enable this by default
 export SKAFFOLD_CHECK_CLUSTER_NODE_PLATFORMS = true
-export SKAFFOLD_DEFAULT_REPO = garden.local.gardener.cloud:5001
+export SKAFFOLD_DEFAULT_REPO ?= registry.local.gardener.cloud:5001
 export SKAFFOLD_PUSH = true
 export SOURCE_DATE_EPOCH = $(shell date -d $(BUILD_DATE) +%s)
 export GARDENER_VERSION = $(VERSION)
@@ -363,13 +358,6 @@ gardener-debug: $(SKAFFOLD) $(HELM) $(KUBECTL) $(YQ)
 	$(SKAFFOLD) debug
 gardener-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
 	./hack/gardener-down.sh
-
-gardener-extensions-%: export SKAFFOLD_LABEL = skaffold.dev/run-id=gardener-extensions
-
-gardener-extensions-up: $(SKAFFOLD) $(HELM) $(KUBECTL) $(YQ) $(OIDC_METADATA)
-	./hack/gardener-extensions-up.sh --path-garden-kubeconfig $(REPO_ROOT)/example/provider-extensions/garden/kubeconfig --path-seed-kubeconfig $(SEED_KUBECONFIG) --seed-name $(SEED_NAME) --with-workload-identity-support $(DEV_SETUP_WITH_WORKLOAD_IDENTITY_SUPPORT)
-gardener-extensions-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
-	./hack/gardener-extensions-down.sh --path-garden-kubeconfig $(REPO_ROOT)/example/provider-extensions/garden/kubeconfig --path-seed-kubeconfig $(SEED_KUBECONFIG) --seed-name $(SEED_NAME) --with-workload-identity-support $(DEV_SETUP_WITH_WORKLOAD_IDENTITY_SUPPORT)
 
 gardenlet-kind2-up gardenlet-kind2-dev gardenlet-kind2-debug gardenlet-kind2-down: export SKAFFOLD_PREFIX_NAME = kind2
 gardenlet-kind2-up gardenlet-kind2-dev gardenlet-kind2-debug gardenlet-kind2-down: export SKAFFOLD_COMMAND_KUBECONFIG := $(GARDENER_LOCAL_KUBECONFIG)
@@ -401,6 +389,12 @@ operator-debug: $(SKAFFOLD) $(HELM) $(KUBECTL)
 operator-down: $(SKAFFOLD) $(HELM) $(KUBECTL)
 	./dev-setup/operator.sh down
 
+# remote-{up,down}
+remote-up: $(KUBECTL)
+	./dev-setup/remote.sh up $(DEV_SETUP_WITH_WORKLOAD_IDENTITY_SUPPORT)
+remote-down: $(KUBECTL)
+	./dev-setup/remote.sh down $(DEV_SETUP_WITH_WORKLOAD_IDENTITY_SUPPORT)
+
 # garden-{up,down}
 garden-up: $(KUBECTL)
 	./dev-setup/garden.sh up
@@ -424,7 +418,8 @@ operator-seed-up: SKAFFOLD_MODE=run
 operator-seed-dev: SKAFFOLD_MODE=dev
 operator-seed-dev: export SKAFFOLD_PROFILE=dev
 operator-seed-up operator-seed-dev: $(SKAFFOLD) $(HELM) $(KUBECTL) operator-up garden-up seed-up
-	TIMEOUT=900 ./hack/usage/wait-for.sh garden local VirtualGardenAPIServerAvailable RuntimeComponentsHealthy VirtualComponentsHealthy
+	kubectl annotate garden local gardener.cloud/operation=reconcile
+	TIMEOUT=900 ./hack/usage/wait-for.sh garden local VirtualGardenAPIServerAvailable RuntimeComponentsHealthy VirtualComponentsHealthy ObservabilityComponentsHealthy
 operator-seed-down: $(SKAFFOLD) $(HELM) $(KUBECTL) seed-down garden-down
 
 # gardenadm
@@ -450,13 +445,17 @@ test-e2e-local-migration-ha-multi-node: $(GINKGO)
 test-e2e-local-ha-multi-node: $(GINKGO)
 	SHOOT_FAILURE_TOLERANCE_TYPE=node ./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter "basic || (high-availability && update-to-node)" ./test/e2e/gardener/...
 test-e2e-local-ha-multi-zone: $(GINKGO)
-	SHOOT_FAILURE_TOLERANCE_TYPE=zone USE_PROVIDER_LOCAL_COREDNS_SERVER=true ./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter "basic || (high-availability && update-to-zone)" ./test/e2e/gardener/...
+	SHOOT_FAILURE_TOLERANCE_TYPE=zone ./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter "basic || (high-availability && update-to-zone)" ./test/e2e/gardener/...
 test-e2e-local-operator: $(GINKGO)
 	./hack/test-e2e-local.sh operator --procs=1 --label-filter="default" ./test/e2e/operator/...
 test-e2e-local-gardenadm-managed-infra: $(GINKGO)
 	./hack/test-e2e-local.sh gardenadm --procs=1 --label-filter="managed-infra" ./test/e2e/gardenadm/...
 test-e2e-local-gardenadm-unmanaged-infra: $(GINKGO)
 	./hack/test-e2e-local.sh gardenadm --procs=1 --label-filter="unmanaged-infra" ./test/e2e/gardenadm/...
+test-e2e-local-gardenadm-unmanaged-infra-initjoin: $(GINKGO)
+	./hack/test-e2e-local.sh gardenadm --procs=1 --label-filter="unmanaged-infra && initjoin" ./test/e2e/gardenadm/...
+test-e2e-local-gardenadm-unmanaged-infra-connect: $(GINKGO)
+	./hack/test-e2e-local.sh gardenadm --procs=1 --label-filter="unmanaged-infra && connect" ./test/e2e/gardenadm/...
 
 test-non-ha-pre-upgrade: $(GINKGO)
 	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="pre-upgrade && !high-availability" ./test/e2e/gardener/...
@@ -469,7 +468,7 @@ test-post-upgrade: $(GINKGO)
 	./hack/test-e2e-local.sh --procs=$(PARALLEL_E2E_TESTS) --label-filter="post-upgrade" ./test/e2e/gardener/...
 
 ci-e2e-kind: $(KIND) $(YQ)
-	./hack/ci-e2e-kind.sh
+	GARDENER_LOCAL_KUBECONFIG=$(GARDENER_LOCAL_KUBECONFIG) ./hack/ci-e2e-kind.sh
 ci-e2e-kind-migration: $(KIND) $(YQ)
 	GARDENER_LOCAL_KUBECONFIG=$(GARDENER_LOCAL_KUBECONFIG) GARDENER_LOCAL2_KUBECONFIG=$(GARDENER_LOCAL2_KUBECONFIG) ./hack/ci-e2e-kind-migration.sh
 ci-e2e-kind-migration-ha-multi-node: $(KIND) $(YQ)
@@ -480,12 +479,16 @@ ci-e2e-kind-ha-multi-zone: $(KIND) $(YQ)
 	./hack/ci-e2e-kind-ha-multi-zone.sh
 ci-e2e-kind-operator: $(KIND) $(YQ)
 	./hack/ci-e2e-kind-operator.sh
-ci-e2e-kind-gardenadm: $(KIND) $(YQ)
-	./hack/ci-e2e-kind-gardenadm.sh
+ci-e2e-kind-gardenadm-unmanaged-infra: $(KIND) $(YQ)
+	./hack/ci-e2e-kind-gardenadm-unmanaged-infra.sh
+ci-e2e-kind-gardenadm-unmanaged-infra-external-gardener: $(KIND) $(YQ)
+	./hack/ci-e2e-kind-gardenadm-unmanaged-infra-external-gardener.sh
+ci-e2e-kind-gardenadm-managed-infra: $(KIND) $(YQ)
+	./hack/ci-e2e-kind-gardenadm-managed-infra.sh
 
 ci-e2e-kind-upgrade: $(KIND) $(YQ)
-	SHOOT_FAILURE_TOLERANCE_TYPE= GARDENER_PREVIOUS_RELEASE=$(GARDENER_PREVIOUS_RELEASE) GARDENER_RELEASE_DOWNLOAD_PATH=$(GARDENER_RELEASE_DOWNLOAD_PATH) GARDENER_NEXT_RELEASE=$(GARDENER_NEXT_RELEASE) ./hack/ci-e2e-kind-upgrade.sh
+	SHOOT_FAILURE_TOLERANCE_TYPE= GARDENER_PREVIOUS_RELEASE=$(GARDENER_PREVIOUS_RELEASE) GARDENER_RELEASE_DOWNLOAD_PATH=$(GARDENER_RELEASE_DOWNLOAD_PATH) GARDENER_NEXT_RELEASE=$(GARDENER_NEXT_RELEASE) GARDENER_LOCAL_KUBECONFIG=$(GARDENER_LOCAL_KUBECONFIG) ./hack/ci-e2e-kind-upgrade.sh
 ci-e2e-kind-ha-multi-node-upgrade: $(KIND) $(YQ)
 	SHOOT_FAILURE_TOLERANCE_TYPE=node GARDENER_PREVIOUS_RELEASE=$(GARDENER_PREVIOUS_RELEASE) GARDENER_RELEASE_DOWNLOAD_PATH=$(GARDENER_RELEASE_DOWNLOAD_PATH) GARDENER_NEXT_RELEASE=$(GARDENER_NEXT_RELEASE) ./hack/ci-e2e-kind-upgrade.sh
 ci-e2e-kind-ha-multi-zone-upgrade: $(KIND) $(YQ)
-	SHOOT_FAILURE_TOLERANCE_TYPE=zone USE_PROVIDER_LOCAL_COREDNS_SERVER=true GARDENER_PREVIOUS_RELEASE=$(GARDENER_PREVIOUS_RELEASE) GARDENER_RELEASE_DOWNLOAD_PATH=$(GARDENER_RELEASE_DOWNLOAD_PATH) GARDENER_NEXT_RELEASE=$(GARDENER_NEXT_RELEASE) ./hack/ci-e2e-kind-upgrade.sh
+	SHOOT_FAILURE_TOLERANCE_TYPE=zone GARDENER_PREVIOUS_RELEASE=$(GARDENER_PREVIOUS_RELEASE) GARDENER_RELEASE_DOWNLOAD_PATH=$(GARDENER_RELEASE_DOWNLOAD_PATH) GARDENER_NEXT_RELEASE=$(GARDENER_NEXT_RELEASE) ./hack/ci-e2e-kind-upgrade.sh

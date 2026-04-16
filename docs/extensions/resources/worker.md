@@ -128,11 +128,14 @@ The `spec.pools[].nodeTemplate.virtualCapacity` field contains the _virtual_ res
 
 The `spec.pools[].machineControllerManager` field allows to configure the settings for machine-controller-manager component. Providers must populate these settings on worker-pool to the related [fields](https://github.com/gardener/machine-controller-manager/blob/master/kubernetes/machine_objects/machine-deployment.yaml#L30-L34) in MachineDeployment.
 
-The `spec.pools[].clusterAutoscaler` field contains `cluster-autoscaler` settings that are to be applied only to specific worker group. `cluster-autoscaler` expects to find these settings as annotations on the `MachineDeployment`, and so providers must pass these values to the corresponding `MachineDeployment` via annotations. The keys for these annotations can be found [here](../../../pkg/apis/extensions/v1alpha1/types_worker.go) and the values for the corresponding annotations should be the same as what is passed into the field. Providers can use the helper function [`extensionsv1alpha1helper.GetMachineDeploymentClusterAutoscalerAnnotations`](../../../pkg/apis/extensions/v1alpha1/helper/worker.go) that returns the annotation map to be used.
+The `spec.pools[].clusterAutoscaler` field contains `cluster-autoscaler` settings that are to be applied only to specific worker group. `cluster-autoscaler` expects to find these settings as annotations on the `MachineDeployment`, and so providers must pass these values to the corresponding `MachineDeployment` via annotations. The keys for these annotations can be found [here](../../../pkg/apis/extensions/v1alpha1/types_worker.go) and the values for the corresponding annotations should be the same as what is passed into the field. Providers can use the helper function [`extensionsv1alpha1helper.GetMachineDeploymentClusterAutoscalerAnnotations`](../../../pkg/api/extensions/v1alpha1/helper/worker.go) that returns the annotation map to be used.
 
 The controller must only inject its provider-specific sidecar container into the `machine-controller-manager` `Deployment` managed by `gardenlet`.
 
-After that, it must compute the desired machine classes and the desired machine deployments.
+After that, it must compute the desired `MachineClasses` and the desired `MachineDeployments`.
+The object names are prefixed with the technical ID of the shoot.
+The worker extension needs to determine the technical ID by reading the `shoot.status.technicalID` field from the `Cluster` object in the seed cluster, as the `Worker` object's namespace might be different from the shoot's technical ID (i.e., in case of [self-hosted shoots](https://github.com/gardener/enhancements/tree/main/geps/0028-self-hosted-shoot-clusters#managed-infrastructure)).
+
 Typically, one class maps to one deployment, and one class/deployment is created per availability zone.
 Following this convention, the created resource would look like this:
 

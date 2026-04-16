@@ -98,6 +98,11 @@ type ProjectStatus struct {
 	// LastActivityTimestamp contains the timestamp from the last activity performed in this project.
 	// +optional
 	LastActivityTimestamp *metav1.Time `json:"lastActivityTimestamp,omitempty" protobuf:"bytes,5,opt,name=lastActivityTimestamp"`
+	// Conditions represents the latest available observations of a Project's current state.
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +optional
+	Conditions []Condition `json:"conditions,omitempty" patchMergeKey:"type" patchStrategy:"merge" protobuf:"bytes,6,rep,name=conditions"`
 }
 
 // ProjectMember is a member of a project.
@@ -122,13 +127,13 @@ type ProjectTolerations struct {
 	// +patchMergeKey=key
 	// +patchStrategy=merge
 	// +optional
-	Defaults []Toleration `json:"defaults,omitempty" patchStrategy:"merge" patchMergeKey:"key" protobuf:"bytes,1,rep,name=defaults"`
+	Defaults []Toleration `json:"defaults,omitempty" patchMergeKey:"key" patchStrategy:"merge" protobuf:"bytes,1,rep,name=defaults"`
 	// Whitelist contains a list of tolerations that are allowed to be added to the shoots in this project. Please note
 	// that this list may only be added by users having the `spec-tolerations-whitelist` verb for project resources.
 	// +patchMergeKey=key
 	// +patchStrategy=merge
 	// +optional
-	Whitelist []Toleration `json:"whitelist,omitempty" patchStrategy:"merge" patchMergeKey:"key" protobuf:"bytes,2,rep,name=whitelist"`
+	Whitelist []Toleration `json:"whitelist,omitempty" patchMergeKey:"key" patchStrategy:"merge" protobuf:"bytes,2,rep,name=whitelist"`
 }
 
 // Toleration is a toleration for a seed taint.

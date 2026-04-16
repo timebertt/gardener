@@ -14,22 +14,24 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
+	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
+	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 )
 
 // Reconciler reconciles Seed resources and provisions or de-provisions the seed system components.
@@ -39,7 +41,7 @@ type Reconciler struct {
 	SeedVersion                          *semver.Version
 	Config                               gardenletconfigv1alpha1.GardenletConfiguration
 	Clock                                clock.Clock
-	Recorder                             record.EventRecorder
+	Recorder                             events.EventRecorder
 	Identity                             *gardencorev1beta1.Gardener
 	ComponentImageVectors                imagevector.ComponentImageVectors
 	ClientCertificateExpirationTimestamp *metav1.Time
@@ -104,20 +106,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		}
 	}
 
-	seedIsGarden, err := gardenletutils.SeedIsGarden(ctx, r.SeedClientSet.Client())
+	seedIsGarden, err := gardenletutils.ClusterIsGarden(ctx, r.SeedClientSet.Client())
+	if err != nil {
+		return reconcile.Result{}, r.updateStatusOperationError(ctx, seed, err, operationType)
+	}
+
+	seedIsSelfHostedShoot, err := gardenletutils.SeedIsSelfHostedShoot(ctx, r.SeedClientSet.Client())
 	if err != nil {
 		return reconcile.Result{}, r.updateStatusOperationError(ctx, seed, err, operationType)
 	}
 
 	if seed.DeletionTimestamp != nil {
-		result, err := r.delete(ctx, log, seedObj, seedIsGarden, seedIsShoot)
+		result, err := r.delete(ctx, log, seedObj, seedIsGarden, seedIsShoot, seedIsSelfHostedShoot)
 		if err != nil {
 			return result, r.updateStatusOperationError(ctx, seed, err, operationType)
 		}
 		return result, nil
 	}
 
-	if err := r.reconcile(ctx, log, seedObj, seedIsGarden, seedIsShoot); err != nil {
+	if err := r.reconcile(ctx, log, seedObj, seedIsGarden, seedIsShoot, seedIsSelfHostedShoot); err != nil {
 		return reconcile.Result{}, r.updateStatusOperationError(ctx, seed, err, operationType)
 	}
 
@@ -282,4 +289,18 @@ func determineClusterIdentity(ctx context.Context, c client.Client) (string, err
 
 func vpaEnabled(settings *gardencorev1beta1.SeedSettings) bool {
 	return settings == nil || settings.VerticalPodAutoscaler == nil || settings.VerticalPodAutoscaler.Enabled
+}
+
+func caCertConfigurations() []secretsutils.ConfigInterface {
+	return []secretsutils.ConfigInterface{
+		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCASeed, CommonName: "kubernetes", CertType: secretsutils.CACert, Validity: ptr.To(30 * 24 * time.Hour)},
+		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAIstioBasicAuthServer, CommonName: "istio-basic-auth-server", CertType: secretsutils.CACert, Validity: ptr.To(30 * 24 * time.Hour)},
+	}
+}
+
+func caCertGenerateOptionsFor() []secretsmanager.GenerateOption {
+	return []secretsmanager.GenerateOption{
+		secretsmanager.Rotate(secretsmanager.KeepOld),
+		secretsmanager.IgnoreOldSecretsAfter(24 * time.Hour),
+	}
 }

@@ -15,16 +15,22 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	jsonserializer "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	auth "k8s.io/apiserver/pkg/authorization/authorizer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 )
 
@@ -52,7 +58,17 @@ var (
 	nodeResource                      = corev1.Resource("nodes")
 	podResource                       = corev1.Resource("pods")
 	secretsResource                   = corev1.Resource("secrets")
+
+	oscDecoder runtime.Decoder
 )
+
+func init() {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(extensionsv1alpha1.AddToScheme(scheme))
+	ser := jsonserializer.NewSerializerWithOptions(jsonserializer.DefaultMetaFactory, scheme, scheme, jsonserializer.SerializerOptions{Yaml: true, Pretty: false, Strict: false})
+	versions := schema.GroupVersions([]schema.GroupVersion{extensionsv1alpha1.SchemeGroupVersion})
+	oscDecoder = serializer.NewCodecFactory(scheme).CodecForVersions(nil, ser, nil, versions)
+}
 
 type authorizer struct {
 	sourceClient client.Client
@@ -151,15 +167,19 @@ func (a *authorizer) authorizeLease(ctx context.Context, log logr.Logger, machin
 		return auth.DecisionDeny, reason, nil
 	}
 
-	nodeName, reason, err := a.getNodeName(ctx, log, machineName)
+	node, reason, err := a.getNode(ctx, log, machineName)
 	if err != nil || reason != "" {
 		return auth.DecisionDeny, reason, err
 	}
 
-	allowedLease := "gardener-node-agent-" + nodeName
-	if (attrs.GetVerb() != "create" && attrs.GetName() != allowedLease) || attrs.GetNamespace() != metav1.NamespaceSystem {
-		log.Info("Denying authorization because gardener-node-agent is not allowed to access the lease", "nodeName", nodeName, "machineName", machineName, "leaseName", attrs.GetName())
-		return auth.DecisionDeny, fmt.Sprintf("this gardener-node-agent can only access lease %q in %q namespace", allowedLease, metav1.NamespaceSystem), nil
+	allowedLeases := []string{"gardener-node-agent-" + node.Name}
+	if node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName] != "" {
+		allowedLeases = append(allowedLeases, node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName])
+	}
+
+	if (attrs.GetVerb() != "create" && !slices.Contains(allowedLeases, attrs.GetName())) || attrs.GetNamespace() != metav1.NamespaceSystem {
+		log.Info("Denying authorization because gardener-node-agent is not allowed to access the lease", "nodeName", node.Name, "machineName", machineName, "leaseName", attrs.GetName())
+		return auth.DecisionDeny, fmt.Sprintf("this gardener-node-agent can only access leases %v in %q namespace", allowedLeases, metav1.NamespaceSystem), nil
 	}
 
 	return auth.DecisionAllow, "", nil
@@ -181,14 +201,14 @@ func (a *authorizer) authorizeNode(ctx context.Context, log logr.Logger, machine
 		return auth.DecisionAllow, "", nil
 	}
 
-	nodeName, reason, err := a.getNodeName(ctx, log, machineName)
+	node, reason, err := a.getNode(ctx, log, machineName)
 	if err != nil || reason != "" {
 		return auth.DecisionDeny, reason, err
 	}
 
-	if attrs.GetName() != nodeName {
-		log.Info("Denying authorization because gardener-node-agent is not allowed to access the node", "nodeName", nodeName, "machineName", machineName)
-		return auth.DecisionDeny, fmt.Sprintf("this gardener-node-agent can only access node %q", nodeName), nil
+	if attrs.GetName() != node.Name {
+		log.Info("Denying authorization because gardener-node-agent is not allowed to access the node", "nodeName", node.Name, "machineName", machineName)
+		return auth.DecisionDeny, fmt.Sprintf("this gardener-node-agent can only access node %q", node.Name), nil
 	}
 
 	return auth.DecisionAllow, "", nil
@@ -204,7 +224,7 @@ func (a *authorizer) authorizePod(ctx context.Context, log logr.Logger, machineN
 		return auth.DecisionDeny, reason, nil
 	}
 
-	nodeName, reason, err := a.getNodeName(ctx, log, machineName)
+	node, reason, err := a.getNode(ctx, log, machineName)
 	if err != nil || reason != "" {
 		return auth.DecisionDeny, reason, err
 	}
@@ -223,21 +243,21 @@ func (a *authorizer) authorizePod(ctx context.Context, log logr.Logger, machineN
 		}
 
 		for _, req := range reqs {
-			if req.Field == "spec.nodeName" && req.Operator == selection.Equals && req.Value == nodeName {
+			if req.Field == "spec.nodeName" && req.Operator == selection.Equals && req.Value == node.Name {
 				return auth.DecisionAllow, "", nil
 			}
 		}
 
 		// allow a read of a single pod known to be related to the node
 		if attrs.GetName() != "" {
-			return a.authorizeSinglePod(ctx, log, nodeName, attrs)
+			return a.authorizeSinglePod(ctx, log, node.Name, attrs)
 		}
 
 		log.Info("Denying request because only listing/watching pods with spec.nodeName field selector for the same node is allowed")
-		return auth.DecisionDeny, fmt.Sprintf("can only list/watch pods with spec.nodeName=%s field selector", nodeName), nil
+		return auth.DecisionDeny, fmt.Sprintf("can only list/watch pods with spec.nodeName=%s field selector", node.Name), nil
 
 	case "get", "delete":
-		return a.authorizeSinglePod(ctx, log, nodeName, attrs)
+		return a.authorizeSinglePod(ctx, log, node.Name, attrs)
 	}
 
 	return auth.DecisionAllow, "", nil
@@ -279,12 +299,38 @@ func (a *authorizer) authorizeSecret(ctx context.Context, log logr.Logger, machi
 		if err := a.sourceClient.Get(ctx, client.ObjectKey{Name: machineName, Namespace: *a.machineNamespace}, machine); err != nil {
 			return auth.DecisionDeny, "", fmt.Errorf("error getting machine %q: %w", machineName, err)
 		}
-		validSecrets = append(validSecrets, machine.Spec.NodeTemplateSpec.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName])
+
+		oscSecretName := machine.Spec.NodeTemplateSpec.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName]
+		validSecrets = append(validSecrets, oscSecretName)
+
+		oscSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: oscSecretName, Namespace: metav1.NamespaceSystem}}
+		if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(oscSecret), oscSecret); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return auth.DecisionDeny, "", fmt.Errorf("error getting OSC secret %q: %w", oscSecretName, err)
+			}
+		} else {
+			var hostname string
+
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: machine.Labels[machinev1alpha1.NodeLabelKey]}}
+			if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(node), node); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return auth.DecisionDeny, "", fmt.Errorf("error getting node %q: %w", node.Name, err)
+				}
+			} else {
+				hostname = node.Labels[corev1.LabelHostname]
+			}
+
+			secretRefNames, err := secretRefNamesFromOSCSecret(oscSecret, hostname)
+			if err != nil {
+				return auth.DecisionDeny, "", fmt.Errorf("error reading secretRef names from OSC secret %q: %w", oscSecretName, err)
+			}
+			validSecrets = append(validSecrets, secretRefNames...)
+		}
 	} else {
 		var nodeNotFound bool
 
 		node := &corev1.Node{}
-		if err := a.targetClient.Get(ctx, client.ObjectKey{Name: machineName}, node); errors.IsNotFound(err) {
+		if err := a.targetClient.Get(ctx, client.ObjectKey{Name: machineName}, node); apierrors.IsNotFound(err) {
 			nodeNotFound = true
 		} else if err != nil {
 			return auth.DecisionDeny, "", fmt.Errorf("error getting node %q: %w", machineName, err)
@@ -303,12 +349,25 @@ func (a *authorizer) authorizeSecret(ctx context.Context, log logr.Logger, machi
 			// gardener-node-agent uses, it needs access to all operating system config secrets.
 			for _, oscSecret := range oscSecretList.Items {
 				validSecrets = append(validSecrets, oscSecret.Name)
+
+				secretRefNames, err := secretRefNamesFromOSCSecret(&oscSecret, "")
+				if err != nil {
+					return auth.DecisionDeny, "", fmt.Errorf("error reading secretRef names from OSC secret %q: %w", oscSecret.Name, err)
+				}
+				validSecrets = append(validSecrets, secretRefNames...)
 			}
 		} else {
 			// Verify that the secret from node label is an operating system config secret.
+			hostname := node.Labels[corev1.LabelHostname]
 			for _, oscSecret := range oscSecretList.Items {
 				if oscSecret.Name == node.Labels[v1beta1constants.LabelWorkerPoolGardenerNodeAgentSecretName] {
 					validSecrets = append(validSecrets, oscSecret.Name)
+
+					secretRefNames, err := secretRefNamesFromOSCSecret(&oscSecret, hostname)
+					if err != nil {
+						return auth.DecisionDeny, "", fmt.Errorf("error reading secretRef names from OSC secret %q: %w", oscSecret.Name, err)
+					}
+					validSecrets = append(validSecrets, secretRefNames...)
 					break
 				}
 			}
@@ -321,6 +380,27 @@ func (a *authorizer) authorizeSecret(ctx context.Context, log logr.Logger, machi
 	}
 
 	return auth.DecisionAllow, "", nil
+}
+
+func secretRefNamesFromOSCSecret(secret *corev1.Secret, hostname string) ([]string, error) {
+	oscRaw, ok := secret.Data[nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig]
+	if !ok {
+		return nil, nil
+	}
+
+	osc := &extensionsv1alpha1.OperatingSystemConfig{}
+	if err := runtime.DecodeInto(oscDecoder, oscRaw, osc); err != nil {
+		return nil, fmt.Errorf("unable to decode OSC from secret %q: %w", secret.Name, err)
+	}
+
+	var names []string
+	for _, file := range append(osc.Spec.Files, osc.Status.ExtensionFiles...) {
+		if file.Content.SecretRef != nil && (hostname == "" || file.HostName == nil || *file.HostName == hostname) {
+			names = append(names, file.Content.SecretRef.Name)
+		}
+	}
+
+	return names, nil
 }
 
 func (a *authorizer) checkVerb(log logr.Logger, attrs auth.Attributes, allowedVerbs ...string) (bool, string) {
@@ -340,27 +420,24 @@ func (a *authorizer) checkSubresource(log logr.Logger, attrs auth.Attributes, al
 
 	return true, ""
 }
+func (a *authorizer) getNode(ctx context.Context, log logr.Logger, machineName string) (*corev1.Node, string, error) {
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: machineName}}
 
-func (a *authorizer) getNodeName(ctx context.Context, log logr.Logger, machineName string) (string, string, error) {
-	var nodeName string
 	if a.machineNamespace != nil {
 		machine := &machinev1alpha1.Machine{}
 		if err := a.sourceClient.Get(ctx, client.ObjectKey{Name: machineName, Namespace: *a.machineNamespace}, machine); err != nil {
-			return "", "", fmt.Errorf("error getting machine %q: %w", machineName, err)
+			return nil, "", fmt.Errorf("error getting machine %q: %w", machineName, err)
 		}
-		nodeName = machine.Labels[machinev1alpha1.NodeLabelKey]
-	} else {
-		node := &corev1.Node{}
-		if err := a.targetClient.Get(ctx, client.ObjectKey{Name: machineName}, node); client.IgnoreNotFound(err) != nil {
-			return "", "", fmt.Errorf("error getting node %q: %w", machineName, err)
-		}
-		nodeName = node.Name
+		node.Name = machine.Labels[machinev1alpha1.NodeLabelKey]
 	}
 
-	if nodeName == "" {
-		log.Info("Denying request because no related node was found", "machineName", machineName)
-		return "", fmt.Sprintf("no node for %q found", machineName), nil
+	if err := a.targetClient.Get(ctx, client.ObjectKeyFromObject(node), node); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Denying request because no related node was found", "machineName", machineName)
+			return nil, fmt.Sprintf("no node for %q found", machineName), nil
+		}
+		return nil, "", fmt.Errorf("error getting node %q: %w", client.ObjectKeyFromObject(node), err)
 	}
 
-	return nodeName, "", nil
+	return node, "", nil
 }

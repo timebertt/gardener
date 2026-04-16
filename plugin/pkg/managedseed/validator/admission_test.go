@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,10 +21,10 @@ import (
 	"k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
@@ -31,7 +32,6 @@ import (
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	securityinformers "github.com/gardener/gardener/pkg/client/security/informers/externalversions"
 	fakeseedmanagement "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned/fake"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	. "github.com/gardener/gardener/plugin/pkg/managedseed/validator"
 )
@@ -51,6 +51,7 @@ const (
 var _ = Describe("ManagedSeed", func() {
 	Describe("#Admit", func() {
 		var (
+			ctx                     context.Context
 			managedSeed             *seedmanagement.ManagedSeed
 			shoot                   *gardencorev1beta1.Shoot
 			secret                  *corev1.Secret
@@ -68,6 +69,7 @@ var _ = Describe("ManagedSeed", func() {
 		)
 
 		BeforeEach(func() {
+			ctx = context.Background()
 			managedSeed = &seedmanagement.ManagedSeed{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
@@ -76,6 +78,19 @@ var _ = Describe("ManagedSeed", func() {
 				Spec: seedmanagement.ManagedSeedSpec{
 					Shoot: &seedmanagement.Shoot{
 						Name: name,
+					},
+					Gardenlet: seedmanagement.GardenletConfig{
+						Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+							TypeMeta: metav1.TypeMeta{
+								APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
+								Kind:       "GardenletConfiguration",
+							},
+							SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+								SeedTemplate: gardencorev1beta1.SeedTemplate{
+									Spec: gardencorev1beta1.SeedSpec{},
+								},
+							},
+						},
 					},
 				},
 			}
@@ -130,8 +145,10 @@ var _ = Describe("ManagedSeed", func() {
 					Namespace: namespace,
 				},
 				CredentialsRef: corev1.ObjectReference{
-					Name:      dnsSecretName,
-					Namespace: namespace,
+					APIVersion: "v1",
+					Kind:       "Secret",
+					Name:       dnsSecretName,
+					Namespace:  namespace,
 				},
 			}
 			secretBinding = &gardencorev1beta1.SecretBinding{
@@ -153,9 +170,11 @@ var _ = Describe("ManagedSeed", func() {
 					DNS: core.SeedDNS{
 						Provider: &core.SeedDNSProvider{
 							Type: dnsProvider,
-							SecretRef: corev1.SecretReference{
-								Name:      name,
-								Namespace: namespace,
+							CredentialsRef: &corev1.ObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       name,
+								Namespace:  namespace,
 							},
 						},
 					},
@@ -176,6 +195,9 @@ var _ = Describe("ManagedSeed", func() {
 					},
 					Ingress: &core.Ingress{
 						Domain: "ingress." + domain,
+						Controller: core.IngressController{
+							Kind: "nginx",
+						},
 					},
 				},
 			}
@@ -188,9 +210,11 @@ var _ = Describe("ManagedSeed", func() {
 					DNS: gardencorev1beta1.SeedDNS{
 						Provider: &gardencorev1beta1.SeedDNSProvider{
 							Type: dnsProvider,
-							SecretRef: corev1.SecretReference{
-								Name:      name,
-								Namespace: namespace,
+							CredentialsRef: &corev1.ObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       name,
+								Namespace:  namespace,
 							},
 						},
 						Defaults: []gardencorev1beta1.SeedDNSProviderConfig{
@@ -247,59 +271,475 @@ var _ = Describe("ManagedSeed", func() {
 		It("should do nothing if the resource is not a ManagedSeed", func() {
 			attrs := admission.NewAttributesRecord(nil, nil, core.Kind(name).WithVersion("version"), managedSeed.Namespace, managedSeed.Name, core.Resource("foos").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
 
-			err := admissionHandler.Admit(context.TODO(), attrs, nil)
+			err := admissionHandler.Admit(ctx, attrs, nil)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should forbid the ManagedSeed creation with namespace different from garden", func() {
-			managedSeed.Namespace = "foo"
+		It("should forbid when object is not ManagedSeed", func() {
+			project := core.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+			}
+			attrs := admission.NewAttributesRecord(&project, nil, seedmanagementv1alpha1.Kind("ManagedSeed").WithVersion("v1alpha1"), managedSeed.Namespace, managedSeed.Name, seedmanagementv1alpha1.Resource("managedseeds").WithVersion("v1alpha1"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-			Expect(err).To(BeInvalidError())
-			Expect(getErrorList(err)).To(ConsistOf(
-				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("metadata.namespace"),
-				})),
-			))
+			err := admissionHandler.Admit(ctx, attrs, nil)
+			Expect(err).To(BeBadRequestError())
+			Expect(err).To(MatchError("could not convert object to ManagedSeed"))
 		})
 
-		It("should forbid the ManagedSeed creation if a Shoot name is not specified", func() {
+		It("should do nothing if a Shoot name is not specified", func() {
 			managedSeed.Spec.Shoot.Name = ""
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-			Expect(err).To(BeInvalidError())
-			Expect(getErrorList(err)).To(ConsistOf(
-				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeRequired),
-					"Field": Equal("spec.shoot.name"),
-				})),
-			))
+			err := admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("should forbid the ManagedSeed creation if the Shoot does not exist", func() {
 			Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Delete(shoot)).To(Succeed())
+			coreClient.AddReactor("get", "shoots", func(_ testing.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewNotFound(gardencorev1beta1.Resource("shoot"), name)
+			})
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-			Expect(err).To(BeInvalidError())
-			Expect(getErrorList(err)).To(ConsistOf(
-				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.shoot.name"),
-				})),
-			))
-		})
-
-		It("should forbid the ManagedSeed if the Shoot does not have any worker", func() {
-			shoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{}
-
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+			err := admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)
 			Expect(err).To(BeInvalidError())
 			Expect(getErrorList(err)).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":   Equal(field.ErrorTypeInvalid),
 					"Field":  Equal("spec.shoot.name"),
-					"Detail": ContainSubstring("workerless shoot cannot be used to create managed seed"),
+					"Detail": ContainSubstring("shoot garden/foo not found"),
+				})),
+			))
+		})
+
+		Context("gardenlet", func() {
+			var (
+				seedExternal *gardencorev1beta1.Seed
+			)
+
+			BeforeEach(func() {
+				var err error
+				seedExternal, err = gardencorehelper.ConvertSeedExternal(seed)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			Context("seed label", func() {
+				BeforeEach(func() {
+					Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(secret)).To(Succeed())
+				})
+
+				It("should add the label for the parent seed name", func() {
+					Expect(admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
+
+					Expect(managedSeed.Labels).To(And(
+						HaveKeyWithValue("name.seed.gardener.cloud/parent-seed", "true"),
+					))
+				})
+
+				It("should remove unneeded labels", func() {
+					metav1.SetMetaDataLabel(&seed.ObjectMeta, "name.seed.gardener.cloud/foo", "true")
+
+					Expect(admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
+
+					Expect(managedSeed.Labels).To(And(
+						HaveKeyWithValue("name.seed.gardener.cloud/parent-seed", "true"),
+						Not(HaveKey("name.seed.gardener.cloud/foo")),
+					))
+				})
+			})
+
+			It("should default the Seed template in the ManagedSeed", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(secret)).To(Succeed())
+
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = gardencorev1beta1.SeedSpec{
+					Backup: &gardencorev1beta1.Backup{},
+				}
+
+				err := admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
+					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
+							Kind:       "GardenletConfiguration",
+						},
+						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+							SeedTemplate: gardencorev1beta1.SeedTemplate{
+								ObjectMeta: seedExternal.ObjectMeta,
+								Spec:       seedExternal.Spec,
+							},
+						},
+					},
+				}))
+			})
+
+			It("should create the ManagedSeed and reuse the primary DNS provider with Secret credentials from Shoot", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(dnsSecret)).To(Succeed())
+
+				seedExternal.Spec.DNS.Provider = nil
+				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
+					{
+						Primary: ptr.To(true),
+						Type:    ptr.To("type"),
+						CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       dnsSecretName,
+						},
+					},
+				}
+
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = seedExternal.Spec
+
+				err := admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)
+				Expect(err).NotTo(HaveOccurred())
+
+				seedExternal.Spec.DNS.Provider = &gardencorev1beta1.SeedDNSProvider{
+					Type:           "type",
+					CredentialsRef: &corev1.ObjectReference{APIVersion: "v1", Kind: "Secret", Name: "bar", Namespace: "garden"},
+				}
+				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
+					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
+							Kind:       "GardenletConfiguration",
+						},
+						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+							SeedTemplate: gardencorev1beta1.SeedTemplate{
+								ObjectMeta: seedExternal.ObjectMeta,
+								Spec:       seedExternal.Spec,
+							},
+						},
+					},
+				}))
+			})
+
+			It("should allow the ManagedSeed to reuse the primary DNS provider with WorkloadIdentity credentials from Shoot", func() {
+				seedExternal.Spec.DNS.Provider = nil
+				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
+					{
+						Primary: ptr.To(true),
+						Type:    ptr.To("type"),
+						CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+							APIVersion: "security.gardener.cloud/v1alpha1",
+							Kind:       "WorkloadIdentity",
+							Name:       "workload-identity",
+						},
+					},
+				}
+
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = seedExternal.Spec
+
+				Expect(admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
+			})
+
+			It("should create the ManagedSeed and reuse the DNS secret referenced by the SecretBindingName of Shoot", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(dnsSecret)).To(Succeed())
+				Expect(coreInformerFactory.Core().V1beta1().SecretBindings().Informer().GetStore().Add(secretBinding)).To(Succeed())
+
+				seedExternal.Spec.DNS.Provider = nil
+				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
+					{
+						Primary: ptr.To(true),
+						Type:    ptr.To("type"),
+					},
+				}
+				shoot.Spec.SecretBindingName = ptr.To(secretBinding.Name)
+
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = seedExternal.Spec
+
+				err := admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)
+				Expect(err).NotTo(HaveOccurred())
+
+				seedExternal.Spec.DNS.Provider = &gardencorev1beta1.SeedDNSProvider{
+					Type:           "type",
+					CredentialsRef: &corev1.ObjectReference{APIVersion: "v1", Kind: "Secret", Name: "bar", Namespace: "garden"},
+				}
+				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
+					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
+							Kind:       "GardenletConfiguration",
+						},
+						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+							SeedTemplate: gardencorev1beta1.SeedTemplate{
+								ObjectMeta: seedExternal.ObjectMeta,
+								Spec:       seedExternal.Spec,
+							},
+						},
+					},
+				}))
+			})
+
+			It("should create the ManagedSeed and use secret referenced by the CredentialsBinding of the Shoot as DNS credentials", func() {
+				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(dnsSecret)).To(Succeed())
+				Expect(securityInformerFactory.Security().V1alpha1().CredentialsBindings().Informer().GetStore().Add(credentialsBinding)).To(Succeed())
+
+				seedExternal.Spec.DNS.Provider = nil
+				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
+					{
+						Primary: ptr.To(true),
+						Type:    ptr.To("type"),
+					},
+				}
+				shoot.Spec.CredentialsBindingName = ptr.To(credentialsBinding.Name)
+
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = seedExternal.Spec
+
+				Expect(admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
+
+				seedExternal.Spec.DNS.Provider = &gardencorev1beta1.SeedDNSProvider{
+					Type:           "type",
+					CredentialsRef: &corev1.ObjectReference{APIVersion: "v1", Kind: "Secret", Name: "bar", Namespace: "garden"},
+				}
+				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
+					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
+							Kind:       "GardenletConfiguration",
+						},
+						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+							SeedTemplate: gardencorev1beta1.SeedTemplate{
+								ObjectMeta: seedExternal.ObjectMeta,
+								Spec:       seedExternal.Spec,
+							},
+						},
+					},
+				}))
+			})
+
+			It("should create the ManagedSeed and use WorkloadIdentity referenced by the CredentialsBinding of the Shoot as DNS credentials", func() {
+				workloadIdentity := &securityv1alpha1.WorkloadIdentity{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "workload-identity",
+						Namespace: namespace,
+					},
+					Spec: securityv1alpha1.WorkloadIdentitySpec{
+						Audiences: []string{"test"},
+						TargetSystem: securityv1alpha1.TargetSystem{
+							Type: "test",
+						},
+					},
+				}
+				credentialsBinding.CredentialsRef = corev1.ObjectReference{
+					APIVersion: "security.gardener.cloud/v1alpha1",
+					Kind:       "WorkloadIdentity",
+					Name:       workloadIdentity.Name,
+					Namespace:  namespace,
+				}
+				Expect(securityInformerFactory.Security().V1alpha1().WorkloadIdentities().Informer().GetStore().Add(workloadIdentity)).To(Succeed())
+				Expect(securityInformerFactory.Security().V1alpha1().CredentialsBindings().Informer().GetStore().Add(credentialsBinding)).To(Succeed())
+
+				seedExternal.Spec.DNS.Provider = nil
+				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
+					{
+						Primary: ptr.To(true),
+						Type:    ptr.To("type"),
+					},
+				}
+				shoot.Spec.CredentialsBindingName = ptr.To(credentialsBinding.Name)
+
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = seedExternal.Spec
+
+				Expect(admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
+			})
+
+			It("should fail if config could not be converted to GardenletConfiguration", func() {
+				managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
+					Config: &corev1.Pod{
+						TypeMeta: metav1.TypeMeta{
+							APIVersion: corev1.SchemeGroupVersion.String(),
+							Kind:       "Pod",
+						},
+					},
+				}
+
+				err := admissionHandler.Admit(ctx, getManagedSeedAttributes(managedSeed), nil)
+				Expect(err).To(BeInternalServerError())
+				Expect(err).To(MatchError(ContainSubstring("expected *gardenletconfigv1alpha1.GardenletConfiguration but got *v1.Pod")))
+			})
+		})
+	})
+
+	Describe("#Validate", func() {
+		var (
+			ctx                  context.Context
+			managedSeed          *seedmanagement.ManagedSeed
+			shoot                *gardencorev1beta1.Shoot
+			coreInformerFactory  gardencoreinformers.SharedInformerFactory
+			coreClient           *corefake.Clientset
+			seedManagementClient *fakeseedmanagement.Clientset
+			admissionHandler     *ManagedSeed
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			managedSeed = &seedmanagement.ManagedSeed{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+				Spec: seedmanagement.ManagedSeedSpec{
+					Shoot: &seedmanagement.Shoot{
+						Name: name,
+					},
+					Gardenlet: seedmanagement.GardenletConfig{
+						Config: &gardenletconfigv1alpha1.GardenletConfiguration{
+							TypeMeta: metav1.TypeMeta{
+								APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
+								Kind:       "GardenletConfiguration",
+							},
+							SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
+								SeedTemplate: gardencorev1beta1.SeedTemplate{
+									Spec: gardencorev1beta1.SeedSpec{
+										Backup: &gardencorev1beta1.Backup{
+											Provider: provider,
+										},
+										DNS: gardencorev1beta1.SeedDNS{
+											Provider: &gardencorev1beta1.SeedDNSProvider{
+												Type: dnsProvider,
+												CredentialsRef: &corev1.ObjectReference{
+													APIVersion: "v1",
+													Kind:       "Secret",
+													Name:       name,
+													Namespace:  namespace,
+												},
+											},
+										},
+										Networks: gardencorev1beta1.SeedNetworks{
+											Nodes:    ptr.To("10.250.0.0/16"),
+											Pods:     "100.96.0.0/11",
+											Services: "100.64.0.0/13",
+										},
+										Provider: gardencorev1beta1.SeedProvider{
+											Type:   provider,
+											Region: region,
+											Zones:  []string{zone1, zone2},
+										},
+										Settings: &gardencorev1beta1.SeedSettings{
+											VerticalPodAutoscaler: &gardencorev1beta1.SeedSettingVerticalPodAutoscaler{
+												Enabled: false,
+											},
+										},
+										Ingress: &gardencorev1beta1.Ingress{
+											Domain: "ingress." + domain,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			shoot = &gardencorev1beta1.Shoot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+				Spec: gardencorev1beta1.ShootSpec{
+					DNS: &gardencorev1beta1.DNS{
+						Domain: ptr.To(domain),
+					},
+					Kubernetes: gardencorev1beta1.Kubernetes{
+						Version: "1.33.3",
+						VerticalPodAutoscaler: &gardencorev1beta1.VerticalPodAutoscaler{
+							Enabled: true,
+						},
+					},
+					Networking: &gardencorev1beta1.Networking{
+						Pods:     ptr.To("100.96.0.0/11"),
+						Nodes:    ptr.To("10.250.0.0/16"),
+						Services: ptr.To("100.64.0.0/13"),
+					},
+					Provider: gardencorev1beta1.Provider{
+						Type: provider,
+						Workers: []gardencorev1beta1.Worker{
+							{Zones: []string{zone1, zone2}},
+						},
+					},
+					Region: region,
+				},
+			}
+
+			var err error
+			admissionHandler, err = New()
+			Expect(err).ToNot(HaveOccurred())
+			admissionHandler.AssignReadyFunc(func() bool { return true })
+
+			coreInformerFactory = gardencoreinformers.NewSharedInformerFactory(nil, 0)
+			admissionHandler.SetCoreInformerFactory(coreInformerFactory)
+
+			coreClient = &corefake.Clientset{}
+			admissionHandler.SetCoreClientSet(coreClient)
+
+			seedManagementClient = &fakeseedmanagement.Clientset{}
+			admissionHandler.SetSeedManagementClientSet(seedManagementClient)
+
+			Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shoot)).To(Succeed())
+		})
+
+		It("should do nothing if the resource is not a ManagedSeed", func() {
+			attrs := admission.NewAttributesRecord(nil, nil, core.Kind(name).WithVersion("version"), managedSeed.Namespace, managedSeed.Name, core.Resource("foos").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
+
+			err := admissionHandler.Validate(ctx, attrs, nil)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should forbid when object is not ManagedSeed", func() {
+			project := core.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "my-project",
+				},
+			}
+			attrs := admission.NewAttributesRecord(&project, nil, seedmanagementv1alpha1.Kind("ManagedSeed").WithVersion("v1alpha1"), managedSeed.Namespace, managedSeed.Name, seedmanagementv1alpha1.Resource("managedseeds").WithVersion("v1alpha1"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
+
+			err := admissionHandler.Validate(ctx, attrs, nil)
+			Expect(err).To(BeBadRequestError())
+			Expect(err).To(MatchError("could not convert object to ManagedSeed"))
+		})
+
+		It("should forbid the ManagedSeed creation with namespace different from garden", func() {
+			managedSeed.Namespace = "foo"
+
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
+			Expect(err).To(BeInvalidError())
+			Expect(getErrorList(err)).To(ConsistOf(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("metadata.namespace"),
+					"Detail": ContainSubstring("namespace must be garden"),
+				})),
+			))
+		})
+
+		It("should do nothing if a Shoot name is not specified", func() {
+			managedSeed.Spec.Shoot.Name = ""
+
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should forbid the ManagedSeed creation if the Shoot does not exist", func() {
+			Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Delete(shoot)).To(Succeed())
+			coreClient.AddReactor("get", "shoots", func(_ testing.Action) (bool, runtime.Object, error) {
+				return true, nil, apierrors.NewNotFound(gardencorev1beta1.Resource("shoot"), name)
+			})
+
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
+			Expect(err).To(BeInvalidError())
+			Expect(getErrorList(err)).To(ConsistOf(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.shoot.name"),
+					"Detail": ContainSubstring("shoot garden/foo not found"),
 				})),
 			))
 		})
@@ -307,12 +747,13 @@ var _ = Describe("ManagedSeed", func() {
 		It("should forbid the ManagedSeed creation if the Shoot does not specify a domain", func() {
 			shoot.Spec.DNS = nil
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 			Expect(err).To(BeInvalidError())
 			Expect(getErrorList(err)).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.shoot.name"),
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.shoot.name"),
+					"Detail": ContainSubstring("shoot garden/foo does not specify a domain"),
 				})),
 			))
 		})
@@ -326,12 +767,13 @@ var _ = Describe("ManagedSeed", func() {
 				},
 			}
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 			Expect(err).To(BeInvalidError())
 			Expect(getErrorList(err)).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.shoot.name"),
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.shoot.name"),
+					"Detail": ContainSubstring("shoot ingress addon is not supported for managed seeds - use the managed seed ingress controller"),
 				})),
 			))
 		})
@@ -339,12 +781,27 @@ var _ = Describe("ManagedSeed", func() {
 		It("should forbid the ManagedSeed creation if the Shoot does not enable VPA", func() {
 			shoot.Spec.Kubernetes.VerticalPodAutoscaler.Enabled = false
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 			Expect(err).To(BeInvalidError())
 			Expect(getErrorList(err)).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.shoot.name"),
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.shoot.name"),
+					"Detail": ContainSubstring("shoot VPA has to be enabled for managed seeds"),
+				})),
+			))
+		})
+
+		It("should forbid the ManagedSeed if the Shoot does not have any worker", func() {
+			shoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{}
+
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
+			Expect(err).To(BeInvalidError())
+			Expect(getErrorList(err)).To(ContainElement(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.shoot.name"),
+					"Detail": ContainSubstring("workerless shoot cannot be used to create managed seed"),
 				})),
 			))
 		})
@@ -366,250 +823,21 @@ var _ = Describe("ManagedSeed", func() {
 				return true, &seedmanagementv1alpha1.ManagedSeedList{Items: []seedmanagementv1alpha1.ManagedSeed{*anotherManagedSeed}}, nil
 			})
 
-			err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+			err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 			Expect(err).To(BeInvalidError())
 			Expect(getErrorList(err)).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.shoot.name"),
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.shoot.name"),
+					"Detail": ContainSubstring("shoot garden/foo already registered as seed by managed seed garden/bar"),
 				})),
 			))
 		})
 
 		Context("gardenlet", func() {
-			var (
-				seedx *gardencorev1beta1.Seed
-				err   error
-			)
-
-			BeforeEach(func() {
-				managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								Spec: gardencorev1beta1.SeedSpec{
-									Backup: &gardencorev1beta1.Backup{},
-								},
-							},
-						},
-					},
-				}
-
-				seedx, err = gardencorehelper.ConvertSeedExternal(seed)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			Context("seed label", func() {
-				BeforeEach(func() {
-					Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(secret)).To(Succeed())
-				})
-
-				It("should add the label for the parent seed name", func() {
-					Expect(admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
-
-					Expect(managedSeed.Labels).To(And(
-						HaveKeyWithValue("name.seed.gardener.cloud/parent-seed", "true"),
-					))
-				})
-
-				It("should remove unneeded labels", func() {
-					metav1.SetMetaDataLabel(&seed.ObjectMeta, "name.seed.gardener.cloud/foo", "true")
-
-					Expect(admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)).To(Succeed())
-
-					Expect(managedSeed.Labels).To(And(
-						HaveKeyWithValue("name.seed.gardener.cloud/parent-seed", "true"),
-						Not(HaveKey("name.seed.gardener.cloud/foo")),
-					))
-				})
-			})
-
 			It("should allow the ManagedSeed creation if the Shoot exists and can be registered as Seed", func() {
-				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(secret)).To(Succeed())
-
-				err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+				err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 				Expect(err).NotTo(HaveOccurred())
-
-				seedx.Spec.Ingress.Controller.Kind = v1beta1constants.IngressKindNginx
-				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								ObjectMeta: seedx.ObjectMeta,
-								Spec:       seedx.Spec,
-							},
-						},
-					},
-				}))
-			})
-
-			It("should create the ManagedSeed and reuse the primary DNS provider from Shoot", func() {
-				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(dnsSecret)).To(Succeed())
-
-				seedx.Spec.DNS.Provider = nil
-				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
-					{
-						Primary:    ptr.To(true),
-						Type:       ptr.To("type"),
-						SecretName: ptr.To(dnsSecretName),
-					},
-				}
-
-				managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								Spec: seedx.Spec,
-							},
-						},
-					},
-				}
-
-				err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-				Expect(err).NotTo(HaveOccurred())
-
-				seedx.Spec.DNS.Provider = &gardencorev1beta1.SeedDNSProvider{
-					Type:      "type",
-					SecretRef: corev1.SecretReference{Name: "bar", Namespace: "garden"},
-				}
-				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								ObjectMeta: seedx.ObjectMeta,
-								Spec:       seedx.Spec,
-							},
-						},
-					},
-				}))
-			})
-
-			It("should create the ManagedSeed and reuse the DNS secret referenced by the SecretBindingName of Shoot", func() {
-				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(dnsSecret)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().SecretBindings().Informer().GetStore().Add(secretBinding)).To(Succeed())
-
-				seedx.Spec.DNS.Provider = nil
-				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
-					{
-						Primary: ptr.To(true),
-						Type:    ptr.To("type"),
-					},
-				}
-				shoot.Spec.SecretBindingName = ptr.To(secretBinding.Name)
-				managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								Spec: seedx.Spec,
-							},
-						},
-					},
-				}
-
-				err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-				Expect(err).NotTo(HaveOccurred())
-
-				seedx.Spec.DNS.Provider = &gardencorev1beta1.SeedDNSProvider{
-					Type:      "type",
-					SecretRef: corev1.SecretReference{Name: "bar", Namespace: "garden"},
-				}
-				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								ObjectMeta: seedx.ObjectMeta,
-								Spec:       seedx.Spec,
-							},
-						},
-					},
-				}))
-			})
-
-			It("should create the ManagedSeed and reuse the DNS secret referenced by the CredentialsBindingName of Shoot", func() {
-				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(dnsSecret)).To(Succeed())
-				Expect(securityInformerFactory.Security().V1alpha1().CredentialsBindings().Informer().GetStore().Add(credentialsBinding)).To(Succeed())
-				seedx.Spec.DNS.Provider = nil
-				shoot.Spec.DNS.Providers = []gardencorev1beta1.DNSProvider{
-					{
-						Primary: ptr.To(true),
-						Type:    ptr.To("type"),
-					},
-				}
-				shoot.Spec.CredentialsBindingName = ptr.To(credentialsBinding.Name)
-
-				managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								Spec: seedx.Spec,
-							},
-						},
-					},
-				}
-
-				err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-				Expect(err).NotTo(HaveOccurred())
-
-				seedx.Spec.DNS.Provider = &gardencorev1beta1.SeedDNSProvider{
-					Type:      "type",
-					SecretRef: corev1.SecretReference{Name: "bar", Namespace: "garden"},
-				}
-				Expect(managedSeed.Spec.Gardenlet).To(Equal(seedmanagement.GardenletConfig{
-					Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								ObjectMeta: seedx.ObjectMeta,
-								Spec:       seedx.Spec,
-							},
-						},
-					},
-				}))
-			})
-
-			It("should fail if config could not be converted to GardenletConfiguration", func() {
-				managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-					Config: &corev1.Pod{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: corev1.SchemeGroupVersion.String(),
-							Kind:       "Pod",
-						},
-					},
-				}
-
-				err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
-				Expect(err).To(BeInternalServerError())
 			})
 
 			It("should forbid the ManagedSeed creation if the seed spec contains invalid values", func() {
@@ -637,21 +865,10 @@ var _ = Describe("ManagedSeed", func() {
 					},
 				}
 
-				managedSeed.Spec.Gardenlet.Config = &gardenletconfigv1alpha1.GardenletConfiguration{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-						Kind:       "GardenletConfiguration",
-					},
-					SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-						SeedTemplate: gardencorev1beta1.SeedTemplate{
-							Spec: seedSpec,
-						},
-					},
-				}
+				gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+				gardenletConfig.SeedConfig.Spec = seedSpec
 
-				Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(secret)).NotTo(HaveOccurred())
-
-				err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+				err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 				Expect(err).To(BeInvalidError())
 				Expect(getErrorList(err)).To(ConsistOf(
 					PointTo(MatchFields(IgnoreExtras, Fields{
@@ -719,25 +936,12 @@ var _ = Describe("ManagedSeed", func() {
 						return true, shoot, nil
 					})
 
-					seedx.Spec.Settings.TopologyAwareRouting = &gardencorev1beta1.SeedSettingTopologyAwareRouting{
+					gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+					gardenletConfig.SeedConfig.Spec.Settings.TopologyAwareRouting = &gardencorev1beta1.SeedSettingTopologyAwareRouting{
 						Enabled: true,
 					}
 
-					managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-						Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-							TypeMeta: metav1.TypeMeta{
-								APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-								Kind:       "GardenletConfiguration",
-							},
-							SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-								SeedTemplate: gardencorev1beta1.SeedTemplate{
-									Spec: seedx.Spec,
-								},
-							},
-						},
-					}
-
-					err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 					Expect(err).To(BeInvalidError())
 					Expect(getErrorList(err)).To(ConsistOf(
 						PointTo(MatchFields(IgnoreExtras, Fields{
@@ -777,56 +981,21 @@ var _ = Describe("ManagedSeed", func() {
 						return true, shoot, nil
 					})
 
-					seedx.Spec.Settings.TopologyAwareRouting = &gardencorev1beta1.SeedSettingTopologyAwareRouting{
+					gardenletConfig := managedSeed.Spec.Gardenlet.Config.(*gardenletconfigv1alpha1.GardenletConfiguration)
+					gardenletConfig.SeedConfig.Spec.Settings.TopologyAwareRouting = &gardencorev1beta1.SeedSettingTopologyAwareRouting{
 						Enabled: true,
 					}
 
-					managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{
-						Config: &gardenletconfigv1alpha1.GardenletConfiguration{
-							TypeMeta: metav1.TypeMeta{
-								APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-								Kind:       "GardenletConfiguration",
-							},
-							SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-								SeedTemplate: gardencorev1beta1.SeedTemplate{
-									Spec: seedx.Spec,
-								},
-							},
-						},
-					}
-
-					err := admissionHandler.Admit(context.TODO(), getManagedSeedAttributes(managedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedAttributes(managedSeed), nil)
 					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 
 			Context("ManagedSeed Update", func() {
-				var (
-					ctx            = context.Background()
-					newManagedSeed *seedmanagement.ManagedSeed
-				)
+				var newManagedSeed *seedmanagement.ManagedSeed
 
 				BeforeEach(func() {
-					gardenletConfig := &gardenletconfigv1alpha1.GardenletConfiguration{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: gardenletconfigv1alpha1.SchemeGroupVersion.String(),
-							Kind:       "GardenletConfiguration",
-						},
-						SeedConfig: &gardenletconfigv1alpha1.SeedConfig{
-							SeedTemplate: gardencorev1beta1.SeedTemplate{
-								Spec: gardencorev1beta1.SeedSpec{
-									Ingress: seedx.Spec.Ingress,
-									Provider: gardencorev1beta1.SeedProvider{
-										Zones: []string{zone1, zone2},
-									},
-								},
-							},
-						},
-					}
-					managedSeed.Spec.Gardenlet = seedmanagement.GardenletConfig{Config: gardenletConfig}
 					newManagedSeed = managedSeed.DeepCopy()
-
-					Expect(kubeInformerFactory.Core().V1().Secrets().Informer().GetStore().Add(secret)).To(Succeed())
 				})
 
 				It("should allow zone removal when there are no shoots running on seed", func() {
@@ -837,7 +1006,7 @@ var _ = Describe("ManagedSeed", func() {
 					coreClient.AddReactor("get", "shoots", func(_ testing.Action) (bool, runtime.Object, error) {
 						return true, shoot, nil
 					})
-					Expect(admissionHandler.Admit(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)).To(Succeed())
+					Expect(admissionHandler.Validate(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)).To(Succeed())
 				})
 
 				It("should forbid zone removal when at least one shoot is scheduled to seed", func() {
@@ -852,7 +1021,7 @@ var _ = Describe("ManagedSeed", func() {
 					shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{SeedName: &newManagedSeed.Name}}
 					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shoot)).To(Succeed())
 
-					err := admissionHandler.Admit(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
 					Expect(err).To(BeInvalidError())
 					Expect(getErrorList(err)).To(ConsistOf(
 						PointTo(MatchFields(IgnoreExtras, Fields{
@@ -878,7 +1047,7 @@ var _ = Describe("ManagedSeed", func() {
 					shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{SeedName: &newManagedSeed.Name}}
 					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shoot)).To(Succeed())
 
-					err := admissionHandler.Admit(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
 					Expect(err).To(BeInvalidError())
 					Expect(getErrorList(err)).To(ConsistOf(
 						PointTo(MatchFields(IgnoreExtras, Fields{
@@ -905,7 +1074,7 @@ var _ = Describe("ManagedSeed", func() {
 						return true, shoot, nil
 					})
 
-					err := admissionHandler.Admit(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
 					Expect(err).To(BeInvalidError())
 					Expect(getErrorList(err)).To(ConsistOf(
 						PointTo(MatchFields(IgnoreExtras, Fields{
@@ -934,7 +1103,7 @@ var _ = Describe("ManagedSeed", func() {
 					shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{SeedName: &newManagedSeed.Name}}
 					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shoot)).To(Succeed())
 
-					err := admissionHandler.Admit(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
 					Expect(err).To(BeInvalidError())
 					Expect(getErrorList(err)).To(ContainElement(
 						PointTo(MatchFields(IgnoreExtras, Fields{
@@ -980,7 +1149,7 @@ var _ = Describe("ManagedSeed", func() {
 					}
 					Expect(coreInformerFactory.Core().V1beta1().Shoots().Informer().GetStore().Add(shoot)).To(Succeed())
 
-					err := admissionHandler.Admit(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
+					err := admissionHandler.Validate(ctx, getManagedSeedUpdateAttributes(managedSeed, newManagedSeed), nil)
 					Expect(err).To(BeInvalidError())
 					Expect(getErrorList(err)).To(ContainElement(
 						PointTo(MatchFields(IgnoreExtras, Fields{

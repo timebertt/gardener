@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -34,7 +35,6 @@ import (
 	kubernetesmock "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	"github.com/gardener/gardener/pkg/component/extensions/dnsrecord"
 	mockdnsrecord "github.com/gardener/gardener/pkg/component/extensions/dnsrecord/mock"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/garden"
@@ -135,8 +135,10 @@ var _ = Describe("NginxIngress", func() {
 						Domain:   externalDomain,
 						Provider: externalProvider,
 						Zone:     externalZone,
-						SecretData: map[string][]byte{
-							"external-foo": []byte("external-bar"),
+						Credentials: &corev1.Secret{
+							Data: map[string][]byte{
+								"external-foo": []byte("external-bar"),
+							},
 						},
 					},
 					Components: &shootpkg.Components{
@@ -210,20 +212,21 @@ var _ = Describe("NginxIngress", func() {
 
 			actual := c.GetValues()
 			Expect(actual).To(DeepEqual(&dnsrecord.Values{
-				Name:       b.Shoot.GetInfo().Name + "-ingress",
-				SecretName: DNSRecordSecretPrefix + "-" + b.Shoot.GetInfo().Name + "-" + v1beta1constants.DNSRecordExternalName,
-				Namespace:  controlPlaneNamespace,
-				TTL:        ptr.To(ttl),
-				Type:       externalProvider,
-				Zone:       ptr.To(externalZone),
-				SecretData: map[string][]byte{
-					"external-foo": []byte("external-bar"),
-				},
+				Name:              b.Shoot.GetInfo().Name + "-ingress",
+				SecretName:        DNSRecordSecretPrefix + "-" + b.Shoot.GetInfo().Name + "-" + v1beta1constants.DNSRecordExternalName,
+				Namespace:         controlPlaneNamespace,
+				TTL:               ptr.To(ttl),
+				Type:              externalProvider,
+				Zone:              ptr.To(externalZone),
 				DNSName:           "*.ingress." + externalDomain,
 				RecordType:        extensionsv1alpha1.DNSRecordTypeA,
 				Values:            []string{address},
 				AnnotateOperation: false,
 				IPStack:           "ipv4",
+				Labels: map[string]string{
+					"role":                "ingress",
+					"gardener.cloud/role": "controlplane",
+				},
 			}))
 		})
 
@@ -257,20 +260,21 @@ var _ = Describe("NginxIngress", func() {
 
 			actual := c.GetValues()
 			Expect(actual).To(DeepEqual(&dnsrecord.Values{
-				Name:       b.Shoot.GetInfo().Name + "-ingress",
-				SecretName: DNSRecordSecretPrefix + "-" + b.Shoot.GetInfo().Name + "-" + v1beta1constants.DNSRecordExternalName,
-				Namespace:  controlPlaneNamespace,
-				TTL:        ptr.To(ttl),
-				Type:       externalProvider,
-				Zone:       ptr.To(externalZone),
-				SecretData: map[string][]byte{
-					"external-foo": []byte("external-bar"),
-				},
+				Name:              b.Shoot.GetInfo().Name + "-ingress",
+				SecretName:        DNSRecordSecretPrefix + "-" + b.Shoot.GetInfo().Name + "-" + v1beta1constants.DNSRecordExternalName,
+				Namespace:         controlPlaneNamespace,
+				TTL:               ptr.To(ttl),
+				Type:              externalProvider,
+				Zone:              ptr.To(externalZone),
 				DNSName:           "*.ingress." + externalDomain,
 				RecordType:        extensionsv1alpha1.DNSRecordTypeA,
 				Values:            []string{address},
 				AnnotateOperation: false,
 				IPStack:           "ipv4",
+				Labels: map[string]string{
+					"role":                "ingress",
+					"gardener.cloud/role": "controlplane",
+				},
 			}))
 		})
 
@@ -296,6 +300,10 @@ var _ = Describe("NginxIngress", func() {
 					Annotations: map[string]string{
 						v1beta1constants.GardenerOperation: v1beta1constants.GardenerOperationReconcile,
 						v1beta1constants.GardenerTimestamp: now.UTC().Format(time.RFC3339Nano),
+					},
+					Labels: map[string]string{
+						"role":                "ingress",
+						"gardener.cloud/role": "controlplane",
 					},
 				},
 				Spec: extensionsv1alpha1.DNSRecordSpec{
@@ -346,7 +354,7 @@ var _ = Describe("NginxIngress", func() {
 		})
 
 		Context("restore", func() {
-			var shootState = &gardencorev1beta1.ShootState{}
+			shootState := &gardencorev1beta1.ShootState{}
 
 			BeforeEach(func() {
 				b.Shoot.SetShootState(shootState)

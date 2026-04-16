@@ -7,11 +7,13 @@ package operatingsystemconfig_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
 	"github.com/hashicorp/go-multierror"
 	. "github.com/onsi/ginkgo/v2"
@@ -26,10 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	fakekubernetes "k8s.io/client-go/kubernetes/fake"
+	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -38,7 +42,6 @@ import (
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/gardeneruser"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/sshdensurer"
 	"github.com/gardener/gardener/pkg/extensions"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
@@ -46,9 +49,7 @@ import (
 	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
-	"github.com/gardener/gardener/pkg/utils/version"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
-	mocktime "github.com/gardener/gardener/third_party/mock/go/time"
 )
 
 var _ = Describe("OperatingSystemConfig", func() {
@@ -75,8 +76,8 @@ var _ = Describe("OperatingSystemConfig", func() {
 			log     logr.Logger
 			fakeErr = fmt.Errorf("some random error")
 
-			mockNow *mocktime.MockNow
-			now     time.Time
+			fakeClock *testclock.FakeClock
+			now       time.Time
 
 			poolHashesSecret    *corev1.Secret
 			apiServerURL        = "https://url-to-apiserver"
@@ -173,9 +174,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 						Containerd: &extensionsv1alpha1.ContainerdConfig{
 							SandboxImage: "registry.k8s.io/pause:latest",
 						},
-					}
-					if version.ConstraintK8sGreaterEqual131.Check(k8sVersion) {
-						criConfig.CgroupDriver = ptr.To(extensionsv1alpha1.CgroupDriverSystemd)
+						CgroupDriver: ptr.To(extensionsv1alpha1.CgroupDriverSystemd),
 					}
 
 					criConfigProvisioning = &extensionsv1alpha1.CRIConfig{
@@ -193,9 +192,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 				}
 
 				imagesCopy := make(map[string]*imagevector.Image, len(images))
-				for imageName, image := range images {
-					imagesCopy[imageName] = image
-				}
+				maps.Copy(imagesCopy, images)
 				imagesCopy["hyperkube"] = &imagevector.Image{Repository: ptr.To("europe-docker.pkg.dev/gardener-project/releases/hyperkube"), Tag: ptr.To("v" + k8sVersion.String())}
 
 				initUnits, initFiles, _ := initConfigFn(
@@ -346,8 +343,8 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 		BeforeEach(func() {
 			ctrl = gomock.NewController(GinkgoT())
-			mockNow = mocktime.NewMockNow(ctrl)
-			now = time.Now()
+			now = time.Unix(60, 0)
+			fakeClock = testclock.NewFakeClock(now)
 
 			ctx = context.TODO()
 			log = logr.Discard()
@@ -355,6 +352,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 			s := runtime.NewScheme()
 			Expect(extensionsv1alpha1.AddToScheme(s)).To(Succeed())
 			Expect(fakekubernetes.AddToScheme(s)).To(Succeed())
+			Expect(machinev1alpha1.AddToScheme(s)).To(Succeed())
 			c = fakeclient.NewClientBuilder().WithScheme(s).Build()
 
 			fakeClient = fakeclient.NewClientBuilder().WithScheme(s).Build()
@@ -545,7 +543,6 @@ var _ = Describe("OperatingSystemConfig", func() {
 			It("should successfully fill missing hashes and workers in the worker-pools-operatingsystemconfig-hashes secret", func() {
 				DeferCleanup(test.WithVars(
 					&OriginalConfigFn, originalConfigFn,
-					&LatestHashVersion, func() int { return 2 },
 					&CalculateKeyForVersion, calculateKeyForVersionFn,
 				))
 
@@ -579,7 +576,6 @@ var _ = Describe("OperatingSystemConfig", func() {
 			It("should successfully upgrade the hash versions in the worker-pools-operatingsystemconfig-hashes secret", func() {
 				DeferCleanup(test.WithVars(
 					&OriginalConfigFn, originalConfigFn,
-					&LatestHashVersion, func() int { return 2 },
 					&CalculateKeyForVersion, calculateKeyForVersionFn,
 				))
 
@@ -625,7 +621,6 @@ var _ = Describe("OperatingSystemConfig", func() {
 			It("should successfully keep the current hash versions if nothing changes in the worker-pools-operatingsystemconfig-hashes secret", func() {
 				DeferCleanup(test.WithVars(
 					&OriginalConfigFn, originalConfigFn,
-					&LatestHashVersion, func() int { return 2 },
 					&CalculateKeyForVersion, calculateStableKeyForVersionFn,
 				))
 
@@ -652,12 +647,10 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("should successfully deploy all extensions resources", func() {
 				DeferCleanup(test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 					&InitConfigFn, initConfigFn,
 					&OriginalConfigFn, originalConfigFn,
 				))
-
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
 
@@ -674,13 +667,11 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("should successfully deploy all extensions resources and SSH access is enabled", func() {
 				DeferCleanup(test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 					&InitConfigFn, initConfigFn,
 					&OriginalConfigFn, originalConfigFn,
 					&values.SSHAccessEnabled, true,
 				))
-
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
 
@@ -742,14 +733,12 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 				It("should successfully deploy all extensions resources and SSH access is enabled", func() {
 					DeferCleanup(test.WithVars(
-						&TimeNow, mockNow.Do,
+						&TimeNow, fakeClock.Now,
 						&InitConfigFn, initConfigFn,
 						&OriginalConfigFn, originalConfigFn,
 						&values.SSHAccessEnabled, true,
 						&format.MaxLength, 0,
 					))
-
-					mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 					Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
 
@@ -779,12 +768,10 @@ var _ = Describe("OperatingSystemConfig", func() {
 				}
 
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 					&InitConfigFn, initConfigFnWithBootstrapToken,
 					&OriginalConfigFn, originalConfigFn,
 				)()
-
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
 
@@ -908,10 +895,9 @@ var _ = Describe("OperatingSystemConfig", func() {
 				defer test.WithVars(
 					&InitConfigFn, initConfigFn,
 					&OriginalConfigFn, originalConfigFn,
-					&TimeNow, mockNow.Do,
-					&extensions.TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
+					&extensions.TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				mc := mockclient.NewMockClient(ctrl)
 				mockStatusWriter := mockclient.NewMockStatusWriter(ctrl)
@@ -953,7 +939,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 					test.EXPECTPatch(ctx, mc, expectedWithRestore, expectedWithState, types.MergePatchType)
 				}
 
-				clientGet := func(result client.Object) interface{} {
+				clientGet := func(result client.Object) any {
 					return func(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 						switch obj.(type) {
 						case *corev1.Secret:
@@ -984,8 +970,7 @@ var _ = Describe("OperatingSystemConfig", func() {
 			})
 
 			It("should return error when resource is not ready", func() {
-				defer test.WithVars(&TimeNow, mockNow.Do)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+				defer test.WithVars(&TimeNow, fakeClock.Now)()
 
 				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
 
@@ -1005,9 +990,8 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("should return error when status does not contain cloud config information", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				// Deploy should fill internal state with the added timestamp annotation
 				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
@@ -1032,10 +1016,9 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("should return error if we haven't observed the latest timestamp annotation", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 					&OriginalConfigFn, originalConfigFn,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				By("Deploy")
 				// Deploy should fill internal state with the added timestamp annotation
@@ -1080,10 +1063,9 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("should return no error when it's ready", func() {
 				defer test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 					&OriginalConfigFn, originalConfigFn,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				By("Deploy")
 				// Deploy should fill internal state with the added timestamp annotation
@@ -1131,11 +1113,10 @@ var _ = Describe("OperatingSystemConfig", func() {
 		Describe("WorkerNameToOperatingSystemConfigsMap", func() {
 			It("should return the correct result from the Deploy and Wait operations", func() {
 				DeferCleanup(test.WithVars(
-					&TimeNow, mockNow.Do,
+					&TimeNow, fakeClock.Now,
 					&InitConfigFn, initConfigFn,
 					&OriginalConfigFn, originalConfigFn,
 				))
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				// Deploy should fill internal state with the added timestamp annotation
 				Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
@@ -1256,10 +1237,9 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("should return error if not deleted successfully", func() {
 				defer test.WithVars(
-					&extensions.TimeNow, mockNow.Do,
-					&gardenerutils.TimeNow, mockNow.Do,
+					&extensions.TimeNow, fakeClock.Now,
+					&gardenerutils.TimeNow, fakeClock.Now,
 				)()
-				mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 				expectedOSC := extensionsv1alpha1.OperatingSystemConfig{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1587,62 +1567,6 @@ var _ = Describe("OperatingSystemConfig", func() {
 				kubernetesVersion = semver.MustParse("1.2.4")
 			})
 
-			It("when systemReserved is empty", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{}
-			})
-
-			It("when systemReserved has zero value for CPU", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					CPU: ptr.To(resource.MustParse("0")),
-				}
-			})
-
-			It("when systemReserved has zero value for memory", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					Memory: ptr.To(resource.MustParse("0")),
-				}
-			})
-
-			It("when systemReserved has zero value for PID", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					PID: ptr.To(resource.MustParse("0")),
-				}
-			})
-
-			It("when systemReserved has zero value for EphemeralStorage", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					EphemeralStorage: ptr.To(resource.MustParse("0")),
-				}
-			})
-
-			It("when moving CPU between kubeReserved and systemReserved", func() {
-				kubeletConfig.KubeReserved.CPU = ptr.To(resource.MustParse("70m"))
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					CPU: ptr.To(resource.MustParse("10m")),
-				}
-			})
-
-			It("when moving memory between kubeReserved and systemReserved", func() {
-				kubeletConfig.KubeReserved.Memory = ptr.To(resource.MustParse("896Mi"))
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					Memory: ptr.To(resource.MustParse("128Mi")),
-				}
-			})
-
-			It("when moving PID between kubeReserved and systemReserved", func() {
-				kubeletConfig.KubeReserved.PID = ptr.To(resource.MustParse("9k"))
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					PID: ptr.To(resource.MustParse("1000")),
-				}
-			})
-
-			It("when moving EphemeralStorage between kubeReserved and systemReserved", func() {
-				kubeletConfig.KubeReserved.EphemeralStorage = ptr.To(resource.MustParse("18Gi"))
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					EphemeralStorage: ptr.To(resource.MustParse("2048Mi")),
-				}
-			})
-
 			It("when specifying kubeReserved with different quantities", func() {
 				kubeletConfig.KubeReserved = &gardencorev1beta1.KubeletConfigReserved{
 					CPU:              ptr.To(resource.MustParse("80m")),
@@ -1783,30 +1707,6 @@ var _ = Describe("OperatingSystemConfig", func() {
 
 			It("when changing CPUManagerPolicy", func() {
 				kubeletConfig.CPUManagerPolicy = ptr.To("test")
-			})
-
-			It("when changing systemReserved CPU", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					CPU: ptr.To(resource.MustParse("1m")),
-				}
-			})
-
-			It("when changing systemReserved memory", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					Memory: ptr.To(resource.MustParse("1Mi")),
-				}
-			})
-
-			It("when systemReserved PID", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					PID: ptr.To(resource.MustParse("1k")),
-				}
-			})
-
-			It("when changing systemReserved EphemeralStorage", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					EphemeralStorage: ptr.To(resource.MustParse("100Gi")),
-				}
 			})
 
 			It("when node-local-dns gets enabled and kubernetes version is equal or larger than 1.34", func() {

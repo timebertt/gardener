@@ -8,15 +8,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Masterminds/semver/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
 	"github.com/gardener/gardener/imagevector"
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/containerd"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/rootcertificates"
@@ -55,7 +54,7 @@ func (component) Name() string {
 }
 
 func (component) Config(ctx components.Context) ([]extensionsv1alpha1.Unit, []extensionsv1alpha1.File, error) {
-	fileContentKubeletConfig, err := getFileContentKubeletConfig(ctx.KubernetesVersion, ctx.ClusterDNSAddresses, ctx.ClusterDomain, ctx.Taints, ctx.KubeletConfigParameters)
+	fileContentKubeletConfig, err := getFileContentKubeletConfig(ctx.ClusterDNSAddresses, ctx.ClusterDomain, ctx.Taints, ctx.KubeletConfigParameters)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -118,9 +117,9 @@ ExecStart=` + v1beta1constants.OperatingSystemConfigFilePathBinaries + `/kubelet
 	return []extensionsv1alpha1.Unit{kubeletUnit}, kubeletFiles, nil
 }
 
-func getFileContentKubeletConfig(kubernetesVersion *semver.Version, clusterDNSAddresses []string, clusterDomain string, taints []corev1.Taint, params components.ConfigurableKubeletConfigParameters) (*extensionsv1alpha1.FileContentInline, error) {
+func getFileContentKubeletConfig(clusterDNSAddresses []string, clusterDomain string, taints []corev1.Taint, params components.ConfigurableKubeletConfigParameters) (*extensionsv1alpha1.FileContentInline, error) {
 	var (
-		kubeletConfig = Config(kubernetesVersion, clusterDNSAddresses, clusterDomain, taints, params)
+		kubeletConfig = Config(clusterDNSAddresses, clusterDomain, taints, params)
 		configFCI     = &extensionsv1alpha1.FileContentInline{Encoding: "b64"}
 		kcCodec       = NewConfigCodec(oscutils.NewFileContentInlineCodec())
 	)

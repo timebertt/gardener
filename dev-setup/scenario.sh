@@ -9,8 +9,12 @@ set -o pipefail
 function detect_scenario() {
   nodes=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n')
   zones=$(kubectl get nodes -o jsonpath='{.items[*].metadata.labels.topology\.kubernetes\.io/zone}' | tr ' ' '\n' | sort -u)
+  provider_ids=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | tr ' ' '\n')
 
-  if [[ $(echo "$nodes" | wc -l) -eq 1 ]]; then
+  # Check if all providerIDs have a scheme (contain "://") but none start with kind://
+  if [[ -n "$provider_ids" && $(echo "$provider_ids" | grep -c '://') -eq $(echo "$provider_ids" | wc -l) && $(echo "$provider_ids" | grep -cv '^kind://') -eq $(echo "$provider_ids" | wc -l) ]]; then
+    export SCENARIO="remote"
+  elif [[ $(echo "$nodes" | wc -l) -eq 1 ]]; then
     export SCENARIO="single-node"
   elif grep -q "gardener-local-multi-node2" <<< "$nodes"; then
     export SCENARIO="multi-node2"
@@ -27,6 +31,10 @@ function detect_scenario() {
     export SCENARIO="${SCENARIO}-ipv6"
   elif [[ "$IPFAMILY" == "dual" ]]; then
     export SCENARIO="${SCENARIO}-dual"
+  fi
+
+  if [[ "$(kubectl get namespace kube-system -o jsonpath='{.metadata.labels.gardener\.cloud/role}')" == "shoot" ]]; then
+    export SCENARIO="${SCENARIO}-gardenadm"
   fi
 
   echo "DETECTED SCENARIO: $SCENARIO"
@@ -57,6 +65,9 @@ function skaffold_profile() {
       ;;
     single-node-dual)
       export SKAFFOLD_PROFILE="single-node-dual"
+      ;;
+    remote)
+      export SKAFFOLD_PROFILE="remote"
       ;;
   esac
 

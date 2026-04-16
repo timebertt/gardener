@@ -21,6 +21,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,11 +30,11 @@ import (
 	"github.com/gardener/gardener/pkg/admissioncontroller/gardenletidentity"
 	seedidentity "github.com/gardener/gardener/pkg/admissioncontroller/gardenletidentity/seed"
 	admissionwebhook "github.com/gardener/gardener/pkg/admissioncontroller/webhook/admission"
+	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	gardenletbootstraputil "github.com/gardener/gardener/pkg/gardenlet/bootstrap/util"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -72,6 +73,19 @@ func (h *Handler) Handle(ctx context.Context, request admission.Request) admissi
 	}
 
 	log := h.Logger.WithValues("seedName", seedName, "userType", userType)
+
+	// For CREATE operations, if the object already exists, allow the request since the CREATE must have already been processed by this code previously.
+	// This avoids re-validating the object against CREATE-specific logic that may no longer apply to the current state of the object.
+	if request.Operation == admissionv1.Create {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: request.Kind.Group, Version: request.Kind.Version, Kind: request.Kind.Kind})
+
+		if err := h.Client.Get(ctx, client.ObjectKey{Name: request.Name, Namespace: request.Namespace}, obj); err == nil {
+			return admissionwebhook.Allowed("object already exists")
+		} else if !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to get object, continuing with normal admission checks", "requestName", request.Name, "requestNamespace", request.Namespace, "requestGroup", request.Kind.Group, "requestVersion", request.Kind.Version, "requestKind", request.Kind.Kind)
+		}
+	}
 
 	requestResource := schema.GroupResource{Group: request.Resource.Group, Resource: request.Resource.Resource}
 	switch requestResource {
@@ -531,8 +545,8 @@ func (h *Handler) admitServiceAccount(ctx context.Context, seedName string, user
 
 	// Allow gardenlet to create service accounts which can be used to bootstrap other gardenlets deployed as part of
 	// the ManagedSeed reconciliation.
-	if strings.HasPrefix(request.Name, gardenletbootstraputil.ServiceAccountNamePrefix) {
-		return h.allowIfManagedSeedIsNotYetBootstrapped(ctx, seedName, request.Namespace, strings.TrimPrefix(request.Name, gardenletbootstraputil.ServiceAccountNamePrefix))
+	if after, ok := strings.CutPrefix(request.Name, gardenletbootstraputil.ServiceAccountNamePrefix); ok {
+		return h.allowIfManagedSeedIsNotYetBootstrapped(ctx, seedName, request.Namespace, after)
 	}
 
 	// Allow all verbs for service accounts in gardenlets' seed-<name> namespaces.

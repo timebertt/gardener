@@ -34,6 +34,8 @@ import (
 	apiserverv1alpha1 "k8s.io/apiserver/pkg/apis/apiserver/v1alpha1"
 	apiserverv1beta1 "k8s.io/apiserver/pkg/apis/apiserver/v1beta1"
 	vpaautoscalingv1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/testing"
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
@@ -49,6 +51,7 @@ import (
 	"github.com/gardener/gardener/pkg/component/networking/vpn/envoy"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
 	componenttest "github.com/gardener/gardener/pkg/component/test"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -70,6 +73,16 @@ var _ = BeforeSuite(func() {
 	DeferCleanup(test.WithVar(&secretsutils.GenerateVPNKey, secretsutils.FakeGenerateVPNKey))
 	DeferCleanup(test.WithVar(&secretsutils.Clock, testclock.NewFakeClock(time.Time{})))
 })
+
+// newSeedFakeClientBuilder returns a fake client builder using the simpler client-go ObjectTracker instead of the
+// default FieldManagedObjectTracker. SeedScheme registers types from ~20 scheme builders (hundreds of GVKs), and the
+// field-managed tracker's REST mapper and structured-merge-diff machinery causes significant overhead, leading to flaky
+// test timeouts under CPU contention.
+func newSeedFakeClientBuilder() *fakeclient.ClientBuilder {
+	return fakeclient.NewClientBuilder().
+		WithScheme(kubernetes.SeedScheme).
+		WithObjectTracker(testing.NewObjectTracker(kubernetes.SeedScheme, scheme.Codecs.UniversalDecoder()))
+}
 
 var _ = Describe("KubeAPIServer", func() {
 	var (
@@ -106,13 +119,15 @@ var _ = Describe("KubeAPIServer", func() {
 		secretNameVPNSeedClient           = "vpn-seed-client"
 		secretNameVPNSeedServerTLSAuth    = "vpn-seed-server-tlsauth-a1d0aa00"
 
-		configMapNameAdmissionConfigs  = "kube-apiserver-admission-config-07c5248a"
-		secretNameAdmissionKubeconfigs = "kube-apiserver-admission-kubeconfigs-e3b0c442"
-		secretNameETCDEncryptionConfig = "kube-apiserver-etcd-encryption-configuration-b2b49c90"
-		configMapNameAuditPolicy       = "audit-policy-config-1e270362"
-		configMapNameEgressPolicy      = "kube-apiserver-egress-selector-config-53d92abc"
-		configMapEnvoyConfig           = "kube-apiserver-envoy-config-a60282c1"
-		configMapEgressSelectorConfig  = "kube-apiserver-egress-selector-config-02bc784a"
+		configMapNameAdmissionConfigs              = "kube-apiserver-admission-config-07c5248a"
+		secretNameAdmissionKubeconfigs             = "kube-apiserver-admission-kubeconfigs-e3b0c442"
+		secretNameETCDEncryptionConfig             = "kube-apiserver-etcd-encryption-configuration-b2b49c90"
+		configMapNameAuditPolicy                   = "audit-policy-config-1e270362"
+		configMapNameAuthorizationConfig           = "kube-apiserver-authorization-config-341e03e7"
+		configMapNameAuthorizationConfigWorkerless = "kube-apiserver-authorization-config-9112a677"
+		configMapNameEgressPolicy                  = "kube-apiserver-egress-selector-config-53d92abc"
+		configMapEnvoyConfig                       = "kube-apiserver-envoy-config-a60282c1"
+		configMapEgressSelectorConfig              = "kube-apiserver-egress-selector-config-02bc784a"
 
 		deployment                     *appsv1.Deployment
 		horizontalPodAutoscaler        *autoscalingv2.HorizontalPodAutoscaler
@@ -133,12 +148,12 @@ var _ = Describe("KubeAPIServer", func() {
 	)
 
 	BeforeEach(func() {
-		c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+		c = newSeedFakeClientBuilder().Build()
 		sm = fakesecretsmanager.New(c, namespace)
 		consistOf = NewManagedResourceConsistOfObjectsMatcher(c)
 
-		version = semver.MustParse("1.29.1")
-		runtimeVersion = semver.MustParse("1.29.1")
+		version = semver.MustParse("1.31.0")
+		runtimeVersion = semver.MustParse("1.31.0")
 		namePrefix = ""
 	})
 
@@ -374,6 +389,10 @@ var _ = Describe("KubeAPIServer", func() {
 								corev1.ResourceMemory: resource.MustParse("200M"),
 							},
 						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+						},
 					},
 				),
 				Entry("HA VPN is enabled",
@@ -391,15 +410,7 @@ var _ = Describe("KubeAPIServer", func() {
 							},
 						},
 						{
-							ContainerName: "vpn-client-0",
-							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-						},
-						{
-							ContainerName: "vpn-client-1",
-							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-						},
-						{
-							ContainerName: "vpn-path-controller",
+							ContainerName: "*",
 							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
@@ -418,6 +429,10 @@ var _ = Describe("KubeAPIServer", func() {
 								corev1.ResourceMemory: resource.MustParse("200M"),
 							},
 						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+						},
 					},
 				),
 				Entry("minAllowed configured",
@@ -433,6 +448,10 @@ var _ = Describe("KubeAPIServer", func() {
 								corev1.ResourceCPU:    resource.MustParse("20m"),
 								corev1.ResourceMemory: resource.MustParse("2Gi"),
 							},
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				),
@@ -494,17 +513,24 @@ var _ = Describe("KubeAPIServer", func() {
 					},
 					Spec: monitoringv1.ServiceMonitorSpec{
 						Selector: metav1.LabelSelector{MatchLabels: map[string]string{
-							"app":  "kubernetes",
-							"role": "apiserver",
+							"app":                   "kubernetes",
+							"role":                  "apiserver",
+							"metrics-scrape-target": "true",
 						}},
 						Endpoints: []monitoringv1.Endpoint{{
 							TargetPort: ptr.To(intstr.FromInt32(443)),
-							Scheme:     "https",
-							TLSConfig:  &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-							Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-" + prometheusName},
-								Key:                  "token",
-							}},
+							Scheme:     ptr.To(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+								HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+									TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+									HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+										Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-" + prometheusName},
+											Key:                  "token",
+										}},
+									},
+								},
+							},
 							RelabelConfigs: []monitoringv1.RelabelConfig{{
 								Action: "labelmap",
 								Regex:  `__meta_kubernetes_service_label_(.+)`,
@@ -512,7 +538,7 @@ var _ = Describe("KubeAPIServer", func() {
 							MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
 								SourceLabels: []monitoringv1.LabelName{"__name__"},
 								Action:       "keep",
-								Regex:        `^(authentication_attempts|authenticated_user_requests|apiserver_admission_controller_admission_duration_seconds_.+|apiserver_admission_webhook_admission_duration_seconds_.+|apiserver_admission_step_admission_duration_seconds_.+|apiserver_admission_webhook_request_total|apiserver_admission_webhook_rejection_count|apiserver_audit_event_total|apiserver_audit_error_total|apiserver_audit_requests_rejected_total|apiserver_cache_list_.+|apiserver_crd_webhook_conversion_duration_seconds_.+|apiserver_current_inflight_requests|apiserver_current_inqueue_requests|apiserver_flowcontrol_rejected_requests_total|apiserver_flowcontrol_dispatched_requests_total|apiserver_flowcontrol_current_inqueue_requests|apiserver_flowcontrol_current_executing_requests|apiserver_flowcontrol_current_executing_seats|apiserver_flowcontrol_request_wait_duration_seconds|apiserver_flowcontrol_nominal_limit_seats|apiserver_flowcontrol_request_concurrency_in_use|apiserver_flowcontrol_priority_level_request_utilization|apiserver_flowcontrol_priority_level_seat_utilization|apiserver_init_events_total|apiserver_latency|apiserver_latency_seconds|apiserver_longrunning_requests|apiserver_request_duration_seconds_.+|apiserver_request_duration_seconds_bucket|apiserver_request_duration_seconds_count|apiserver_request_terminations_total|apiserver_response_sizes_.+|apiserver_storage_list_.+|apiserver_storage_objects|apiserver_storage_transformation_duration_seconds_.+|apiserver_storage_transformation_operations_total|apiserver_storage_size_bytes|apiserver_registered_watchers|apiserver_request_count|apiserver_request_total|apiserver_validating_admission_policy_check_total|apiserver_watch_duration|apiserver_watch_events_sizes_.+|apiserver_watch_events_total|etcd_request_duration_seconds_.+|go_.+|process_max_fds|process_open_fds|watch_cache_capacity_increase_total|watch_cache_capacity_decrease_total|watch_cache_capacity)$`,
+								Regex:        `^(authentication_attempts|authenticated_user_requests|apiserver_admission_controller_admission_duration_seconds_.+|apiserver_admission_webhook_admission_duration_seconds_.+|apiserver_admission_step_admission_duration_seconds_.+|apiserver_admission_webhook_request_total|apiserver_admission_webhook_rejection_count|apiserver_audit_event_total|apiserver_audit_error_total|apiserver_audit_requests_rejected_total|apiserver_cache_list_.+|apiserver_crd_conversion_webhook_duration_seconds_.+|apiserver_current_inflight_requests|apiserver_current_inqueue_requests|apiserver_flowcontrol_rejected_requests_total|apiserver_flowcontrol_dispatched_requests_total|apiserver_flowcontrol_current_inqueue_requests|apiserver_flowcontrol_current_executing_requests|apiserver_flowcontrol_current_executing_seats|apiserver_flowcontrol_request_wait_duration_seconds|apiserver_flowcontrol_nominal_limit_seats|apiserver_flowcontrol_request_concurrency_in_use|apiserver_flowcontrol_priority_level_request_utilization|apiserver_flowcontrol_priority_level_seat_utilization|apiserver_init_events_total|apiserver_latency|apiserver_latency_seconds|apiserver_longrunning_requests|apiserver_request_duration_seconds_.+|apiserver_request_duration_seconds_bucket|apiserver_request_duration_seconds_count|apiserver_request_terminations_total|apiserver_response_sizes_.+|apiserver_storage_list_.+|apiserver_storage_objects|apiserver_storage_transformation_duration_seconds_.+|apiserver_storage_transformation_operations_total|apiserver_storage_size_bytes|apiserver_registered_watchers|apiserver_request_count|apiserver_request_total|apiserver_validating_admission_policy_check_total|apiserver_watch_duration|apiserver_watch_events_sizes_.+|apiserver_watch_events_total|etcd_request_duration_seconds_.+|go_.+|process_max_fds|process_open_fds|watch_cache_capacity_increase_total|watch_cache_capacity_decrease_total|watch_cache_capacity)$`,
 							}},
 						}},
 					},
@@ -920,50 +946,12 @@ var _ = Describe("KubeAPIServer", func() {
 				})
 			})
 
-			It("should successfully deploy the OIDCCABundle secret resource", func() {
-				var (
-					caBundle   = "some-ca-bundle"
-					oidcConfig = &gardencorev1beta1.OIDCConfig{CABundle: &caBundle}
-				)
-
-				kapi = New(kubernetesInterface, namespace, sm, Values{
-					Values: apiserver.Values{
-						RuntimeVersion: runtimeVersion,
-					},
-					OIDC:    oidcConfig,
-					Version: version,
-				})
-
-				expectedSecretOIDCCABundle := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{Name: "kube-apiserver-oidc-cabundle", Namespace: namespace},
-					Data:       map[string][]byte{"ca.crt": []byte(caBundle)},
-				}
-				Expect(kubernetesutils.MakeUnique(expectedSecretOIDCCABundle)).To(Succeed())
-
-				actualSecretOIDCCABundle := &corev1.Secret{}
-				Expect(c.Get(ctx, client.ObjectKeyFromObject(expectedSecretOIDCCABundle), actualSecretOIDCCABundle)).To(BeNotFoundError())
-
-				Expect(kapi.Deploy(ctx)).To(Succeed())
-
-				Expect(c.Get(ctx, client.ObjectKeyFromObject(expectedSecretOIDCCABundle), actualSecretOIDCCABundle)).To(Succeed())
-				Expect(actualSecretOIDCCABundle).To(DeepEqual(&corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:            expectedSecretOIDCCABundle.Name,
-						Namespace:       expectedSecretOIDCCABundle.Namespace,
-						Labels:          map[string]string{"resources.gardener.cloud/garbage-collectable-reference": "true"},
-						ResourceVersion: "1",
-					},
-					Immutable: ptr.To(true),
-					Data:      expectedSecretOIDCCABundle.Data,
-				}))
-			})
-
-			It("should not deploy the OIDCCABundle secret resource when version is >= v1.30 and feature gate is not set", func() {
+			It("should not deploy the OIDCCABundle secret resource when feature gate is not set", func() {
 				var (
 					caBundle   = "some-ca-bundle"
 					clientID   = "some-client-id"
 					issuerURL  = "https://issuer.url.com"
-					version    = semver.MustParse("1.30.0")
+					version    = semver.MustParse("1.31.0")
 					oidcConfig = &gardencorev1beta1.OIDCConfig{
 						IssuerURL: &issuerURL,
 						ClientID:  &clientID,
@@ -991,12 +979,12 @@ var _ = Describe("KubeAPIServer", func() {
 				Expect(c.Get(ctx, client.ObjectKeyFromObject(expectedSecretOIDCCABundle), actualSecretOIDCCABundle)).To(BeNotFoundError())
 			})
 
-			It("should not deploy the OIDCCABundle secret resource when version is >= v1.30 and feature gate is set to true", func() {
+			It("should not deploy the OIDCCABundle secret resource when feature gate is set to true", func() {
 				var (
 					caBundle   = "some-ca-bundle"
 					clientID   = "some-client-id"
 					issuerURL  = "https://issuer.url.com"
-					version    = semver.MustParse("1.30.0")
+					version    = semver.MustParse("1.31.0")
 					oidcConfig = &gardencorev1beta1.OIDCConfig{
 						IssuerURL: &issuerURL,
 						ClientID:  &clientID,
@@ -1027,10 +1015,10 @@ var _ = Describe("KubeAPIServer", func() {
 				Expect(c.Get(ctx, client.ObjectKeyFromObject(expectedSecretOIDCCABundle), actualSecretOIDCCABundle)).To(BeNotFoundError())
 			})
 
-			It("should successfully deploy the OIDCCABundle secret resource when version is >= v1.30 and feature gate is set to false", func() {
+			It("should successfully deploy the OIDCCABundle secret resource when feature gate is set to false", func() {
 				var (
 					caBundle   = "some-ca-bundle"
-					version    = semver.MustParse("1.30.0")
+					version    = semver.MustParse("1.31.0")
 					oidcConfig = &gardencorev1beta1.OIDCConfig{CABundle: &caBundle}
 				)
 
@@ -1741,27 +1729,10 @@ rules:
 			})
 
 			Context("authentication configuration", func() {
-				It("should error when authentication config is set but version is < v1.30", func() {
-					var (
-						authenticationConfig = "some-auth-config"
-						version              = semver.MustParse("1.29.0")
-					)
-
-					kapi = New(kubernetesInterface, namespace, sm, Values{
-						Values: apiserver.Values{
-							RuntimeVersion: runtimeVersion,
-						},
-						AuthenticationConfiguration: ptr.To(authenticationConfig),
-						Version:                     version,
-					})
-
-					Expect(kapi.Deploy(ctx)).To(MatchError("structured authentication is not available for versions < v1.30"))
-				})
-
 				It("should error when authentication config and oidc settings are configured", func() {
 					var (
 						authenticationConfig = "some-auth-config"
-						version              = semver.MustParse("1.30.0")
+						version              = semver.MustParse("1.31.0")
 					)
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
@@ -2197,7 +2168,7 @@ rules:
 				It("should not deploy the configmap resource when feature gate is disabled", func() {
 					var (
 						authenticationConfig = "some-auth-config"
-						version              = semver.MustParse("1.30.0")
+						version              = semver.MustParse("1.31.0")
 					)
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
@@ -2237,7 +2208,7 @@ rules:
 							UsernameClaim:  ptr.To("some-username-claim"),
 							UsernamePrefix: ptr.To("some-username-prefix"),
 						}
-						version              = semver.MustParse("1.30.0")
+						version              = semver.MustParse("1.31.0")
 						authenticationConfig = `apiVersion: apiserver.config.k8s.io/v1beta1
 jwt:
 - claimMappings:
@@ -2297,7 +2268,7 @@ kind: AuthenticationConfiguration
 						GroupsClaim: ptr.To("some-groups-claim"),
 						IssuerURL:   ptr.To("https://issuer.url.com"),
 					}
-					version              = semver.MustParse("1.30.0")
+					version              = semver.MustParse("1.31.0")
 					authenticationConfig = `apiVersion: apiserver.config.k8s.io/v1beta1
 jwt:
 - claimMappings:
@@ -2352,7 +2323,7 @@ kind: AuthenticationConfiguration
 						IssuerURL:      ptr.To("https://issuer.url.com"),
 						UsernamePrefix: ptr.To("-"),
 					}
-					version              = semver.MustParse("1.30.0")
+					version              = semver.MustParse("1.31.0")
 					authenticationConfig = `apiVersion: apiserver.config.k8s.io/v1beta1
 jwt:
 - claimMappings:
@@ -2399,26 +2370,8 @@ kind: AuthenticationConfiguration
 			})
 
 			Context("authorization configuration", func() {
-				It("should do nothing when Kubernetes version is < v1.30", func() {
-					version := semver.MustParse("1.29.0")
-
-					kapi = New(kubernetesInterface, namespace, sm, Values{
-						Values: apiserver.Values{
-							RuntimeVersion: runtimeVersion,
-						},
-						Version: version,
-					})
-
-					configMapAuthorization = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "kube-apiserver-authorization-config", Namespace: namespace}}
-					Expect(kubernetesutils.MakeUnique(configMapAuthorization)).To(Succeed())
-
-					Expect(c.Get(ctx, client.ObjectKeyFromObject(configMapAuthorization), configMapAuthorization)).To(BeNotFoundError())
-					Expect(kapi.Deploy(ctx)).To(Succeed())
-					Expect(c.Get(ctx, client.ObjectKeyFromObject(configMapAuthorization), configMapAuthorization)).To(BeNotFoundError())
-				})
-
-				It("should do nothing when Kubernetes version is >= v1.30 but the feature gate is disabled", func() {
-					version := semver.MustParse("1.30.0")
+				It("should do nothing when the feature gate is disabled", func() {
+					version := semver.MustParse("1.31.0")
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -2439,7 +2392,7 @@ kind: AuthenticationConfiguration
 				})
 
 				It("should successfully deploy the configmap resource w/o webhooks", func() {
-					version := semver.MustParse("1.30.0")
+					version := semver.MustParse("1.31.0")
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -2477,7 +2430,7 @@ kind: AuthorizationConfiguration
 				})
 
 				It("should successfully deploy the configmap resource w/ webhooks", func() {
-					version := semver.MustParse("1.30.0")
+					version := semver.MustParse("1.31.0")
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -2545,7 +2498,7 @@ kind: AuthorizationConfiguration
 				})
 
 				It("should successfully deploy the configmap resource for workerless clusters w/o webhooks", func() {
-					version := semver.MustParse("1.30.0")
+					version := semver.MustParse("1.31.0")
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -2582,7 +2535,7 @@ kind: AuthorizationConfiguration
 				})
 
 				It("should successfully deploy the configmap resource for workerless clusters w/ webhooks", func() {
-					version := semver.MustParse("1.30.0")
+					version := semver.MustParse("1.31.0")
 
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -2777,7 +2730,9 @@ kind: AuthorizationConfiguration
 					})
 					deployAndRead()
 
-					Expect(deployment.Annotations).To(Equal(defaultAnnotations))
+					Expect(deployment.Annotations).To(Equal(utils.MergeStringMaps(defaultAnnotations, map[string]string{
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
+					})))
 				})
 
 				It("should have the expected annotations when there are nodes", func() {
@@ -2791,8 +2746,9 @@ kind: AuthorizationConfiguration
 					deployAndRead()
 
 					Expect(deployment.Annotations).To(Equal(utils.MergeStringMaps(defaultAnnotations, map[string]string{
-						"reference.resources.gardener.cloud/secret-77bc5458": secretNameCAKubelet,
-						"reference.resources.gardener.cloud/secret-c1267cc2": secretNameKubeAPIServerToKubelet,
+						"reference.resources.gardener.cloud/secret-77bc5458":    secretNameCAKubelet,
+						"reference.resources.gardener.cloud/secret-c1267cc2":    secretNameKubeAPIServerToKubelet,
+						"reference.resources.gardener.cloud/configmap-8d1c89ab": configMapNameAuthorizationConfig,
 					})))
 				})
 
@@ -2807,7 +2763,9 @@ kind: AuthorizationConfiguration
 					})
 					deployAndRead()
 
-					Expect(deployment.Annotations).To(Equal(defaultAnnotations))
+					Expect(deployment.Annotations).To(Equal(utils.MergeStringMaps(defaultAnnotations, map[string]string{
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
+					})))
 				})
 
 				It("should have the expected annotations when VPN is enabled but HA is disabled", func() {
@@ -2825,6 +2783,7 @@ kind: AuthorizationConfiguration
 						"reference.resources.gardener.cloud/secret-7ae9678a":    secretNameHTTPProxyClient,
 						"reference.resources.gardener.cloud/secret-8ddd8e24":    secretNameCAVPN,
 						"reference.resources.gardener.cloud/configmap-f79954be": configMapNameEgressPolicy,
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
 					})))
 				})
 
@@ -2854,8 +2813,10 @@ kind: AuthorizationConfiguration
 						"reference.resources.gardener.cloud/configmap-a9a818ab": "kube-root-ca.crt",
 						"reference.resources.gardener.cloud/configmap-9d9fd1bf": configMapEnvoyConfig,
 						"reference.resources.gardener.cloud/configmap-a90d2cd3": configMapEgressSelectorConfig,
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
 					})))
 				})
+
 				It("should have the expected annotations when VPN and HA is enabled (non-overlap)", func() {
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -2878,6 +2839,7 @@ kind: AuthorizationConfiguration
 						"reference.resources.gardener.cloud/secret-a41fe9a3":    secretNameVPNSeedClient,
 						"reference.resources.gardener.cloud/secret-facfe649":    secretNameVPNSeedServerTLSAuth,
 						"reference.resources.gardener.cloud/configmap-a9a818ab": "kube-root-ca.crt",
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
 					})))
 				})
 			})
@@ -2999,7 +2961,9 @@ kind: AuthorizationConfiguration
 					})
 					deployAndRead()
 
-					Expect(deployment.Spec.Template.Annotations).To(Equal(defaultAnnotations))
+					Expect(deployment.Spec.Template.Annotations).To(Equal(utils.MergeStringMaps(defaultAnnotations, map[string]string{
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
+					})))
 				})
 
 				It("should have the expected annotations when there are nodes", func() {
@@ -3013,8 +2977,9 @@ kind: AuthorizationConfiguration
 					deployAndRead()
 
 					Expect(deployment.Spec.Template.Annotations).To(Equal(utils.MergeStringMaps(defaultAnnotations, map[string]string{
-						"reference.resources.gardener.cloud/secret-77bc5458": secretNameCAKubelet,
-						"reference.resources.gardener.cloud/secret-c1267cc2": secretNameKubeAPIServerToKubelet,
+						"reference.resources.gardener.cloud/secret-77bc5458":    secretNameCAKubelet,
+						"reference.resources.gardener.cloud/secret-c1267cc2":    secretNameKubeAPIServerToKubelet,
+						"reference.resources.gardener.cloud/configmap-8d1c89ab": configMapNameAuthorizationConfig,
 					})))
 				})
 
@@ -3029,7 +2994,9 @@ kind: AuthorizationConfiguration
 					})
 					deployAndRead()
 
-					Expect(deployment.Spec.Template.Annotations).To(Equal(defaultAnnotations))
+					Expect(deployment.Spec.Template.Annotations).To(Equal(utils.MergeStringMaps(defaultAnnotations, map[string]string{
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
+					})))
 				})
 
 				It("should have the expected annotations when VPN is enabled but HA is disabled", func() {
@@ -3047,6 +3014,7 @@ kind: AuthorizationConfiguration
 						"reference.resources.gardener.cloud/secret-7ae9678a":    secretNameHTTPProxyClient,
 						"reference.resources.gardener.cloud/secret-8ddd8e24":    secretNameCAVPN,
 						"reference.resources.gardener.cloud/configmap-f79954be": configMapNameEgressPolicy,
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
 					})))
 				})
 
@@ -3076,8 +3044,10 @@ kind: AuthorizationConfiguration
 						"reference.resources.gardener.cloud/configmap-a9a818ab": "kube-root-ca.crt",
 						"reference.resources.gardener.cloud/configmap-9d9fd1bf": configMapEnvoyConfig,
 						"reference.resources.gardener.cloud/configmap-a90d2cd3": configMapEgressSelectorConfig,
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
 					})))
 				})
+
 				It("should have the expected annotations when VPN and HA is enabled (non-overlap)", func() {
 					kapi = New(kubernetesInterface, namespace, sm, Values{
 						Values: apiserver.Values{
@@ -3100,6 +3070,7 @@ kind: AuthorizationConfiguration
 						"reference.resources.gardener.cloud/secret-a41fe9a3":    secretNameVPNSeedClient,
 						"reference.resources.gardener.cloud/secret-facfe649":    secretNameVPNSeedServerTLSAuth,
 						"reference.resources.gardener.cloud/configmap-a9a818ab": "kube-root-ca.crt",
+						"reference.resources.gardener.cloud/configmap-c413f07d": configMapNameAuthorizationConfigWorkerless,
 					})))
 				})
 			})
@@ -3218,7 +3189,7 @@ kind: AuthorizationConfiguration
 				return container
 			}
 
-			haVPNInitClientContainer := func() corev1.Container {
+			haVPNInitClientContainer := func(rrEnabled bool) corev1.Container {
 				initContainer := haVPNClientContainerFor(0)
 				initContainer.Name = "vpn-client-init"
 				initContainer.LivenessProbe = nil
@@ -3241,6 +3212,12 @@ kind: AuthorizationConfiguration
 						},
 					},
 				}...)
+				if rrEnabled {
+					initContainer.Env = append(initContainer.Env, corev1.EnvVar{
+						Name:  "BONDING_MODE",
+						Value: "balance-rr",
+					})
+				}
 				initContainer.VolumeMounts = append(initContainer.VolumeMounts, corev1.VolumeMount{
 					Name:      "kube-api-access-gardener",
 					MountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
@@ -3250,7 +3227,7 @@ kind: AuthorizationConfiguration
 				return initContainer
 			}
 
-			testHAVPN := func(overlap bool) {
+			testHAVPN := func(overlap, rrEnabled bool) {
 				values = Values{
 					Values: apiserver.Values{
 						RuntimeVersion: runtimeVersion,
@@ -3275,7 +3252,7 @@ kind: AuthorizationConfiguration
 				kapi = New(kubernetesInterface, namespace, sm, values)
 				deployAndRead()
 
-				initContainer := haVPNInitClientContainer()
+				initContainer := haVPNInitClientContainer(rrEnabled)
 				Expect(deployment.Spec.Template.Spec.InitContainers).To(DeepEqual([]corev1.Container{initContainer}))
 				if overlap {
 					Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(values.VPN.HighAvailabilityNumberOfSeedServers + 3))
@@ -3418,11 +3395,23 @@ kind: AuthorizationConfiguration
 			}
 
 			It("should have one init container, one kube-apiserver, one envoy proxy, two vpn-seed-clients and one path controller (total: 5) when VPN high availability and overlapping CIDRs are enabled", func() {
-				testHAVPN(true)
+				testHAVPN(true, false)
+			})
+
+			It("should configure the round-robin bonding mode feature when VPN high availability and overlapping CIDRs are enabled", func() {
+				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VPNBondingModeRoundRobin, true))
+
+				testHAVPN(true, true)
 			})
 
 			It("should have one init container, one kube-apiserver, two vpn-seed-clients and one path controller (total: 4) when VPN high availability and non-overlapping CIDRs are enabled", func() {
-				testHAVPN(false)
+				testHAVPN(false, false)
+			})
+
+			It("should configure the round-robin bonding mode feature when VPN high availability and non-overlapping CIDRs are enabled", func() {
+				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VPNBondingModeRoundRobin, true))
+
+				testHAVPN(false, true)
 			})
 
 			Context("kube-apiserver container", func() {
@@ -3500,7 +3489,7 @@ kind: AuthorizationConfiguration
 						"--admission-control-config-file=/etc/kubernetes/admission/admission-configuration.yaml",
 						"--anonymous-auth=false",
 						"--audit-policy-file=/etc/kubernetes/audit/audit-policy.yaml",
-						"--authorization-mode=RBAC",
+						"--authorization-config=/etc/kubernetes/structured/authorization/config.yaml",
 						"--client-ca-file=/srv/kubernetes/ca-client/bundle.crt",
 						"--enable-aggregator-routing=true",
 						"--enable-bootstrap-token-auth=true",
@@ -3523,7 +3512,7 @@ kind: AuthorizationConfiguration
 						"--requestheader-extra-headers-prefix=X-Remote-Extra-",
 						"--requestheader-group-headers=X-Remote-Group",
 						"--requestheader-username-headers=X-Remote-User",
-						"--runtime-config=apps/v1=false,autoscaling/v2=false,batch/v1=false,discovery.k8s.io/v1=false,policy/v1=false,storage.k8s.io/v1/csinodes=false",
+						"--runtime-config=apps/v1=false,autoscaling/v2=false,batch/v1=false,policy/v1=false,storage.k8s.io/v1/csinodes=false",
 						"--secure-port=443",
 						"--service-cluster-ip-range="+serviceNetworkCIDRs[0].String()+","+serviceNetworkCIDRs[1].String(),
 						"--service-account-issuer="+serviceAccountIssuer,
@@ -3609,6 +3598,11 @@ kind: AuthorizationConfiguration
 						corev1.VolumeMount{
 							Name:      "etcd-encryption-secret",
 							MountPath: "/etc/kubernetes/etcd-encryption-secret",
+							ReadOnly:  true,
+						},
+						corev1.VolumeMount{
+							Name:      "authorization-config",
+							MountPath: "/etc/kubernetes/structured/authorization",
 							ReadOnly:  true,
 						},
 					))
@@ -3732,6 +3726,16 @@ kind: AuthorizationConfiguration
 								Secret: &corev1.SecretVolumeSource{
 									SecretName:  secretNameServer,
 									DefaultMode: ptr.To[int32](0640),
+								},
+							},
+						},
+						corev1.Volume{
+							Name: "authorization-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: configMapNameAuthorizationConfigWorkerless,
+									},
 								},
 							},
 						},
@@ -4132,7 +4136,7 @@ anonymous: null
 							},
 						}
 
-						version = semver.MustParse("1.30.0")
+						version = semver.MustParse("1.31.0")
 					)
 
 					authenticationConfig, err := runtime.Encode(ConfigCodec, authenticationConfigInput)
@@ -4195,7 +4199,7 @@ anonymous: null
 							ClientID:  ptr.To("some-client-id"),
 							IssuerURL: ptr.To("https://issuer.url.com"),
 						}
-						version              = semver.MustParse("1.30.0")
+						version              = semver.MustParse("1.31.0")
 						authenticationConfig = `apiVersion: apiserver.config.k8s.io/v1beta1
 jwt:
 - claimMappings:
@@ -4308,7 +4312,7 @@ kind: AuthenticationConfiguration
 					deployAndRead()
 
 					Expect(deployment.Spec.Template.Spec.Containers[0].Args).To(ContainElement(
-						"--runtime-config=apps/v1=true,autoscaling/v2=false,bar=false,batch/v1=false,discovery.k8s.io/v1=false,policy/v1=false,storage.k8s.io/v1/csinodes=false",
+						"--runtime-config=apps/v1=true,autoscaling/v2=false,bar=false,batch/v1=false,policy/v1=false,storage.k8s.io/v1/csinodes=false",
 					))
 				})
 
@@ -4332,7 +4336,6 @@ kind: AuthenticationConfiguration
 					deployAndRead()
 
 					Expect(deployment.Spec.Template.Spec.Containers[0].Args).To(ContainElements(
-						"--default-watch-cache-size=123",
 						"--watch-cache-sizes=foo#456,bar.baz#789",
 					))
 				})
@@ -4341,7 +4344,6 @@ kind: AuthenticationConfiguration
 					deployAndRead()
 
 					Expect(deployment.Spec.Template.Spec.Containers[0].Args).NotTo(ContainElements(
-						ContainSubstring("--default-watch-cache-size="),
 						ContainSubstring("--watch-cache-sizes="),
 					))
 				})
@@ -4626,7 +4628,7 @@ kind: AuthenticationConfiguration
 				})
 
 				Context("authorization settings", func() {
-					It("should properly configure the authorization settings with webhook for Kubernetes < 1.30", func() {
+					It("should properly configure the authorization settings with webhook", func() {
 						values.AuthorizationWebhooks = []AuthorizationWebhook{{
 							Name: "foo",
 							WebhookConfiguration: apiserverv1beta1.WebhookConfiguration{
@@ -4635,45 +4637,7 @@ kind: AuthenticationConfiguration
 								SubjectAccessReviewVersion: "v1alpha1",
 							},
 						}}
-						kapi = New(kubernetesInterface, namespace, sm, values)
-						deployAndRead()
-
-						Expect(deployment.Spec.Template.Spec.Containers[0].Args).To(ContainElements(
-							"--authorization-webhook-config-file=/etc/kubernetes/structured/authorization-kubeconfigs/foo-kubeconfig.yaml",
-							"--authorization-webhook-cache-authorized-ttl=13s",
-							"--authorization-webhook-cache-unauthorized-ttl=37s",
-							"--authorization-webhook-version=v1alpha1",
-							"--authorization-mode=RBAC,Webhook",
-						))
-						Expect(deployment.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElements(
-							corev1.VolumeMount{
-								Name:      "authorization-kubeconfigs",
-								MountPath: "/etc/kubernetes/structured/authorization-kubeconfigs",
-								ReadOnly:  true,
-							},
-						))
-						Expect(deployment.Spec.Template.Spec.Volumes).To(ContainElements(
-							corev1.Volume{
-								Name: "authorization-kubeconfigs",
-								VolumeSource: corev1.VolumeSource{
-									Secret: &corev1.SecretVolumeSource{
-										SecretName: "kube-apiserver-authorization-webhooks-kubeconfigs-e3b0c442",
-									},
-								},
-							},
-						))
-					})
-
-					It("should properly configure the authorization settings with webhook for Kubernetes >= 1.30", func() {
-						values.AuthorizationWebhooks = []AuthorizationWebhook{{
-							Name: "foo",
-							WebhookConfiguration: apiserverv1beta1.WebhookConfiguration{
-								AuthorizedTTL:              metav1.Duration{Duration: 13 * time.Second},
-								UnauthorizedTTL:            metav1.Duration{Duration: 37 * time.Second},
-								SubjectAccessReviewVersion: "v1alpha1",
-							},
-						}}
-						values.Version = semver.MustParse("1.30.3")
+						values.Version = semver.MustParse("1.32.0")
 						kapi = New(kubernetesInterface, namespace, sm, values)
 						deployAndRead()
 
@@ -4863,7 +4827,7 @@ kind: AuthenticationConfiguration
 		})
 
 		It("should successfully wait for the deployment to be updated", func() {
-			fakeClient := fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+			fakeClient := newSeedFakeClientBuilder().Build()
 			fakeKubernetesInterface := fakekubernetes.NewClientSetBuilder().WithAPIReader(fakeClient).WithClient(fakeClient).Build()
 			kapi = New(fakeKubernetesInterface, namespace, nil, Values{
 				Values: apiserver.Values{
@@ -4874,7 +4838,7 @@ kind: AuthenticationConfiguration
 			deploy := deployment.DeepCopy()
 
 			defer test.WithVars(&IntervalWaitForDeployment, time.Millisecond)()
-			defer test.WithVars(&TimeoutWaitForDeployment, 100*time.Millisecond)()
+			defer test.WithVars(&TimeoutWaitForDeployment, 500*time.Millisecond)()
 
 			Expect(fakeClient.Create(ctx, deploy)).To(Succeed())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).To(Succeed())
@@ -4908,13 +4872,13 @@ kind: AuthenticationConfiguration
 
 	Describe("#WaitCleanup", func() {
 		It("should successfully wait for the deployment to be deleted", func() {
-			fakeClient := fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+			fakeClient := newSeedFakeClientBuilder().Build()
 			fakeKubernetesInterface := fakekubernetes.NewClientSetBuilder().WithAPIReader(fakeClient).WithClient(fakeClient).Build()
 			kapi = New(fakeKubernetesInterface, namespace, nil, Values{})
 			deploy := deployment.DeepCopy()
 
 			defer test.WithVars(&IntervalWaitForDeployment, time.Millisecond)()
-			defer test.WithVars(&TimeoutWaitForDeployment, 100*time.Millisecond)()
+			defer test.WithVars(&TimeoutWaitForDeployment, 500*time.Millisecond)()
 
 			Expect(fakeClient.Create(ctx, deploy)).To(Succeed())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(deploy), deploy)).To(Succeed())

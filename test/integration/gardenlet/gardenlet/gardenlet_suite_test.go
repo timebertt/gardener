@@ -31,12 +31,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/gardenlet"
 	"github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/logger"
@@ -130,9 +130,21 @@ var _ = BeforeSuite(func() {
 			DNS: gardencorev1beta1.SeedDNS{
 				Provider: &gardencorev1beta1.SeedDNSProvider{
 					Type: "provider",
-					SecretRef: corev1.SecretReference{
-						Name:      "some-secret",
-						Namespace: "some-namespace",
+					CredentialsRef: &corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "some-secret",
+						Namespace:  "some-namespace",
+					},
+				},
+				Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+					Type:   "provider",
+					Domain: "internal.example.com",
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "some-secret",
+						Namespace:  "some-namespace",
 					},
 				},
 			},
@@ -159,7 +171,6 @@ var _ = BeforeSuite(func() {
 		By("Delete garden namespace")
 		Expect(testClient.Delete(ctx, gardenNamespace)).To(Or(Succeed(), BeNotFoundError()))
 	})
-
 	gardenNamespaceSeed = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "garden-"}}
 	Expect(testClient.Create(ctx, gardenNamespaceSeed)).To(Succeed())
 	log.Info("Created Namespace for test", "namespaceName", gardenNamespaceSeed.Name)

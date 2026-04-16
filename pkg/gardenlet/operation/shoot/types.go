@@ -56,6 +56,7 @@ type Builder struct {
 	cloudProfileFunc             func(context.Context, *gardencorev1beta1.Shoot) (*gardencorev1beta1.CloudProfile, error)
 	shootCredentialsFunc         func(context.Context, string, string, bool) (client.Object, error)
 	serviceAccountIssuerHostname func() (*string, error)
+	shootDNSFunc                 func() *gardencorev1beta1.DNS
 	seed                         *gardencorev1beta1.Seed
 	exposureClass                *gardencorev1beta1.ExposureClass
 	projectName                  string
@@ -70,7 +71,7 @@ type Shoot struct {
 
 	shootState atomic.Value
 
-	// Credentials is either [*corev1.Secret] or [*securityv1alpha1.WorkloadIdentity]
+	// Credentials is either [*corev1.Secret], [*gardencorev1bet1.InternalSecret], or [*securityv1alpha1.WorkloadIdentity]
 	Credentials   client.Object
 	CloudProfile  *gardencorev1beta1.CloudProfile
 	ExposureClass *gardencorev1beta1.ExposureClass
@@ -102,6 +103,8 @@ type Shoot struct {
 	Networks                                *Networks
 	BackupEntryName                         string
 	OSCSyncJitterPeriod                     *metav1.Duration
+	EncryptionProviderToUse                 gardencorev1beta1.EncryptionProviderType
+	UsedEncryptionProvider                  gardencorev1beta1.EncryptionProviderType
 	ResourcesToEncrypt                      []string
 	EncryptedResources                      []string
 	ServiceAccountIssuerHostname            *string
@@ -130,6 +133,7 @@ type ControlPlane struct {
 	EtcdEvents               etcd.Interface
 	EtcdCopyBackupsTask      etcdcopybackupstask.Interface
 	EventLogger              component.Deployer
+	IstioBasicAuthServer     component.DeployWaiter
 	KubeAPIServerService     component.DeployWaiter
 	KubeAPIServerSNI         component.DeployWaiter
 	KubeAPIServer            kubeapiserver.Interface
@@ -142,6 +146,7 @@ type ControlPlane struct {
 	ResourceManager          resourcemanager.Interface
 	Vali                     vali.Interface
 	OtelCollector            collector.Interface
+	VictoriaLogs             component.DeployWaiter
 	VerticalPodAutoscaler    vpa.Interface
 	VPNSeedServer            vpnseedserver.Interface
 }

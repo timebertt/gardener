@@ -253,6 +253,32 @@ spec:
           Port-forward to `prometheus-garden-0` in the `garden` namespace and open:
           http://localhost:9090/targets?search={{$labels.instance}}
 
+    - alert: SeedKubeEtcd3MainDbSizeLimitApproaching
+      expr: |
+        ALERTS{alertname="KubeEtcd3MainDbSizeLimitApproaching",alertstate="firing",namespace=~"shoot--garden--.+"}
+      labels:
+        severity: warning
+        topology: garden
+      annotations:
+        summary: >-
+          A seed etcd-main in landscape {{$externalLabels.landscape}} is approaching its current DB size limit.
+        description: >-
+          Seed {{$labels.name}} etcd-main DB size is approaching its current limit in landscape {{$externalLabels.landscape}}. 
+          Etcd quota might need to be increased.
+
+    - alert: SeedKubeEtcd3MainDbSizeLimitCrossed
+      expr: |
+        ALERTS{alertname="KubeEtcd3MainDbSizeLimitCrossed",alertstate="firing",namespace=~"shoot--garden--.+"}
+      labels:
+        severity: warning
+        topology: garden
+      annotations:
+        summary: >-
+          A seed etcd-main in landscape {{$externalLabels.landscape}} has crossed its current DB size limit.
+        description: >-
+          Seed {{$labels.name}} etcd-main DB size has crossed its current practical limit in landscape {{$externalLabels.landscape}}. 
+          Etcd quota must be increased to allow updates. 
+    
     - alert: SeedPodStuckInPending
       expr: |
         ALERTS{alertname="PodStuckInPending",alertstate="firing"}
@@ -327,5 +353,35 @@ spec:
           an uncapped target recommendation larger than the regular target recommendation. Query
           in the garden Prometheus for more details:
 
-
+          
           ALERTS{alertname="VerticalPodAutoscalerCappedRecommendation", type="seed"}
+
+    - alert: SeedReconciliationFailed
+      expr: |
+        garden_seed_operation_states{operation="Reconcile"} == 6
+      for: 0m
+      labels:
+        severity: critical
+        topology: seed
+        mute_on_weekends: "true"
+      annotations:
+        summary: Seed reconciliation has permanently failed
+        description: >-
+          The seed {{$labels.name}} in {{$externalLabels.landscape}} has
+          reached a terminal Failed state for its Reconcile operation.
+          Manual intervention is required.
+
+    - alert: SeedReconciliationError
+      expr: |
+        garden_seed_operation_states{operation="Reconcile"} == 5
+      for: 30m
+      labels:
+        severity: warning
+        topology: seed
+        mute_on_weekends: "true"
+      annotations:
+        summary: Seed reconciliation is in error state
+        description: >-
+          The seed {{$labels.name}} in {{$externalLabels.landscape}} has
+          been in an Error state for its Reconcile operation for more than
+          30 minutes. Gardenlet will keep retrying.

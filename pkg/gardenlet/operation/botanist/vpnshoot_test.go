@@ -65,7 +65,7 @@ var _ = Describe("VPNShoot", func() {
 			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
 				Spec: gardencorev1beta1.ShootSpec{
 					Kubernetes: gardencorev1beta1.Kubernetes{
-						Version: "1.30.1",
+						Version: "1.35.0",
 					},
 					Networking: &gardencorev1beta1.Networking{
 						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4},
@@ -132,14 +132,9 @@ var _ = Describe("VPNShoot", func() {
 		It("should set the network ranges and deploy", func() {
 			vpnShoot.EXPECT().Deploy(ctx)
 			Expect(botanist.DeployVPNShoot(ctx)).To(Succeed())
-
-			Expect(botanist.GardenClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
-			Expect(shoot.Status.Constraints).NotTo(ContainCondition(
-				OfType(gardencorev1beta1.ShootUsesUnifiedHTTPProxyPort),
-			))
 		})
 
-		It("should report a constraint if feature gate UseUnifiedHTTPProxyPort is enabled", func() {
+		It("should report a constraint if feature gate UseUnifiedHTTPProxyPort is enabled and remove it if disabled", func() {
 			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.UseUnifiedHTTPProxyPort, true))
 
 			vpnShoot.EXPECT().Deploy(ctx)
@@ -150,6 +145,22 @@ var _ = Describe("VPNShoot", func() {
 				OfType(gardencorev1beta1.ShootUsesUnifiedHTTPProxyPort),
 				WithStatus(gardencorev1beta1.ConditionTrue),
 				WithReason("ShootUsesUnifiedHTTPProxyPort"),
+			))
+
+			By("disabling the feature gate again")
+			DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.UseUnifiedHTTPProxyPort, false))
+
+			// Since we will call DeployVPNShoot again, we expect the calls to be made again
+			vpnShoot.EXPECT().SetNodeNetworkCIDRs(botanist.Shoot.Networks.Nodes)
+			vpnShoot.EXPECT().SetServiceNetworkCIDRs(botanist.Shoot.Networks.Services)
+			vpnShoot.EXPECT().SetPodNetworkCIDRs(botanist.Shoot.Networks.Pods)
+			vpnShoot.EXPECT().Deploy(ctx)
+
+			Expect(botanist.DeployVPNShoot(ctx)).To(Succeed())
+			Expect(botanist.GardenClient.Get(ctx, client.ObjectKeyFromObject(shoot), shoot)).To(Succeed())
+
+			Expect(shoot.Status.Constraints).NotTo(ContainCondition(
+				OfType(gardencorev1beta1.ShootUsesUnifiedHTTPProxyPort),
 			))
 		})
 

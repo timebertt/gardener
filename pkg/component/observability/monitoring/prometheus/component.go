@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
@@ -32,13 +33,33 @@ import (
 const (
 	dataKeyAdditionalScrapeConfigs       = "prometheus.yaml"
 	dataKeyAdditionalAlertmanagerConfigs = "configs.yaml"
-
-	port        = 9090
-	servicePort = 80
-
-	// ServicePortName is the name of the port in the Service specification.
-	ServicePortName = "web"
 )
+
+var servicePorts = struct {
+	Web    corev1.ServicePort
+	Cortex corev1.ServicePort
+}{
+	Web: corev1.ServicePort{
+		Name:       "web",
+		Port:       80,
+		Protocol:   corev1.ProtocolTCP,
+		TargetPort: intstr.FromInt32(9090),
+	},
+	Cortex: corev1.ServicePort{
+		Name:       "cortex",
+		Port:       81,
+		Protocol:   corev1.ProtocolTCP,
+		TargetPort: intstr.FromInt32(9091),
+	},
+}
+
+// ServicePorts returns the service ports configuration for a Prometheus service.
+func ServicePorts() struct {
+	Web    corev1.ServicePort
+	Cortex corev1.ServicePort
+} {
+	return servicePorts
+}
 
 // Interface contains functions for a Prometheus deployer.
 type Interface interface {
@@ -49,8 +70,12 @@ type Interface interface {
 	SetIngressWildcardCertSecret(*corev1.Secret)
 	// SetCentralScrapeConfigs sets the central scrape configs.
 	SetCentralScrapeConfigs([]*monitoringv1alpha1.ScrapeConfig)
+	// SetCentralPrometheusRules sets the central Prometheus rules.
+	SetCentralPrometheusRules([]*monitoringv1.PrometheusRule)
 	// SetNamespaceUID sets the namespace UID.
 	SetNamespaceUID(name types.UID)
+	// SetAdditionalAlertRelabelConfigs sets the additional alert relabel configs.
+	SetAdditionalAlertRelabelConfigs([]monitoringv1.RelabelConfig)
 }
 
 // Values contains configuration values for the prometheus resources.
@@ -107,6 +132,8 @@ type Values struct {
 	RestrictToNamespace bool
 	// ResourceRequests defines the initial resource requests
 	ResourceRequests *corev1.ResourceList
+	// HealthCheckBy is the value of the health-check-by label for the Prometheus resource.
+	HealthCheckBy string
 }
 
 // CentralConfigs contains configuration for this Prometheus instance that is created together with it. This should
@@ -331,12 +358,20 @@ func (p *prometheus) SetCentralScrapeConfigs(configs []*monitoringv1alpha1.Scrap
 	p.values.CentralConfigs.ScrapeConfigs = configs
 }
 
+func (p *prometheus) SetCentralPrometheusRules(rules []*monitoringv1.PrometheusRule) {
+	p.values.CentralConfigs.PrometheusRules = rules
+}
+
 func (p *prometheus) SetNamespaceUID(uid types.UID) {
 	p.values.NamespaceUID = &uid
 }
 
 func (p *prometheus) name() string {
 	return "prometheus-" + p.values.Name
+}
+
+func (p *prometheus) SetAdditionalAlertRelabelConfigs(configs []monitoringv1.RelabelConfig) {
+	p.values.AdditionalAlertRelabelConfigs = configs
 }
 
 func (p *prometheus) addCentralConfigsToRegistry(registry *managedresources.Registry) error {

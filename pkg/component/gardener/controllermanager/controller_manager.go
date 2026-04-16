@@ -11,10 +11,10 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	operatorclient "github.com/gardener/gardener/pkg/operator/client"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -26,8 +26,9 @@ const (
 	// DeploymentName is the name of the deployment.
 	DeploymentName = "gardener-controller-manager"
 
-	probePort   = 2718
-	metricsPort = 2719
+	containerName = "gardener-controller-manager"
+	probePort     = 2718
+	metricsPort   = 2719
 
 	// ManagedResourceNameRuntime is the name of the ManagedResource for the runtime resources.
 	ManagedResourceNameRuntime = "gardener-controller-manager-runtime"

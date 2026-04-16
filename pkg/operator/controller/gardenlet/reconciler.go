@@ -14,21 +14,20 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	"github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/oci"
@@ -45,7 +44,7 @@ type Reconciler struct {
 	VirtualClient               client.Client
 	Config                      operatorconfigv1alpha1.GardenletDeployerControllerConfig
 	Clock                       clock.Clock
-	Recorder                    record.EventRecorder
+	Recorder                    events.EventRecorder
 	HelmRegistry                oci.Interface
 	GardenNamespace             string
 	GardenNamespaceTarget       string
@@ -96,28 +95,10 @@ func (r *Reconciler) newActuator(gardenlet *seedmanagementv1alpha1.Gardenlet) ga
 		CheckIfVPAAlreadyExists: func(_ context.Context) (bool, error) {
 			return false, nil
 		},
-		GetInfrastructureSecret: func(ctx context.Context) (*corev1.Secret, error) {
-			seedTemplate, _, err := helper.ExtractSeedTemplateAndGardenletConfig(gardenlet.GetName(), &gardenlet.Spec.Config)
-			if err != nil {
-				return nil, fmt.Errorf("failed to extract seed template and gardenlet config: %w", err)
-			}
-			if seedTemplate == nil {
-				return nil, fmt.Errorf("seed template is unset in gardenlet config")
-			}
-
-			if seedTemplate.Spec.Backup == nil {
-				return nil, nil
-			}
-			if seedTemplate.Spec.Backup.CredentialsRef.APIVersion != corev1.SchemeGroupVersion.String() ||
-				seedTemplate.Spec.Backup.CredentialsRef.Kind != "Secret" {
-				return nil, nil
-			}
-			return kubernetesutils.GetSecretByObjectReference(ctx, r.VirtualClient, seedTemplate.Spec.Backup.CredentialsRef)
-		},
 		GetTargetDomain: func() string {
 			return ""
 		},
-		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]interface{}) error {
+		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]any) error {
 			archive, err := r.HelmRegistry.Pull(ctx, &gardenlet.Spec.Deployment.Helm.OCIRepository)
 			if err != nil {
 				return fmt.Errorf("failed pulling Helm chart from OCI repository: %w", err)

@@ -52,6 +52,7 @@ rules:
   - patch
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   verbs:
@@ -168,6 +169,7 @@ rules:
   resources:
   - etcds
   - etcdcopybackupstasks
+  - etcdopstasks
   verbs:
   - get
   - list
@@ -239,6 +241,22 @@ rules:
   - patch
   - update
   - delete
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - prometheuses
+  verbs:
+  - list
+  - watch
+  - get
+- apiGroups:
+  - operator.victoriametrics.com
+  resources:
+  - vlsingles
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - scheduling.k8s.io
   resources:

@@ -129,9 +129,13 @@ type GardenletDeployment struct {
 	// Env is the list of environment variables to set in the gardenlet container.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty" protobuf:"bytes,10,rep,name=env"`
+	// Tolerations are the tolerations to be applied to gardenlet pods.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty" protobuf:"bytes,11,rep,name=tolerations"`
 }
 
 // Image specifies container image parameters.
+// Either Repository/Tag or Ref must be set, but not both.
 type Image struct {
 	// Repository is the image repository.
 	// +optional
@@ -143,6 +147,9 @@ type Image struct {
 	// Defaults to Always if latest tag is specified, or IfNotPresent otherwise.
 	// +optional
 	PullPolicy *corev1.PullPolicy `json:"pullPolicy,omitempty" protobuf:"bytes,3,opt,name=pullPolicy"`
+	// Ref is the full image reference.
+	// +optional
+	Ref *string `json:"ref,omitempty" protobuf:"bytes,4,opt,name=ref"`
 }
 
 // Bootstrap describes a mechanism for bootstrapping gardenlet connection to the Garden cluster.
@@ -164,7 +171,7 @@ type ManagedSeedStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
-	Conditions []gardencorev1beta1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+	Conditions []gardencorev1beta1.Condition `json:"conditions,omitempty" patchMergeKey:"type" patchStrategy:"merge" protobuf:"bytes,1,rep,name=conditions"`
 	// ObservedGeneration is the most recent generation observed for this ManagedSeed. It corresponds to the
 	// ManagedSeed's generation, which is updated on mutation by the API Server.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty" protobuf:"varint,2,opt,name=observedGeneration"`

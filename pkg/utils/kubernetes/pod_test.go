@@ -5,6 +5,7 @@
 package kubernetes_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -32,7 +33,6 @@ import (
 	. "github.com/gardener/gardener/pkg/utils/kubernetes"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	mockcorev1 "github.com/gardener/gardener/third_party/mock/client-go/core/v1"
-	mockio "github.com/gardener/gardener/third_party/mock/go/io"
 )
 
 var _ = Describe("Pod Utils", func() {
@@ -509,18 +509,29 @@ var _ = Describe("Pod Utils", func() {
 					ObjectMeta: metav1.ObjectMeta{Name: "stale", Namespace: "default"},
 					Status:     corev1.PodStatus{Reason: "Evicted"},
 				}
-				pods = []corev1.Pod{*normalPod, *stalePod}
+				preemptedPod = &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: "preempted", Namespace: "default"},
+					Status: corev1.PodStatus{
+						Phase: "Succeeded",
+						Conditions: []corev1.PodCondition{
+							{Type: "DisruptionTarget", Status: "True", Reason: "TerminationByKubelet"},
+						},
+					},
+				}
+				pods = []corev1.Pod{*normalPod, *stalePod, *preemptedPod}
 				// There is no good way with the fake client to test the deletion of the pods stuck in termination
 				// We'd have to use a mock client, but we actually want to avoid its usage.
 			)
 
 			Expect(fakeClient.Create(ctx, normalPod)).To(Succeed())
 			Expect(fakeClient.Create(ctx, stalePod)).To(Succeed())
+			Expect(fakeClient.Create(ctx, preemptedPod)).To(Succeed())
 
 			Expect(DeleteStalePods(ctx, logr.Discard(), fakeClient, pods)).To(Succeed())
 
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(normalPod), &corev1.Pod{})).To(Succeed())
 			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(stalePod), &corev1.Pod{})).To(BeNotFoundError())
+			Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(preemptedPod), &corev1.Pod{})).To(BeNotFoundError())
 		})
 	})
 
@@ -544,20 +555,12 @@ var _ = Describe("Pod Utils", func() {
 			var (
 				options = &corev1.PodLogOptions{}
 				logs    = []byte("logs")
-				body    = mockio.NewMockReadCloser(ctrl)
 				client  = fakerestclient.CreateHTTPClient(func(_ *http.Request) (*http.Response, error) {
-					return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(logs))}, nil
 				})
 			)
 
-			gomock.InOrder(
-				pods.EXPECT().GetLogs(name, options).Return(rest.NewRequestWithClient(&url.URL{}, "", rest.ClientContentConfig{}, client)),
-				body.EXPECT().Read(gomock.Any()).DoAndReturn(func(data []byte) (int, error) {
-					copy(data, logs)
-					return len(logs), io.EOF
-				}),
-				body.EXPECT().Close(),
-			)
+			pods.EXPECT().GetLogs(name, options).Return(rest.NewRequestWithClient(&url.URL{}, "", rest.ClientContentConfig{}, client))
 
 			actual, err := GetPodLogs(ctx, pods, name, options.DeepCopy())
 			Expect(err).NotTo(HaveOccurred())

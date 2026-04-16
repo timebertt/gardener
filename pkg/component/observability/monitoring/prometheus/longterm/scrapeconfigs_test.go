@@ -20,14 +20,14 @@ var _ = Describe("PrometheusRules", func() {
 		It("should only contain the expected scrape configs", func() {
 			Expect(longterm.CentralScrapeConfigs()).To(HaveExactElements(
 				&monitoringv1alpha1.ScrapeConfig{
-					ObjectMeta: metav1.ObjectMeta{Name: "prometheus"},
+					ObjectMeta: metav1.ObjectMeta{Name: "prometheus-longterm"},
 					Spec: monitoringv1alpha1.ScrapeConfigSpec{
 						StaticConfigs: []monitoringv1alpha1.StaticConfig{{
 							Targets: []monitoringv1alpha1.Target{"localhost:9090"},
 						}},
 						RelabelConfigs: []monitoringv1.RelabelConfig{{
 							Action:      "replace",
-							Replacement: ptr.To("prometheus"),
+							Replacement: ptr.To("prometheus-longterm"),
 							TargetLabel: "job",
 						}},
 					},
@@ -48,7 +48,7 @@ var _ = Describe("PrometheusRules", func() {
 				&monitoringv1alpha1.ScrapeConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "prometheus-garden"},
 					Spec: monitoringv1alpha1.ScrapeConfigSpec{
-						HonorLabels:     ptr.To(true),
+						HonorLabels:     ptr.To(false),
 						HonorTimestamps: ptr.To(true),
 						MetricsPath:     ptr.To("/federate"),
 						Params: map[string][]string{
@@ -64,6 +64,7 @@ var _ = Describe("PrometheusRules", func() {
 								`{__name__="garden_seed_capacity"}`,
 								`{__name__="etcdbr_snapshot_duration_seconds_count"}`,
 								`{__name__="apiserver_request_total", job="virtual-garden-kube-apiserver"}`,
+								`{__name__="shoot:node_operating_system:sum"}`,
 							},
 						},
 						KubernetesSDConfigs: []monitoringv1alpha1.KubernetesSDConfig{{

@@ -7,7 +7,6 @@ package botanist_test
 import (
 	"context"
 	"net"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -17,13 +16,13 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakekubernetes "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	. "github.com/gardener/gardener/pkg/gardenadm/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
+	"github.com/gardener/gardener/pkg/utils/test"
 )
 
 var _ = Describe("Network", func() {
@@ -65,52 +64,145 @@ var _ = Describe("Network", func() {
 	})
 
 	Describe("#IsPodNetworkAvailable", func() {
-		var managedResource *resourcesv1alpha1.ManagedResource
+		var (
+			hostName = "foo"
+
+			node *corev1.Node
+		)
 
 		BeforeEach(func() {
-			managedResource = &resourcesv1alpha1.ManagedResource{
+			node = &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shoot-core-coredns",
-					Namespace: namespaceName,
+					GenerateName: "node-",
+					Labels:       map[string]string{"kubernetes.io/hostname": hostName},
 				},
 			}
+			b.HostName = hostName
 		})
 
-		It("should return false because the ManagedResource does not exist", func() {
+		It("should return false because the Node does not exist", func() {
 			available, err := b.IsPodNetworkAvailable(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(available).To(BeFalse())
 		})
 
-		It("should return false because the ManagedResource is unhealthy", func() {
-			Expect(b.SeedClientSet.Client().Create(ctx, managedResource)).To(Succeed())
+		It("should return an error when it fails fetching node object by hostname", func() {
+			node2 := node.DeepCopy()
+
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+			Expect(b.SeedClientSet.Client().Create(ctx, node2)).To(Succeed())
+
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).To(MatchError(ContainSubstring("failed fetching node object by hostname")))
+			Expect(available).To(BeFalse())
+		})
+
+		It("should return false because the Node's NetworkUnavailable condition is true", func() {
+			node.Status.Conditions = []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeNetworkUnavailable,
+					Status: corev1.ConditionTrue,
+				},
+			}
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
 
 			available, err := b.IsPodNetworkAvailable(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(available).To(BeFalse())
 		})
 
-		It("should return true because the ManagedResource is healthy", func() {
-			managedResource.Status.ObservedGeneration = managedResource.Generation
-			managedResource.Status.Conditions = []gardencorev1beta1.Condition{
+		It("should return true because the Node's NetworkUnavailable condition is false", func() {
+			node.Status.Conditions = []corev1.NodeCondition{
 				{
-					Type:               "ResourcesHealthy",
-					Status:             "True",
-					LastUpdateTime:     metav1.NewTime(time.Unix(0, 0)),
-					LastTransitionTime: metav1.NewTime(time.Unix(0, 0)),
-				},
-				{
-					Type:               "ResourcesApplied",
-					Status:             "True",
-					LastUpdateTime:     metav1.NewTime(time.Unix(0, 0)),
-					LastTransitionTime: metav1.NewTime(time.Unix(0, 0)),
+					Type:   corev1.NodeNetworkUnavailable,
+					Status: corev1.ConditionFalse,
 				},
 			}
-			Expect(b.SeedClientSet.Client().Create(ctx, managedResource)).To(Succeed())
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
 
 			available, err := b.IsPodNetworkAvailable(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(available).To(BeTrue())
+		})
+
+		It("should return false because the Node's does not have a NetworkUnavailable condition", func() {
+			node.Status.Conditions = []corev1.NodeCondition{}
+			Expect(b.SeedClientSet.Client().Create(ctx, node)).To(Succeed())
+
+			available, err := b.IsPodNetworkAvailable(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(available).To(BeFalse())
+		})
+	})
+
+	Describe("#MachineIP", func() {
+		var ipv4, ipv6 net.IP
+
+		BeforeEach(func() {
+			ipv4 = net.ParseIP("1.2.3.4").To4()
+			ipv6 = net.ParseIP("::1")
+			b.HostName = "some-host"
+		})
+
+		It("should return an IPv4 address when IPv4 is the primary IP family", func() {
+			b.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv4},
+					},
+				},
+			})
+			DeferCleanup(test.WithVar(&LookupIP, func(_ string) ([]net.IP, error) {
+				return []net.IP{ipv6, ipv4}, nil
+			}))
+
+			ip, err := b.MachineIP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ip.To4()).NotTo(BeNil(), "expected an IPv4 address")
+		})
+
+		It("should return an IPv6 address when IPv6 is the primary IP family", func() {
+			b.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6},
+					},
+				},
+			})
+			DeferCleanup(test.WithVar(&LookupIP, func(_ string) ([]net.IP, error) {
+				return []net.IP{ipv4, ipv6}, nil
+			}))
+
+			ip, err := b.MachineIP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ip.To4()).To(BeNil(), "expected an IPv6 address")
+		})
+
+		It("should fall back to any available address when no address of the preferred family is found", func() {
+			b.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Networking: &gardencorev1beta1.Networking{
+						IPFamilies: []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6},
+					},
+				},
+			})
+			DeferCleanup(test.WithVar(&LookupIP, func(_ string) ([]net.IP, error) {
+				return []net.IP{ipv4}, nil
+			}))
+
+			ip, err := b.MachineIP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ip.Equal(ipv4)).To(BeTrue())
+		})
+
+		It("should return an error when no IP address is found", func() {
+			DeferCleanup(test.WithVar(&LookupIP, func(_ string) ([]net.IP, error) {
+				return nil, nil
+			}))
+
+			ip, err := b.MachineIP()
+			Expect(err).To(MatchError("no IP address found for node"))
+			Expect(ip).To(BeNil())
 		})
 	})
 

@@ -6,15 +6,15 @@ package bastion
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/Masterminds/semver/v3"
-	"golang.org/x/exp/maps"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 )
 
 // MachineSpec define all bastion vm details derived from the CloudProfile
@@ -91,7 +91,7 @@ func findSupportedArchitectures(images []gardencorev1beta1.MachineImage, machine
 				// Skip versions that are not the specified one.
 				continue
 			}
-			// TODO(LucaBernstein): Check whether this behavior should be corrected (i.e. changed) in a later GEP-32-PR.
+			// TODO(LucaBernstein): Check whether this behavior should be corrected (i.e. changed) in a later GEP-0032-PR.
 			//  The current behavior for nil classifications is treated differently across the codebase.
 			if version.Classification != nil && v1beta1helper.CurrentLifecycleClassification(version.ExpirableVersion) == gardencorev1beta1.ClassificationSupported {
 				architectures.Insert(v1beta1helper.GetArchitecturesFromImageVersion(version, capabilityDefinitions)...)
@@ -107,7 +107,7 @@ func findSupportedArchitectures(images []gardencorev1beta1.MachineImage, machine
 		}
 	}
 
-	return maps.Keys(architectures)
+	return slices.Collect(maps.Keys(architectures))
 }
 
 // getImageArchitectures finds the supported architectures of the cloudProfile images
@@ -172,7 +172,7 @@ func getImageVersion(bastion *gardencorev1beta1.Bastion, imageName, machineArch 
 			return "", fmt.Errorf("image version %s not found not found in cloudProfile", *bastion.MachineImage.Version)
 		}
 
-		// TODO(LucaBernstein): Check whether this behavior should be corrected (i.e. changed) in a later GEP-32-PR.
+		// TODO(LucaBernstein): Check whether this behavior should be corrected (i.e. changed) in a later GEP-0032-PR.
 		//  The current behavior for nil classifications is treated differently across the codebase.
 		if image.Versions[versionIndex].Classification != nil && v1beta1helper.CurrentLifecycleClassification(image.Versions[versionIndex].ExpirableVersion) != gardencorev1beta1.ClassificationSupported {
 			return "", fmt.Errorf("specified image %s in version %s is not classified supported", imageName, *bastion.MachineImage.Version)

@@ -52,10 +52,8 @@ var healthyPodPhases = []corev1.PodPhase{corev1.PodRunning, corev1.PodSucceeded}
 // CheckPod checks whether the given Pod is healthy.
 // A Pod is considered healthy if its `.status.phase` is `Running` or `Succeeded`.
 func CheckPod(pod *corev1.Pod) error {
-	for _, healthyPhase := range healthyPodPhases {
-		if pod.Status.Phase == healthyPhase {
-			return nil
-		}
+	if slices.Contains(healthyPodPhases, pod.Status.Phase) {
+		return nil
 	}
 
 	return fmt.Errorf("pod is in invalid phase %q (expected one of %q)", pod.Status.Phase, healthyPodPhases)
@@ -66,7 +64,16 @@ func IsPodStale(reason string) bool {
 	return strings.Contains(reason, "Evicted") ||
 		strings.HasPrefix(reason, "OutOf") ||
 		strings.Contains(reason, "NodeAffinity") ||
-		strings.Contains(reason, "NodeLost")
+		strings.Contains(reason, "NodeLost") ||
+		strings.Contains(reason, "Preempting")
+}
+
+// IsPodDisrupted returns true when the pod has a DisruptionTarget condition set to True, indicating
+// that the pod was disrupted (e.g., preempted by the kubelet or scheduler).
+func IsPodDisrupted(conditions []corev1.PodCondition) bool {
+	return slices.ContainsFunc(conditions, func(condition corev1.PodCondition) bool {
+		return condition.Type == corev1.DisruptionTarget && condition.Status == corev1.ConditionTrue
+	})
 }
 
 // IsPodCompleted returns true when the pod ready condition indicates completeness.

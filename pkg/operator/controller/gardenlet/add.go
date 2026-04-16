@@ -11,7 +11,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/clock"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -57,17 +57,17 @@ func (r *Reconciler) AddToManager(ctx context.Context, mgr manager.Manager, virt
 		r.GardenNamespaceTarget = v1beta1constants.GardenNamespace
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor(ControllerName + "-controller")
+		r.Recorder = mgr.GetEventRecorder(ControllerName + "-controller")
 	}
 	if r.HelmRegistry == nil {
-		r.HelmRegistry = oci.NewHelmRegistry(r.RuntimeCluster.GetClient())
+		r.HelmRegistry = oci.NewHelmRegistry(virtualCluster.GetClient())
 	}
 
 	return builder.
 		ControllerManagedBy(mgr).
 		Named(ControllerName).
 		WithOptions(controller.Options{
-			MaxConcurrentReconciles: pointer.IntDeref(r.Config.ConcurrentSyncs, 0),
+			MaxConcurrentReconciles: ptr.Deref(r.Config.ConcurrentSyncs, 0),
 			ReconciliationTimeout:   controllerutils.DefaultReconciliationTimeout,
 		}).
 		WatchesRawSource(source.Kind[client.Object](virtualCluster.GetCache(), &seedmanagementv1alpha1.Gardenlet{},

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
+	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,33 +35,37 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/api/indexer"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
+	"github.com/gardener/gardener/pkg/gardenadm/staticpod"
 	"github.com/gardener/gardener/pkg/nodeagent"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
+	nodeagentcontainerd "github.com/gardener/gardener/pkg/nodeagent/containerd"
 	healthcheckcontroller "github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
 	"github.com/gardener/gardener/pkg/nodeagent/dbus"
 	filespkg "github.com/gardener/gardener/pkg/nodeagent/files"
 	"github.com/gardener/gardener/pkg/nodeagent/registry"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	retryutils "github.com/gardener/gardener/pkg/utils/retry"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
 const (
-	lastAppliedOperatingSystemConfigFilePath         = nodeagentconfigv1alpha1.BaseDir + "/last-applied-osc.yaml"
 	lastComputedOperatingSystemConfigChangesFilePath = nodeagentconfigv1alpha1.BaseDir + "/last-computed-osc-changes.yaml"
 
 	annotationUpdatingOperatingSystemVersion = "node-agent.gardener.cloud/updating-operating-system-version"
@@ -71,17 +77,24 @@ var (
 	retriableErrorPatternRegex    = regexp.MustCompile(`(?i)network problems`)
 	nonRetriableErrorPatternRegex = regexp.MustCompile(`(?i)invalid arguments|system failure`)
 
-	// KubeletHealthCheckRetryInterval is the interval at which the kubelet health check is retried. Exposed for testing.
+	// KubeletHealthCheckRetryInterval is the interval at which the kubelet health check is retried.
+	// Exposed for testing.
 	KubeletHealthCheckRetryInterval = 5 * time.Second
-	// KubeletHealthCheckRetryTimeout is the timeout after which the kubelet health check is considered failed. Exposed for testing.
+	// KubeletHealthCheckRetryTimeout is the timeout after which the kubelet health check is considered failed.
+	// Exposed for testing.
 	KubeletHealthCheckRetryTimeout = 5 * time.Minute
 
 	// OSUpdateRetryInterval is the interval between OS update retries. Exported for testing.
 	OSUpdateRetryInterval = 30 * time.Second
 	// OSUpdateRetryTimeout is the timeout for OS update retries. Exported for testing.
 	OSUpdateRetryTimeout = 5 * time.Minute
-	// RequeueAfterRestart defines whether RequeueAfter is supposed to be triggered on restart of gardener-node-agent. Exposed for testing.
+	// RequeueAfterRestart defines whether RequeueAfter is supposed to be triggered on restart of gardener-node-agent.
+	// Exposed for testing.
 	RequeueAfterRestart time.Duration
+	// RequeueAfterWaitForStaticPods defines when to requeue in case static pods are not yet rolled out, healthy or
+	// ready.
+	// Exposed for testing.
+	RequeueAfterWaitForStaticPods = 5 * time.Second
 )
 
 func init() {
@@ -95,24 +108,31 @@ func init() {
 // Reconciler decodes the OperatingSystemConfig resources from secrets and applies the systemd units and files to the
 // node.
 type Reconciler struct {
-	Client        client.Client
-	Config        nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig
-	ConfigDir     string
-	Recorder      record.EventRecorder
-	DBus          dbus.DBus
-	FS            afero.Afero
-	Extractor     registry.Extractor
-	CancelContext context.CancelFunc
-	HostName      string
-	NodeName      string
-	MachineName   string
+	APIReader client.Reader
+	Client    client.Client
+	// LeaseClient is a cached client just for the leader election Lease in case the OperatingSystemConfig
+	// reconciliation is serialised.
+	LeaseClient      client.Client
+	ContainerdClient nodeagentcontainerd.Client
+	Config           nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig
+	Clock            clock.Clock
+	ConfigDir        string
+	Recorder         events.EventRecorder
+	DBus             dbus.DBus
+	FS               afero.Afero
+	Extractor        registry.Extractor
+	CancelContext    context.CancelFunc
+	HostName         string
+	NodeName         string
+	MachineName      string
 	// SkipWritingStateFiles is used by gardenadm when it deploys the provision OSC. In this case, both the "last
 	// applied configuration" and the "last computed changes" files should not be written. Otherwise,
 	// gardener-node-agent might delete files which exist in the provision OSC only after it comes up and reconciles the
 	// actual OSC, or not reconcile them at all.
 	SkipWritingStateFiles bool
 
-	// Channel and TokenSecretSyncConfigs are used by the reconciler to trigger events for the token reconciler during an in-place service-account-key rotation.
+	// Channel and TokenSecretSyncConfigs are used by the reconciler to trigger events for the token reconciler during
+	// an in-place service-account-key rotation.
 	Channel                chan event.TypedGenericEvent[*corev1.Secret]
 	TokenSecretSyncConfigs []nodeagentconfigv1alpha1.TokenSecretSyncConfig
 }
@@ -137,7 +157,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	if nodeCreated {
-		log.Info("Node registered by kubelet. Restarting myself (gardener-node-agent unit) to start lease controller and watch my own node only. Canceling the context to initiate graceful shutdown")
+		log.Info("Node registered by kubelet. Restarting myself (gardener-node-agent unit) to start Lease controller and watch my own node only. Canceling the context to initiate graceful shutdown")
 		r.CancelContext()
 		return reconcile.Result{}, nil
 	}
@@ -155,13 +175,53 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 			nodeRole = "control-plane"
 		}
 
-		log.Info("Setting node-role label on Node object", "role", nodeRole)
+		log.Info("Setting node labels on Node object", "role", nodeRole)
 
 		patch := client.MergeFrom(node.DeepCopy())
 		metav1.SetMetaDataLabel(&node.ObjectMeta, "node-role.kubernetes.io/"+nodeRole, "")
-		if err := r.Client.Patch(ctx, node, patch); err != nil {
-			return reconcile.Result{}, fmt.Errorf("failed to add node-role label to node object: %w", err)
+
+		if zone, err := r.FS.ReadFile(nodeagentconfigv1alpha1.ZoneFilePath); err != nil {
+			if !errors.Is(err, afero.ErrFileNotFound) {
+				return reconcile.Result{}, fmt.Errorf("failed to read zone file %q: %w", nodeagentconfigv1alpha1.ZoneFilePath, err)
+			}
+		} else {
+			metav1.SetMetaDataLabel(&node.ObjectMeta, corev1.LabelTopologyZone, strings.TrimSpace(string(zone)))
 		}
+
+		if err := r.Client.Patch(ctx, node, patch); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed adding node labels to node object: %w", err)
+		}
+	}
+
+	serialReconciliationLease := newLeaderElectorForSecret(log, r.LeaseClient, r.Clock, secret, r.HostName)
+
+	if node != nil && node.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig] == oscChecksum {
+		log.Info("Configuration on this node is up to date, nothing to be done")
+		return reconcile.Result{}, serialReconciliationLease.release(ctx)
+	}
+
+	if serialReconciliation(secret) {
+		log.Info("OperatingSystemConfig reconciliation is serial")
+
+		if err := serialReconciliationLease.reload(ctx); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed to reload Lease for serial reconciliation leader election: %w", err)
+		}
+
+		if serialReconciliationLease.acquiredByAnotherInstance() {
+			if serialReconciliationLease.renewedInTime() {
+				requeueAfter := serialReconciliationLease.durationUntilLeaseExpires()
+				serialReconciliationLease.logger().Info("Lease was acquired by another instance, exiting early and requeue when Lease expires", "requeueAfter", requeueAfter)
+				return reconcile.Result{RequeueAfter: requeueAfter}, nil
+			}
+
+			serialReconciliationLease.logger().Info("Lease was acquired by another instance, but it was not renewed in time")
+		}
+
+		if err := serialReconciliationLease.tryAcquireOrRenew(ctx); err != nil {
+			return reconcile.Result{}, fmt.Errorf("failed acquiring or renewing lease: %w", err)
+		}
+
+		log.Info("Lease acquired, starting reconciliation")
 	}
 
 	log.Info("Applying containerd configuration")
@@ -169,20 +229,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, fmt.Errorf("failed reconciling containerd configuration: %w", err)
 	}
 
-	var osVersion *string
-	osVersion, err = GetOSVersion(osc.Spec.InPlaceUpdates, r.FS)
+	osVersion, err := GetOSVersion(osc.Spec.InPlaceUpdates, r.FS)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed getting OS version: %w", err)
 	}
 
-	oscChanges, err := computeOperatingSystemConfigChanges(log, r.FS, osc, oscChecksum, osVersion, r.SkipWritingStateFiles)
+	oscChanges, err := computeOperatingSystemConfigChanges(log, r.FS, osc, oscChecksum, osVersion, r.SkipWritingStateFiles, r.HostName)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed calculating the OSC changes: %w", err)
-	}
-
-	if node != nil && node.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig] == oscChecksum {
-		log.Info("Configuration on this node is up to date, nothing to be done")
-		return reconcile.Result{}, nil
 	}
 
 	// If the node-agent has restarted after OS update, we need to persist the change in oscChanges.
@@ -219,8 +273,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		)
 	}
 
-	log.Info("Applying new or changed inline files")
-	if err := r.applyChangedInlineFiles(log, oscChanges); err != nil {
+	log.Info("Applying new or changed inline and secretRef files")
+	if err := r.applyChangedInlineFiles(ctx, log, oscChanges); err != nil {
 		return reconcile.Result{}, fmt.Errorf("failed applying changed inline files: %w", err)
 	}
 
@@ -292,14 +346,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	log.Info("Successfully applied operating system config")
 
 	if !r.SkipWritingStateFiles {
-		log.Info("Persisting current operating system config as 'last-applied' file to the disk", "path", lastAppliedOperatingSystemConfigFilePath)
+		log.Info("Persisting current operating system config as 'last-applied' file to the disk", "path", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath)
 		oscRaw, err := runtime.Encode(codec, osc)
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("unable to encode OSC: %w", err)
 		}
 
-		if err := r.FS.WriteFile(lastAppliedOperatingSystemConfigFilePath, oscRaw, 0600); err != nil {
-			return reconcile.Result{}, fmt.Errorf("unable to write current OSC to file path %q: %w", lastAppliedOperatingSystemConfigFilePath, err)
+		if err := r.FS.WriteFile(nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, oscRaw, 0600); err != nil {
+			return reconcile.Result{}, fmt.Errorf("unable to write current OSC to file path %q: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
 		}
 	}
 
@@ -320,12 +374,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, fmt.Errorf("failed removing bootstrap token file %q: %w", nodeagentconfigv1alpha1.BootstrapTokenFilePath, err)
 	}
 
-	r.Recorder.Event(node, corev1.EventTypeNormal, "OSCApplied", "Operating system config has been applied successfully")
+	if done, err := r.ensureStaticPodsReconciledAndReady(ctx, log, node, osc); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed ensuring that static pods have been reconciled: %w", err)
+	} else if !done {
+		return reconcile.Result{RequeueAfter: RequeueAfterWaitForStaticPods}, nil
+	}
+
+	r.Recorder.Eventf(node, nil, corev1.EventTypeNormal, "OSCApplied", gardencorev1beta1.EventActionReconcile, "Operating system config has been applied successfully")
 	patch := client.MergeFrom(node.DeepCopy())
 	metav1.SetMetaDataLabel(&node.ObjectMeta, v1beta1constants.LabelWorkerKubernetesVersion, r.Config.KubernetesVersion.String())
 	metav1.SetMetaDataAnnotation(&node.ObjectMeta, nodeagentconfigv1alpha1.AnnotationKeyChecksumAppliedOperatingSystemConfig, oscChecksum)
+	if err := r.Client.Patch(ctx, node, patch); err != nil {
+		return reconcile.Result{}, fmt.Errorf("failed patching Node annotations after OSC was applied: %w", err)
+	}
 
-	return reconcile.Result{RequeueAfter: r.Config.SyncPeriod.Duration}, r.Client.Patch(ctx, node, patch)
+	return reconcile.Result{RequeueAfter: r.Config.SyncPeriod.Duration}, serialReconciliationLease.release(ctx)
 }
 
 func (r *Reconciler) getNode(ctx context.Context) (*corev1.Node, bool, error) {
@@ -402,7 +465,41 @@ func (r *Reconciler) applyChangedImageRefFiles(ctx context.Context, log logr.Log
 	return nil
 }
 
-func (r *Reconciler) applyChangedInlineFiles(log logr.Logger, changes *operatingSystemConfigChanges) error {
+// getFileContentData resolves the data for a file from its inline content or secretRef.
+// It returns ok=false if the file has neither (e.g., imageRef files handled separately).
+func (r *Reconciler) getFileContentData(ctx context.Context, file extensionsv1alpha1.File) ([]byte, bool, error) {
+	switch {
+	case file.Content.Inline != nil:
+		data, err := extensionsv1alpha1helper.Decode(file.Content.Inline.Encoding, []byte(file.Content.Inline.Data))
+		if err != nil {
+			return nil, false, fmt.Errorf("unable to decode inline data: %w", err)
+		}
+		return data, true, nil
+
+	case file.Content.SecretRef != nil:
+		// APIReader is a direct client (not cached) for reading Secrets referenced via secretRef in the
+		// OperatingSystemConfig. gardener-node-agent only has permissions to watch the OSC secret by name (via the
+		// node-agent-authorizer) and the manager cache for Secrets is accordingly restricted. Hence, secretRef targets are
+		// invisible to the cached client.
+		// Since we plan to use files with secretRef only for the control plane worker pool of self-hosted shoots, the
+		// network I/O impact should be negligible.
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: file.Content.SecretRef.Name, Namespace: metav1.NamespaceSystem}}
+		if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+			return nil, false, fmt.Errorf("unable to read referenced secret %q: %w", file.Content.SecretRef.Name, err)
+		}
+
+		data, ok := secret.Data[file.Content.SecretRef.DataKey]
+		if !ok {
+			return nil, false, fmt.Errorf("secret %q does not contain key %q", file.Content.SecretRef.Name, file.Content.SecretRef.DataKey)
+		}
+		return data, true, nil
+
+	default:
+		return nil, false, nil
+	}
+}
+
+func (r *Reconciler) applyChangedInlineFiles(ctx context.Context, log logr.Logger, changes *operatingSystemConfigChanges) error {
 	tmpDir, err := r.FS.TempDir(nodeagentconfigv1alpha1.TempDir, "osc-reconciliation-file-")
 	if err != nil {
 		return fmt.Errorf("unable to create temporary directory: %w", err)
@@ -411,17 +508,16 @@ func (r *Reconciler) applyChangedInlineFiles(log logr.Logger, changes *operating
 	defer func() { utilruntime.HandleError(r.FS.RemoveAll(tmpDir)) }()
 
 	for _, file := range slices.Clone(changes.Files.Changed) {
-		if file.Content.Inline == nil {
+		data, ok, err := r.getFileContentData(ctx, file)
+		if err != nil {
+			return fmt.Errorf("unable to get data of file %q: %w", file.Path, err)
+		}
+		if !ok {
 			continue
 		}
 
 		if err := r.FS.MkdirAll(filepath.Dir(file.Path), defaultDirPermissions); err != nil {
 			return fmt.Errorf("unable to create directory %q: %w", file.Path, err)
-		}
-
-		data, err := extensionsv1alpha1helper.Decode(file.Content.Inline.Encoding, []byte(file.Content.Inline.Data))
-		if err != nil {
-			return fmt.Errorf("unable to decode data of file %q: %w", file.Path, err)
 		}
 
 		tmpFilePath := filepath.Join(tmpDir, filepath.Base(file.Path))
@@ -784,7 +880,7 @@ func (r *Reconciler) checkKubeletHealth(ctx context.Context, log logr.Logger, no
 	}
 
 	if err := retryutils.UntilTimeout(ctx, KubeletHealthCheckRetryInterval, KubeletHealthCheckRetryTimeout, func(_ context.Context) (bool, error) {
-		if response, err2 := httpClient.Do(request); err2 != nil {
+		if response, err2 := httpClient.Do(request); err2 != nil { // #nosec: G704 -- URL is kubelet health endpoint, not user input.
 			return retryutils.MinorError(fmt.Errorf("HTTP request to kubelet health endpoint failed: %w", err2))
 		} else if response.StatusCode == http.StatusOK {
 			log.Info("Kubelet is healthy after in-place update")
@@ -1019,7 +1115,7 @@ var GetOSVersion = func(inPlaceUpdates *extensionsv1alpha1.InPlaceUpdates, fs af
 
 // ExecCommandCombinedOutput executes the given command with the given arguments and returns the combined output. Exposed for testing.
 var ExecCommandCombinedOutput = func(ctx context.Context, command string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, command, args...).CombinedOutput()
+	return exec.CommandContext(ctx, command, args...).CombinedOutput() // #nosec: G204 -- Command and args are controlled internally.
 }
 
 func (r *Reconciler) updateOSInPlace(ctx context.Context, log logr.Logger, oscChanges *operatingSystemConfigChanges, osc *extensionsv1alpha1.OperatingSystemConfig, node *corev1.Node) error {
@@ -1103,4 +1199,85 @@ func (r *Reconciler) restartNodeAgent(oscChanges *operatingSystemConfigChanges, 
 	}
 	r.CancelContext()
 	return reconcile.Result{RequeueAfter: RequeueAfterRestart}, nil
+}
+
+func (r *Reconciler) ensureStaticPodsReconciledAndReady(ctx context.Context, log logr.Logger, node *corev1.Node, osc *extensionsv1alpha1.OperatingSystemConfig) (done bool, err error) {
+	staticPodNameToDesiredHash, err := r.getDesiredStaticPodHashes(ctx, log, osc)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve desired static pod hashes from OperatingSystemConfig: %w", err)
+	}
+
+	if len(staticPodNameToDesiredHash) == 0 {
+		return true, nil
+	}
+
+	log.Info("Detected desired static pods in OperatingSystemConfig, ensuring they are rolled out and ready", "numberOfDesiredStaticPods", len(staticPodNameToDesiredHash))
+
+	staticPodNameToActualHash, staticPodList, err := r.getActualStaticPodHashes(ctx, log, node.Name)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve actual static pod hashes from cluster: %w", err)
+	}
+
+	if !maps.Equal(staticPodNameToDesiredHash, staticPodNameToActualHash) {
+		log.Info("Not all static pods have been rolled out to the desired state yet, requeuing", "hashDifferences", cmp.Diff(staticPodNameToDesiredHash, staticPodNameToActualHash))
+		return false, nil
+	}
+
+	for _, pod := range staticPodList.Items {
+		if health.CheckPod(&pod) != nil {
+			log.Info("Static pod is not healthy yet, requeuing", "pod", client.ObjectKeyFromObject(&pod))
+			return false, nil //nolint:nilerr
+		}
+
+		if !health.IsPodReady(&pod) {
+			log.Info("Static pod is not ready yet, requeuing", "pod", client.ObjectKeyFromObject(&pod))
+			return false, nil
+		}
+	}
+
+	log.Info("All static pods have been rolled out and are healthy and ready")
+	return true, nil
+}
+
+func (r *Reconciler) getDesiredStaticPodHashes(ctx context.Context, log logr.Logger, osc *extensionsv1alpha1.OperatingSystemConfig) (map[string]string, error) {
+	staticPodFiles := slices.DeleteFunc(append(osc.Spec.Files, osc.Status.ExtensionFiles...), func(file extensionsv1alpha1.File) bool {
+		return !strings.HasPrefix(file.Path, kubeletcomponent.FilePathKubernetesManifests) ||
+			(file.HostName != nil && *file.HostName != r.HostName)
+	})
+
+	staticPodNameToHash := make(map[string]string)
+	for _, file := range staticPodFiles {
+		data, ok, err := r.getFileContentData(ctx, file)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get data of file %q: %w", file.Path, err)
+		}
+		if !ok {
+			continue
+		}
+
+		pod := &corev1.Pod{}
+		if _, _, err := kubernetes.ShootCodec.UniversalDecoder(corev1.SchemeGroupVersion).Decode(data, nil, pod); err != nil {
+			return nil, fmt.Errorf("unable to decode static pod from file data %q: %w", file.Path, err)
+		}
+
+		log.Info("Found static pod in the OperatingSystemConfig", "pod", client.ObjectKeyFromObject(pod), "hash", pod.Annotations[staticpod.AnnotationKeyHash])
+		staticPodNameToHash[pod.Name] = pod.Annotations[staticpod.AnnotationKeyHash]
+	}
+
+	return staticPodNameToHash, nil
+}
+
+func (r *Reconciler) getActualStaticPodHashes(ctx context.Context, log logr.Logger, nodeName string) (map[string]string, *corev1.PodList, error) {
+	staticPodList := &corev1.PodList{}
+	if err := r.Client.List(ctx, staticPodList, client.MatchingFields{indexer.PodNodeName: nodeName}, client.MatchingLabels{staticpod.LabelKeyIsStaticPod: staticpod.LabelValueIsStaticPod}); err != nil {
+		return nil, nil, fmt.Errorf("failed listing static pods for node %s: %w", nodeName, err)
+	}
+
+	staticPodNameToHash := make(map[string]string)
+	for _, pod := range staticPodList.Items {
+		log.Info("Found static pod in the system", "pod", client.ObjectKeyFromObject(&pod), "hash", pod.Annotations[staticpod.AnnotationKeyHash])
+		staticPodNameToHash[strings.TrimSuffix(pod.Name, "-"+pod.Spec.NodeName)] = pod.Annotations[staticpod.AnnotationKeyHash]
+	}
+
+	return staticPodNameToHash, staticPodList, nil
 }

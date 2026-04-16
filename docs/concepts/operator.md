@@ -39,6 +39,9 @@ In most cases, the `cloud-controller-manager` (responsible for managing these lo
 
 By setting the `.spec.runtimeCluster.settings.loadBalancerServices.annotations` field the Gardener administrator can specify a list of annotations which will be injected into the `Service`s of type `LoadBalancer`.
 
+For detailed information on external traffic policy, proxy protocol, and migration guidance, refer to the [Seed Settings - Load Balancer Services](../operations/seed_settings.md#load-balancer-services) documentation. The settings work the same way for the Garden cluster, with the following difference:
+- The Garden cluster does not support per-zone load balancer settings (no `zones` field) — all settings apply globally via `.spec.runtimeCluster.settings.loadBalancerServices.*`
+
 ##### Vertical Pod Autoscaler
 
 `gardener-operator` heavily relies on the Kubernetes [`vertical-pod-autoscaler` component](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler).
@@ -146,7 +149,14 @@ The following values are passed to the chart during reconciliation:
 gardener:
   runtimeCluster:
     priorityClassName: <Class to be used for extension admission>
+  virtualCluster:
+    enabled: true
+    namespace: <Extension Namespace name in the virtual cluster (format "extension-<extension-name>")>
 ```
+
+> [!NOTE]
+> Extension admission components must set the `--webhook-config-owner-namespace` flag using the injected `gardener.virtualCluster.namespace` value (i.e. `--webhook-config-owner-namespace={{ .Values.gardener.virtualCluster.namespace }}`).
+> Without this flag, the `ValidatingWebhookConfiguration` owner reference defaults to the `garden` namespace in the runtime cluster instead of the extension's namespace in the virtual cluster. As a result, the webhook configuration is not cleaned up when the extension is uninstalled, which can block operations on resources.
 
 ##### Virtual
 
@@ -156,6 +166,7 @@ The following values are passed to the chart during reconciliation:
 ```yaml
 gardener:
   virtualCluster:
+    enabled: true
     serviceAccount:
       name: <Name of the service account used to connect to the garden cluster>
       namespace: <Namespace of the service account>
@@ -204,7 +215,7 @@ The virtual garden control plane components are:
 - `virtual-garden-etcd-events`
 - `virtual-garden-kube-apiserver`
 - `virtual-garden-kube-controller-manager`
-- `virtual-garden-gardener-resource-manager`
+- `virtual-garden-gardener-resource-manager` (use `.spec.virtualCluster.gardener.resourceManager.additionalTargetNamespaces[]` in the `Garden` API to configure custom namespaces in the virtual cluster this `gardener-resource-manager` should handle)
 
 If the `.spec.virtualCluster.controlPlane.highAvailability={}` is set then these components will be deployed in a "highly available" mode.
 For ETCD, this means that there will be 3 replicas each.
@@ -265,6 +276,7 @@ The reconciler also manages a few observability-related components:
 - `prometheus-longterm` (read more [here](#long-term-prometheus))
 - `blackbox-exporter`
 - `perses-operator`
+- `victoria-operator`
 
 It is also mandatory to provide an IPv4 CIDR for the service network of the virtual cluster via `.spec.virtualCluster.networking.services`.
 This range is used by the API server to compute the cluster IPs of `Service`s.
@@ -650,7 +662,7 @@ On `Gardenlet` deletion, nothing happens: `gardenlet`s must always be deleted ma
 
 ## Webhooks
 
-As of today, the `gardener-operator` only has one webhook handler which is now described in more detail.
+The `gardener-operator` exposes several webhook handlers which are now described in more detail.
 
 ### Validation
 
@@ -682,6 +694,16 @@ These deletions often happen accidentally, and this handler safeguards the syste
 
 This webhook handler validates `DELETE` operations on the `core/v1.Namespace` resource with name `garden` (which is Gardener's system namespace).
 It prevents deleting it as long as a `operator.gardener.cloud/v1alpha1.Garden` resource (still) exists, i.e., it has to be deleted first before any attempt of deleting the namespace.
+
+#### `Audit Policy`
+
+This webhook handler validates `CREATE`/`UPDATE` operations on `Garden` resources and `ConfigMap`s in the `garden` namespace that are referenced as audit policies.
+It ensures that audit policy configurations for the `virtual-garden-kube-apiserver` (via `.spec.virtualCluster.kubernetes.kubeAPIServer.auditConfig.auditPolicy.configMapRef.name`) and `gardener-apiserver` (via `.spec.virtualCluster.gardener.gardenerAPIServer.auditConfig.auditPolicy.configMapRef.name`) are valid.
+
+For `Garden` resources, when a new `Garden` is created or an existing one is updated with an audit policy reference, the handler fetches the referenced `ConfigMap` and validates its content.
+For `ConfigMap`s, when a `ConfigMap` that is referenced by a `Garden` is created or updated, the handler validates the new content.
+
+The handler validates that the `ConfigMap` contains a valid audit policy in its `policy` data key, conforming to the Kubernetes audit policy schema (e.g., `audit.k8s.io/v1.Policy`). Invalid or unparsable policies are rejected, preventing misconfigurations that could break audit logging.
 
 ### Defaulting
 
@@ -867,10 +889,10 @@ The easiest setup is using a local [KinD](https://kind.sigs.k8s.io/) cluster and
 make kind-multi-zone-up
 ```
 
-This command sets up a new KinD cluster named `gardener-local` and stores the kubeconfig in the `./example/gardener-local/kind/multi-zone/kubeconfig` file.
+This command sets up a new KinD cluster named `gardener-local` and stores the kubeconfig in the `./dev-setup/kubeconfigs/runtime/kubeconfig` file.
 
 > It might be helpful to copy this file to `$HOME/.kube/config`, since you will need to target this KinD cluster multiple times.
-Alternatively, make sure to set your `KUBECONFIG` environment variable to `./example/gardener-local/kind/multi-zone/kubeconfig` for all future steps via `export KUBECONFIG=$PWD/example/gardener-local/kind/multi-zone/kubeconfig`.
+Alternatively, make sure to set your `KUBECONFIG` environment variable to `./dev-setup/kubeconfigs/runtime/kubeconfig` for all future steps via `export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig`.
 
 All the following steps assume that you are using this kubeconfig.
 
@@ -930,23 +952,10 @@ make test-e2e-local-operator
 
 #### Accessing the Virtual Garden Cluster
 
-⚠️ Please note that in this setup, the virtual garden cluster is not accessible by default when you download the kubeconfig and try to communicate with it.
-The reason is that your host most probably cannot resolve the DNS name of the cluster.
-Hence, if you want to access the virtual garden cluster, you have to run the following command which will extend your `/etc/hosts` file with the required information to make the DNS names resolvable:
-
-```shell
-cat <<EOF | sudo tee -a /etc/hosts
-
-# Manually created to access local Gardener virtual garden cluster.
-# TODO: Remove this again when the virtual garden cluster access is no longer required.
-172.18.255.3 api.virtual-garden.local.gardener.cloud
-EOF
-```
-
 To access the virtual garden, you can generate a `kubeconfig` by running
 
 ```shell
-hack/usage/generate-virtual-garden-admin-kubeconf.sh > /tmp/virtual-garden-kubeconfig
+hack/usage/generate-admin-kubeconfig-local.sh virtual-garden > /tmp/virtual-garden-kubeconfig
 kubectl --kubeconfig /tmp/virtual-garden-kubeconfig get namespaces
 ```
 

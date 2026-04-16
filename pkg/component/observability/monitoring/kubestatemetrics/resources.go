@@ -320,11 +320,15 @@ func (k *kubeStateMetrics) verticalPodAutoscaler(deployment *appsv1.Deployment) 
 		ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 				{
-					ContainerName:    "*",
+					ContainerName:    containerName,
 					ControlledValues: &controlledValues,
 					MinAllowed: corev1.ResourceList{
 						corev1.ResourceMemory: resource.MustParse("32Mi"),
 					},
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 				},
 			},
 		},
@@ -428,6 +432,7 @@ var cacheMetricAllowlist = []string{
 	"^kube_horizontalpodautoscaler_status_desired_replicas$",
 	"^kube_horizontalpodautoscaler_status_condition$",
 	"^kube_namespace_annotations$",
+	"^kube_node_created$",
 	"^kube_node_info$",
 	"^kube_node_labels$",
 	"^kube_node_spec_taint$",
@@ -483,6 +488,7 @@ var shootMetricAllowlist = []string{
 	"^kube_deployment_status_replicas_available$",
 	"^kube_deployment_status_replicas_unavailable$",
 	"^kube_deployment_status_replicas_updated$",
+	"^kube_node_created$",
 	"^kube_node_info$",
 	"^kube_node_labels$",
 	"^kube_node_spec_taint$",

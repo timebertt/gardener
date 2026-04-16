@@ -9,34 +9,30 @@ import (
 	"fmt"
 	"time"
 
-	containerd "github.com/containerd/containerd/v2/client"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/nodeagent/containerd"
 	"github.com/gardener/gardener/pkg/nodeagent/dbus"
 )
-
-// ContainerdClient defines the containerd client Interface exported for testing.
-type ContainerdClient interface {
-	Version(context.Context) (containerd.Version, error)
-}
 
 type containerdHealthChecker struct {
 	client client.Client
 
-	containerdClient ContainerdClient
+	containerdClient containerd.Client
 	firstFailure     *time.Time
 	clock            clock.Clock
 	dbus             dbus.DBus
-	recorder         record.EventRecorder
+	recorder         events.EventRecorder
 }
 
 // NewContainerdHealthChecker creates a new instance of a containerd health check.
-func NewContainerdHealthChecker(client client.Client, containerdClient ContainerdClient, clock clock.Clock, dbus dbus.DBus, recorder record.EventRecorder) HealthChecker {
+func NewContainerdHealthChecker(client client.Client, containerdClient containerd.Client, clock clock.Clock, dbus dbus.DBus, recorder events.EventRecorder) HealthChecker {
 	return &containerdHealthChecker{
 		client:           client,
 		containerdClient: containerdClient,
@@ -62,7 +58,7 @@ func (c *containerdHealthChecker) Check(ctx context.Context, node *corev1.Node) 
 			c.firstFailure = &now
 
 			log.Error(err, "Unable to get containerd version, considered unhealthy")
-			c.recorder.Eventf(node, corev1.EventTypeWarning, "containerd", "Containerd is unhealthy: %s", err.Error())
+			c.recorder.Eventf(node, nil, corev1.EventTypeWarning, "containerd", gardencorev1beta1.EventActionHealthCheck, "Containerd is unhealthy: %s", err.Error())
 		}
 
 		if time.Since(*c.firstFailure).Abs() < maxFailureDuration {
@@ -70,7 +66,7 @@ func (c *containerdHealthChecker) Check(ctx context.Context, node *corev1.Node) 
 		}
 
 		log.Error(err, "Unable to get containerd version, restarting it", "failureDuration", maxFailureDuration)
-		c.recorder.Eventf(node, corev1.EventTypeWarning, "containerd", "Containerd is unhealthy for more than %s, restarting it: %s", maxFailureDuration, err.Error())
+		c.recorder.Eventf(node, nil, corev1.EventTypeWarning, "containerd", gardencorev1beta1.EventActionHealthCheck, "Containerd is unhealthy for more than %s, restarting it: %s", maxFailureDuration, err.Error())
 		if err := c.dbus.Restart(ctx, c.recorder, node, v1beta1constants.OperatingSystemConfigUnitNameContainerDService); err != nil {
 			return fmt.Errorf("failed restarting containerd: %w", err)
 		}
@@ -81,7 +77,7 @@ func (c *containerdHealthChecker) Check(ctx context.Context, node *corev1.Node) 
 
 	if c.firstFailure != nil {
 		log.Info("Containerd is healthy again")
-		c.recorder.Event(node, corev1.EventTypeNormal, "containerd", "Containerd is healthy")
+		c.recorder.Eventf(node, nil, corev1.EventTypeNormal, "containerd", gardencorev1beta1.EventActionHealthCheck, "Containerd is healthy")
 		c.firstFailure = nil
 	}
 	return nil

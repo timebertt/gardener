@@ -56,7 +56,7 @@ var _ = Describe("NodeExporter", func() {
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
 				HonorLabels: ptr.To(false),
-				Scheme:      ptr.To("HTTPS"),
+				Scheme:      ptr.To(monitoringv1.SchemeHTTPS),
 				TLSConfig:   &monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)},
 				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
@@ -364,7 +364,7 @@ spec:
           timeoutSeconds: 5
         resources:
           requests:
-            cpu: 50m
+            cpu: 3m
             memory: 50Mi
         securityContext:
           allowPrivilegeEscalation: false
@@ -412,10 +412,14 @@ metadata:
 spec:
   resourcePolicy:
     containerPolicies:
-    - containerName: '*'
+    - containerName: node-exporter
+      controlledResources:
+      - memory
       controlledValues: RequestsOnly
       minAllowed:
         memory: 50Mi
+    - containerName: '*'
+      mode: "Off"
   targetRef:
     apiVersion: apps/v1
     kind: DaemonSet

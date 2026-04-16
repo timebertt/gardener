@@ -38,6 +38,7 @@ import (
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
@@ -499,7 +500,6 @@ func (v *vpnShoot) computeResourcesData(secretCAVPN *corev1.Secret, secretsVPNSh
 		if v.values.VPAUpdateDisabled {
 			vpaUpdateMode = vpaautoscalingv1.UpdateModeOff
 		}
-		controlledValues := vpaautoscalingv1.ContainerControlledValuesRequestsOnly
 		kind := "Deployment"
 		if _, ok := deploymentOrStatefulSet.(*appsv1.StatefulSet); ok {
 			kind = "StatefulSet"
@@ -519,9 +519,13 @@ func (v *vpnShoot) computeResourcesData(secretCAVPN *corev1.Secret, secretsVPNSh
 				MinAllowed: corev1.ResourceList{
 					corev1.ResourceMemory: resource.MustParse("10Mi"),
 				},
-				ControlledValues: &controlledValues,
+				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 			})
 		}
+		containerPolicies = append(containerPolicies, vpaautoscalingv1.ContainerResourcePolicy{
+			ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+			Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+		})
 		vpa = &vpaautoscalingv1.VerticalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "vpn-shoot",
@@ -967,6 +971,12 @@ func (v *vpnShoot) getInitContainers() []corev1.Container {
 				Value: strconv.Itoa(v.values.HighAvailabilityNumberOfShootClients),
 			},
 		}...)
+		if features.DefaultFeatureGate.Enabled(features.VPNBondingModeRoundRobin) {
+			container.Env = append(container.Env, corev1.EnvVar{
+				Name:  "BONDING_MODE",
+				Value: "balance-rr",
+			})
+		}
 	}
 
 	return []corev1.Container{container}

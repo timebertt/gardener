@@ -19,7 +19,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	. "github.com/gardener/gardener/test/framework"
 	"github.com/gardener/gardener/test/framework/applications"
 	shootmigration "github.com/gardener/gardener/test/utils/shoots/migration"
@@ -124,10 +124,7 @@ func beforeMigration(ctx context.Context, t *ShootMigrationTest, guestBookApp *a
 	}
 
 	ginkgo.By("Verify Guest Book Application")
-	initializedApp, err := initGuestBookTest(t)
-	if err != nil {
-		return err
-	}
+	initializedApp := initGuestBookTest(t)
 	*guestBookApp = *initializedApp
 	guestBookApp.DeployGuestBookApp(ctx)
 	guestBookApp.Test(ctx)
@@ -177,7 +174,7 @@ func cleanUp(ctx context.Context, t *ShootMigrationTest, guestBookApp applicatio
 	return nil
 }
 
-func initGuestBookTest(t *ShootMigrationTest) (*applications.GuestBookTest, error) {
+func initGuestBookTest(t *ShootMigrationTest) *applications.GuestBookTest {
 	sFramework := ShootFramework{
 		GardenerFramework: t.GardenerFramework,
 		TestDescription:   NewTestDescription("Guestbook App for CP Migration test"),

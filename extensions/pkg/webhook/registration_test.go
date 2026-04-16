@@ -27,12 +27,16 @@ import (
 
 var _ = Describe("Registration", func() {
 	Describe("#PrefixedName", func() {
-		It("should return an empty string", func() {
-			Expect(PrefixedName("gardener-foo")).To(Equal("gardener-foo"))
+		It("should not prefix because name starts with 'gardener'", func() {
+			Expect(PrefixedName("gardener-foo", false)).To(Equal("gardener-foo"))
 		})
 
-		It("should return 'gardener-extension-'", func() {
-			Expect(PrefixedName("provider-bar")).To(Equal("gardener-extension-provider-bar"))
+		It("should prefix with 'gardener-extension-'", func() {
+			Expect(PrefixedName("provider-bar", false)).To(Equal("gardener-extension-provider-bar"))
+		})
+
+		It("should not prefix with 'gardener-extension-' because explicitly skipped", func() {
+			Expect(PrefixedName("provider-bar", true)).To(Equal("provider-bar"))
 		})
 	})
 
@@ -93,7 +97,6 @@ var _ = Describe("Registration", func() {
 				{
 					Action:            "mutating",
 					Name:              "webhook1",
-					Provider:          "provider1",
 					Types:             []Type{{Obj: &corev1.ConfigMap{}}, {Obj: &corev1.Secret{}}},
 					Target:            TargetSeed,
 					Path:              "path1",
@@ -101,7 +104,6 @@ var _ = Describe("Registration", func() {
 				},
 				{
 					Name:              "webhook2",
-					Provider:          "provider2",
 					Types:             []Type{{Obj: &corev1.Pod{}}},
 					Target:            TargetSeed,
 					Path:              "path2",
@@ -110,7 +112,6 @@ var _ = Describe("Registration", func() {
 				{
 					Action:            "mutating",
 					Name:              "webhook3",
-					Provider:          "provider3",
 					Types:             []Type{{Obj: &corev1.ServiceAccount{}, Subresource: ptr.To("token")}},
 					Target:            TargetShoot,
 					Path:              "path3",
@@ -120,7 +121,6 @@ var _ = Describe("Registration", func() {
 				},
 				{
 					Name:          "webhook4",
-					Provider:      "provider4",
 					Types:         []Type{{Obj: &corev1.Service{}}},
 					Target:        TargetShoot,
 					Path:          "path4",
@@ -132,7 +132,6 @@ var _ = Describe("Registration", func() {
 				{
 					Action:            "validating",
 					Name:              "webhook1",
-					Provider:          "provider1",
 					Types:             []Type{{Obj: &corev1.ConfigMap{}}, {Obj: &corev1.Secret{}}},
 					Target:            TargetSeed,
 					Path:              "path1",
@@ -141,7 +140,6 @@ var _ = Describe("Registration", func() {
 				{
 					Action:            "validating",
 					Name:              "webhook2",
-					Provider:          "provider2",
 					Types:             []Type{{Obj: &corev1.Pod{}}},
 					Target:            TargetSeed,
 					Path:              "path2",
@@ -150,7 +148,6 @@ var _ = Describe("Registration", func() {
 				{
 					Action:            "validating",
 					Name:              "webhook3",
-					Provider:          "provider3",
 					Types:             []Type{{Obj: &corev1.ServiceAccount{}, Subresource: ptr.To("token")}},
 					Target:            TargetShoot,
 					Path:              "path3",
@@ -161,7 +158,6 @@ var _ = Describe("Registration", func() {
 				{
 					Action:        "validating",
 					Name:          "webhook4",
-					Provider:      "provider4",
 					Types:         []Type{{Obj: &corev1.Service{}}},
 					Target:        TargetShoot,
 					Path:          "path4",
@@ -184,8 +180,8 @@ var _ = Describe("Registration", func() {
 		})
 
 		DescribeTable("it should return the expected configs",
-			func(mode, url string) {
-				seedWebhookConfig, shootWebhookConfig, err := BuildWebhookConfigs(webhooks, fakeClient, namespace, providerName, servicePort, mode, url, nil)
+			func(mode, url string, mergeShootWithSeedWebhooks bool) {
+				seedWebhookConfig, shootWebhookConfig, err := BuildWebhookConfigs(webhooks, fakeClient, namespace, providerName, false, servicePort, mode, url, nil, mergeShootWithSeedWebhooks)
 				Expect(err).NotTo(HaveOccurred())
 
 				var (
@@ -197,6 +193,7 @@ var _ = Describe("Registration", func() {
 								Name:      "gardener-extension-" + providerName,
 								Namespace: namespace,
 								Path:      ptr.To("/" + path),
+								Port:      ptr.To(int32(servicePort)),
 							}
 						}
 
@@ -222,18 +219,65 @@ var _ = Describe("Registration", func() {
 
 						return out
 					}
+
+					buildMutatingWebhook = func(
+						webhook *Webhook,
+						clientConfigFn func(string) admissionregistrationv1.WebhookClientConfig,
+						rules []admissionregistrationv1.RuleWithOperations,
+						failurePolicy admissionregistrationv1.FailurePolicyType,
+						matchPolicy admissionregistrationv1.MatchPolicyType,
+						sideEffects admissionregistrationv1.SideEffectClass,
+						timeoutSeconds int32,
+					) admissionregistrationv1.MutatingWebhook {
+						return admissionregistrationv1.MutatingWebhook{
+							Name:                    webhook.Name + ".foo.extensions.gardener.cloud",
+							ClientConfig:            clientConfigFn(webhook.Path),
+							Rules:                   rules,
+							AdmissionReviewVersions: []string{"v1", "v1beta1"},
+							NamespaceSelector:       webhook.NamespaceSelector,
+							ObjectSelector:          webhook.ObjectSelector,
+							FailurePolicy:           &failurePolicy,
+							MatchPolicy:             &matchPolicy,
+							SideEffects:             &sideEffects,
+							TimeoutSeconds:          &timeoutSeconds,
+						}
+					}
+
+					buildValidatingWebhook = func(
+						webhook *Webhook,
+						clientConfigFn func(string) admissionregistrationv1.WebhookClientConfig,
+						rules []admissionregistrationv1.RuleWithOperations,
+						failurePolicy admissionregistrationv1.FailurePolicyType,
+						matchPolicy admissionregistrationv1.MatchPolicyType,
+						sideEffects admissionregistrationv1.SideEffectClass,
+						timeoutSeconds int32,
+					) admissionregistrationv1.ValidatingWebhook {
+						return admissionregistrationv1.ValidatingWebhook{
+							Name:                    webhook.Name + ".foo.extensions.gardener.cloud",
+							ClientConfig:            clientConfigFn(webhook.Path),
+							Rules:                   rules,
+							AdmissionReviewVersions: []string{"v1", "v1beta1"},
+							NamespaceSelector:       webhook.NamespaceSelector,
+							ObjectSelector:          webhook.ObjectSelector,
+							FailurePolicy:           &failurePolicy,
+							MatchPolicy:             &matchPolicy,
+							SideEffects:             &sideEffects,
+							TimeoutSeconds:          &timeoutSeconds,
+						}
+					}
 				)
 
-				Expect(seedWebhookConfig.MutatingWebhookConfig).To(Equal(&admissionregistrationv1.MutatingWebhookConfiguration{
+				// Check seed mutating webhooks
+				expectedSeedMutatingWebhookConfig := &admissionregistrationv1.MutatingWebhookConfiguration{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:   "gardener-extension-" + providerName,
 						Labels: map[string]string{"remediation.webhook.shoot.gardener.cloud/exclude": "true"},
 					},
 					Webhooks: []admissionregistrationv1.MutatingWebhook{
-						{
-							Name:         mutatingWebhooks[0].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildSeedClientConfig(mutatingWebhooks[0].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
+						buildMutatingWebhook(
+							mutatingWebhooks[0],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
 								{
 									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
@@ -243,163 +287,220 @@ var _ = Describe("Registration", func() {
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 								},
 							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       mutatingWebhooks[0].NamespaceSelector,
-							FailurePolicy:           &failurePolicyFail,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          &defaultTimeoutSeconds,
-						},
-						{
-							Name:         mutatingWebhooks[1].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildSeedClientConfig(mutatingWebhooks[1].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
+							failurePolicyFail,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
+						buildMutatingWebhook(
+							mutatingWebhooks[1],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
 								{
 									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"pods"}},
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 								},
 							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       mutatingWebhooks[1].NamespaceSelector,
-							FailurePolicy:           &failurePolicyFail,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          &defaultTimeoutSeconds,
-						},
+							failurePolicyFail,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
 					},
-				}))
-				Expect(seedWebhookConfig.ValidatingWebhookConfig).To(Equal(&admissionregistrationv1.ValidatingWebhookConfiguration{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:   "gardener-extension-" + providerName,
-						Labels: map[string]string{"remediation.webhook.shoot.gardener.cloud/exclude": "true"},
-					},
-					Webhooks: []admissionregistrationv1.ValidatingWebhook{
-						{
-							Name:         validatingWebhooks[0].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildSeedClientConfig(validatingWebhooks[0].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
-								{
-									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
-									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-								},
-								{
-									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}},
-									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-								},
-							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       validatingWebhooks[0].NamespaceSelector,
-							FailurePolicy:           &failurePolicyFail,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          &defaultTimeoutSeconds,
-						},
-						{
-							Name:         validatingWebhooks[1].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildSeedClientConfig(validatingWebhooks[1].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
-								{
-									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"pods"}},
-									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-								},
-							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       validatingWebhooks[1].NamespaceSelector,
-							FailurePolicy:           &failurePolicyFail,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          &defaultTimeoutSeconds,
-						},
-					},
-				}))
+				}
 
+				if mergeShootWithSeedWebhooks {
+					expectedSeedMutatingWebhookConfig.Webhooks = append(expectedSeedMutatingWebhookConfig.Webhooks,
+						buildMutatingWebhook(
+							mutatingWebhooks[2],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"serviceaccounts/token"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+							},
+							failurePolicyIgnore,
+							matchPolicyExact,
+							sideEffectsNone,
+							*mutatingWebhooks[2].TimeoutSeconds,
+						),
+						buildMutatingWebhook(
+							mutatingWebhooks[3],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"services"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+							},
+							*webhooks[3].FailurePolicy,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
+					)
+				}
+				Expect(seedWebhookConfig.MutatingWebhookConfig).To(Equal(expectedSeedMutatingWebhookConfig))
+
+				// Check shoot mutating webhooks
 				Expect(shootWebhookConfig.MutatingWebhookConfig).To(Equal(&admissionregistrationv1.MutatingWebhookConfiguration{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:   "gardener-extension-" + providerName + "-shoot",
 						Labels: map[string]string{"remediation.webhook.shoot.gardener.cloud/exclude": "true"},
 					},
 					Webhooks: []admissionregistrationv1.MutatingWebhook{
-						{
-							Name:         mutatingWebhooks[2].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildShootClientConfig(mutatingWebhooks[2].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
+						buildMutatingWebhook(
+							mutatingWebhooks[2],
+							buildShootClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
 								{
 									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"serviceaccounts/token"}},
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 								},
 							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       mutatingWebhooks[2].NamespaceSelector,
-							ObjectSelector:          mutatingWebhooks[2].ObjectSelector,
-							FailurePolicy:           &failurePolicyIgnore,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          mutatingWebhooks[2].TimeoutSeconds,
-						},
-						{
-							Name:         mutatingWebhooks[3].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildShootClientConfig(mutatingWebhooks[3].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
+							failurePolicyIgnore,
+							matchPolicyExact,
+							sideEffectsNone,
+							*mutatingWebhooks[2].TimeoutSeconds,
+						),
+						buildMutatingWebhook(
+							mutatingWebhooks[3],
+							buildShootClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
 								{
 									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"services"}},
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 								},
 							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       mutatingWebhooks[3].NamespaceSelector,
-							FailurePolicy:           mutatingWebhooks[3].FailurePolicy,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          &defaultTimeoutSeconds,
-						},
+							*mutatingWebhooks[3].FailurePolicy,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
 					},
 				}))
+
+				// Check seed validating webhooks
+				expectedSeedValidatingWebhookConfig := &admissionregistrationv1.ValidatingWebhookConfiguration{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "gardener-extension-" + providerName,
+						Labels: map[string]string{"remediation.webhook.shoot.gardener.cloud/exclude": "true"},
+					},
+					Webhooks: []admissionregistrationv1.ValidatingWebhook{
+						buildValidatingWebhook(
+							validatingWebhooks[0],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+							},
+							failurePolicyFail,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
+						buildValidatingWebhook(
+							validatingWebhooks[1],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"pods"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+							},
+							failurePolicyFail,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
+					},
+				}
+
+				if mergeShootWithSeedWebhooks {
+					expectedSeedValidatingWebhookConfig.Webhooks = append(expectedSeedValidatingWebhookConfig.Webhooks,
+						buildValidatingWebhook(
+							validatingWebhooks[2],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"serviceaccounts/token"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+							},
+							failurePolicyIgnore,
+							matchPolicyExact,
+							sideEffectsNone,
+							*validatingWebhooks[2].TimeoutSeconds,
+						),
+						buildValidatingWebhook(
+							validatingWebhooks[3],
+							buildSeedClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
+								{
+									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"services"}},
+									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+								},
+							},
+							*validatingWebhooks[3].FailurePolicy,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
+					)
+
+				}
+				Expect(seedWebhookConfig.ValidatingWebhookConfig).To(Equal(expectedSeedValidatingWebhookConfig))
+
+				// Check shoot validating webhooks
 				Expect(shootWebhookConfig.ValidatingWebhookConfig).To(Equal(&admissionregistrationv1.ValidatingWebhookConfiguration{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:   "gardener-extension-" + providerName + "-shoot",
 						Labels: map[string]string{"remediation.webhook.shoot.gardener.cloud/exclude": "true"},
 					},
 					Webhooks: []admissionregistrationv1.ValidatingWebhook{
-						{
-							Name:         validatingWebhooks[2].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildShootClientConfig(validatingWebhooks[2].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
+						buildValidatingWebhook(
+							validatingWebhooks[2],
+							buildShootClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
 								{
 									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"serviceaccounts/token"}},
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 								},
 							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       validatingWebhooks[2].NamespaceSelector,
-							ObjectSelector:          validatingWebhooks[2].ObjectSelector,
-							FailurePolicy:           &failurePolicyIgnore,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          validatingWebhooks[2].TimeoutSeconds,
-						},
-						{
-							Name:         validatingWebhooks[3].Name + ".foo.extensions.gardener.cloud",
-							ClientConfig: buildShootClientConfig(validatingWebhooks[3].Path),
-							Rules: []admissionregistrationv1.RuleWithOperations{
+							failurePolicyIgnore,
+							matchPolicyExact,
+							sideEffectsNone,
+							*validatingWebhooks[2].TimeoutSeconds,
+						),
+						buildValidatingWebhook(
+							validatingWebhooks[3],
+							buildShootClientConfig,
+							[]admissionregistrationv1.RuleWithOperations{
 								{
 									Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"services"}},
 									Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
 								},
 							},
-							AdmissionReviewVersions: []string{"v1", "v1beta1"},
-							NamespaceSelector:       validatingWebhooks[3].NamespaceSelector,
-							FailurePolicy:           validatingWebhooks[3].FailurePolicy,
-							MatchPolicy:             &matchPolicyExact,
-							SideEffects:             &sideEffectsNone,
-							TimeoutSeconds:          &defaultTimeoutSeconds,
-						},
+							*validatingWebhooks[3].FailurePolicy,
+							matchPolicyExact,
+							sideEffectsNone,
+							defaultTimeoutSeconds,
+						),
 					},
 				}))
 			},
 
-			Entry("service mode", ModeService, ""),
-			Entry("url with service name mode", ModeURLWithServiceName, ""),
-			Entry("url mode", ModeURL, "my-custom-url:4337"),
+			Entry("service mode", ModeService, "", false),
+			Entry("url with service name mode", ModeURLWithServiceName, "", false),
+			Entry("url mode", ModeURL, "my-custom-url:4337", false),
+			Entry("merge shoot into seed webooks", ModeService, "", true),
 		)
 	})
 

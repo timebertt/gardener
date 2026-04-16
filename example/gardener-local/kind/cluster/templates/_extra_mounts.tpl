@@ -19,9 +19,7 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "extraMounts.registry" -}}
-{{- if .Values.registry.deployed }}
-- hostPath: {{.Values.gardener.repositoryRoot}}/dev/local-registry
-  containerPath: /etc/gardener/local-registry
-{{- end }}
+{{- define "extraMounts.resolveConfig" -}}
+- hostPath: {{.Values.gardener.repositoryRoot}}/example/gardener-local/kind/resolv.conf
+  containerPath: /etc/resolv.conf
 {{- end -}}

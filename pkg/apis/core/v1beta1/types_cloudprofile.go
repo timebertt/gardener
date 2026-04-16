@@ -30,6 +30,8 @@ type CloudProfile struct {
 	// Spec defines the provider environment properties.
 	// +optional
 	Spec CloudProfileSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
+	// Status contains the current status of the cloud profile.
+	Status CloudProfileStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -56,18 +58,18 @@ type CloudProfileSpec struct {
 	// MachineImages contains constraints regarding allowed values for machine images in the Shoot specification.
 	// +patchMergeKey=name
 	// +patchStrategy=merge
-	MachineImages []MachineImage `json:"machineImages" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,3,rep,name=machineImages"`
+	MachineImages []MachineImage `json:"machineImages" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,3,rep,name=machineImages"`
 	// MachineTypes contains constraints regarding allowed values for machine types in the 'workers' block in the Shoot specification.
 	// +patchMergeKey=name
 	// +patchStrategy=merge
-	MachineTypes []MachineType `json:"machineTypes" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,4,rep,name=machineTypes"`
+	MachineTypes []MachineType `json:"machineTypes" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,4,rep,name=machineTypes"`
 	// ProviderConfig contains provider-specific configuration for the profile.
 	// +optional
 	ProviderConfig *runtime.RawExtension `json:"providerConfig,omitempty" protobuf:"bytes,5,opt,name=providerConfig"`
 	// Regions contains constraints regarding allowed values for regions and zones.
 	// +patchMergeKey=name
 	// +patchStrategy=merge
-	Regions []Region `json:"regions" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,6,rep,name=regions"`
+	Regions []Region `json:"regions" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,6,rep,name=regions"`
 	// SeedSelector contains an optional list of labels on `Seed` resources that marks those seeds whose shoots may use this provider profile.
 	// An empty list means that all seeds of the same provider type are supported.
 	// This is useful for environments that are of the same type (like openstack) but may have different "instances"/landscapes.
@@ -81,7 +83,7 @@ type CloudProfileSpec struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	VolumeTypes []VolumeType `json:"volumeTypes,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,9,rep,name=volumeTypes"`
+	VolumeTypes []VolumeType `json:"volumeTypes,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,9,rep,name=volumeTypes"`
 	// Bastion contains the machine and image properties
 	// +optional
 	Bastion *Bastion `json:"bastion,omitempty" protobuf:"bytes,10,opt,name=bastion"`
@@ -114,7 +116,7 @@ type KubernetesSettings struct {
 	// +patchMergeKey=version
 	// +patchStrategy=merge
 	// +optional
-	Versions []ExpirableVersion `json:"versions,omitempty" patchStrategy:"merge" patchMergeKey:"version" protobuf:"bytes,1,rep,name=versions"`
+	Versions []ExpirableVersion `json:"versions,omitempty" patchMergeKey:"version" patchStrategy:"merge" protobuf:"bytes,1,rep,name=versions"`
 }
 
 // MachineImage defines the name and multiple versions of the machine image in any environment.
@@ -124,7 +126,7 @@ type MachineImage struct {
 	// Versions contains versions, expiration dates and container runtimes of the machine image
 	// +patchMergeKey=version
 	// +patchStrategy=merge
-	Versions []MachineImageVersion `json:"versions" patchStrategy:"merge" patchMergeKey:"version" protobuf:"bytes,2,rep,name=versions"`
+	Versions []MachineImageVersion `json:"versions" patchMergeKey:"version" patchStrategy:"merge" protobuf:"bytes,2,rep,name=versions"`
 	// UpdateStrategy is the update strategy to use for the machine image. Possible values are:
 	//  - patch: update to the latest patch version of the current minor version.
 	//  - minor: update to the latest minor and patch version.
@@ -159,17 +161,44 @@ type MachineImageVersion struct {
 	CapabilityFlavors []MachineImageFlavor `json:"capabilityFlavors,omitempty" protobuf:"bytes,6,rep,name=capabilityFlavors"`
 }
 
-// ExpirableVersion contains a version and an expiration date.
+// ExpirableVersion contains a version with associated lifecycle information.
 type ExpirableVersion struct {
 	// Version is the version identifier.
 	Version string `json:"version" protobuf:"bytes,1,opt,name=version"`
 	// ExpirationDate defines the time at which this version expires.
+	//
+	// Deprecated: Is replaced by Lifecycle; mutually exclusive with it.
 	// +optional
 	ExpirationDate *metav1.Time `json:"expirationDate,omitempty" protobuf:"bytes,2,opt,name=expirationDate"`
 	// Classification defines the state of a version (preview, supported, deprecated).
-	// To get the currently valid classification, use CurrentLifecycleClassification().
+	//
+	// Deprecated: Is replaced by Lifecycle. mutually exclusive with it.
 	// +optional
 	Classification *VersionClassification `json:"classification,omitempty" protobuf:"bytes,3,opt,name=classification,casttype=VersionClassification"`
+	// Lifecycle defines the lifecycle stages for this version.
+	// Mutually exclusive with Classification and ExpirationDate.
+	// This can only be used when the VersionClassificationLifecycle feature gate is enabled.
+	// +optional
+	Lifecycle []LifecycleStage `json:"lifecycle,omitempty" protobuf:"bytes,4,opt,name=lifecycle"`
+}
+
+// LifecycleStage describes a stage in the versions lifecycle.
+// Each stage defines the classification of the version (e.g. unavailable, preview, supported, deprecated, expired)
+// and the time at which this classification becomes effective.
+type LifecycleStage struct {
+	// Classification is the category of this lifecycle stage (unavailable, preview, supported, deprecated, expired).
+	Classification VersionClassification `json:"classification" protobuf:"bytes,1,opt,name=classification,casttype=VersionClassification"`
+	// StartTime defines when this lifecycle stage becomes active.
+	// StartTime can be omitted for the first lifecycle stage, implying a start time in the past.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty" protobuf:"bytes,2,opt,name=startTime"`
+}
+
+// CloudProfileMachineControllerManagerSettings contains a subset of the MachineControllerManagerSettings which can be defaulted for a machine type in a CloudProfile.
+type CloudProfileMachineControllerManagerSettings struct {
+	// MachineCreationTimeout is the period after which creation of a machine of this machine type is declared failed.
+	// +optional
+	MachineCreationTimeout *metav1.Duration `json:"machineCreationTimeout,omitempty" protobuf:"bytes,1,opt,name=machineCreationTimeout"`
 }
 
 // MachineType contains certain properties of a machine type.
@@ -194,6 +223,9 @@ type MachineType struct {
 	// Capabilities contains the machine type capabilities.
 	// +optional
 	Capabilities Capabilities `json:"capabilities,omitempty" protobuf:"bytes,8,rep,name=capabilities,casttype=Capabilities"`
+	// MachineControllerManagerSettings contains a subset of the MachineControllerManagerSettings which can be defaulted for a machine type in a CloudProfile.
+	// +optional
+	MachineControllerManager *CloudProfileMachineControllerManagerSettings `json:"machineControllerManager,omitempty" protobuf:"bytes,9,opt,name=machineControllerManager"`
 }
 
 // MachineTypeStorage is the amount of storage associated with the root volume of this machine type.
@@ -219,7 +251,7 @@ type Region struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	Zones []AvailabilityZone `json:"zones,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,2,rep,name=zones"`
+	Zones []AvailabilityZone `json:"zones,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,2,rep,name=zones"`
 	// Labels is an optional set of key-value pairs that contain certain administrator-controlled labels for this region.
 	// It can be used by Gardener administrators/operators to provide additional information about a region, e.g. wrt
 	// quality, reliability, etc.
@@ -287,6 +319,40 @@ type Limits struct {
 	// MaxNodesTotal configures the maximum node count a Shoot cluster can have during runtime.
 	// +optional
 	MaxNodesTotal *int32 `json:"maxNodesTotal,omitempty" protobuf:"varint,1,opt,name=maxNodesTotal"`
+}
+
+// CloudProfileStatus contains the status of the cloud profile.
+type CloudProfileStatus struct {
+	// Kubernetes contains the status information for kubernetes.
+	// +optional
+	Kubernetes *KubernetesStatus `json:"kubernetes,omitempty" protobuf:"bytes,1,name=kubernetes"`
+	// MachineImages contains the statuses of the machine image versions.
+	// +optional
+	MachineImages []MachineImageStatus `json:"machineImages,omitempty" protobuf:"bytes,2,name=machineImages"`
+}
+
+// KubernetesStatus contains the status information for kubernetes.
+type KubernetesStatus struct {
+	// Versions contains the statuses of the kubernetes versions.
+	// +optional
+	Versions []ExpirableVersionStatus `json:"versions,omitempty" protobuf:"bytes,1,name=versions"`
+}
+
+// MachineImageStatus contains the status of a machine image and its version classifications.
+type MachineImageStatus struct {
+	// Name matches the name of the MachineImage the status is represented of.
+	Name string `json:"name" protobuf:"bytes,1,name=name"`
+	// Versions contains the statuses of the machine image versions.
+	// +optional
+	Versions []ExpirableVersionStatus `json:"versions,omitempty" protobuf:"bytes,2,name=versions"`
+}
+
+// ExpirableVersionStatus defines the current status of an expirable version.
+type ExpirableVersionStatus struct {
+	// Version is the version identifier.
+	Version string `json:"version" protobuf:"bytes,1,opt,name=version"`
+	// Classification reflects the current state in the classification lifecycle.
+	Classification VersionClassification `json:"classification" protobuf:"bytes,2,opt,name=classification,casttype=VersionClassification"`
 }
 
 const (

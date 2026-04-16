@@ -6,6 +6,8 @@ package manager
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -74,9 +76,9 @@ type (
 		store                       secretStore
 		logger                      logr.Logger
 		client                      client.Client
-		namespace                   string
 		identity                    string
 		lastRotationInitiationTimes nameToUnixTime
+		opts                        *NewOptions
 	}
 
 	nameToUnixTime map[string]string
@@ -93,15 +95,53 @@ type (
 		lastRotationInitiationTime int64
 	}
 
-	// Config specifies certain configuration options for the manager.
-	Config struct {
+	// NewOptions are options for New calls.
+	NewOptions struct {
+		// Namespaces is the list of namespaces the secrets manager should operate on.
+		Namespaces []string
 		// CASecretAutoRotation states whether CA secrets are considered for automatic rotation (defaults to false).
 		CASecretAutoRotation bool
 		// SecretNamesToTimes is a map whose keys are secret names and whose values are the last rotation initiation
 		// times.
 		SecretNamesToTimes map[string]time.Time
+		// DisableAutomaticSecretRenewal states whether automatic secret renewal should be disabled even if a secret's
+		// configuration would otherwise require it.
+		DisableAutomaticSecretRenewal bool
 	}
+	// NewOption is some configuration that configures a secrets manager instance when creating it with [New].
+	NewOption func(*NewOptions)
 )
+
+// WithNamespaces returns a function which configures the namespaces the secrets manager should operate in.
+func WithNamespaces(namespaces ...string) NewOption {
+	return func(options *NewOptions) {
+		options.Namespaces = namespaces
+	}
+}
+
+// WithCASecretAutoRotation enables automatic rotation for CA secrets (turned off by default).
+func WithCASecretAutoRotation() NewOption {
+	return func(options *NewOptions) {
+		options.CASecretAutoRotation = true
+	}
+}
+
+// WithSecretNamesToTimes sets a map whose keys are secret names and whose values are the last rotation initiation
+// times.
+func WithSecretNamesToTimes(secretNamesToTimes map[string]time.Time) NewOption {
+	return func(options *NewOptions) {
+		options.SecretNamesToTimes = secretNamesToTimes
+	}
+}
+
+// WithoutAutomaticSecretRenewal disables automatic secret renewal (enabled by default).
+// When set, the secrets manager will not list existing secrets or prepare them for automatic renewal, even if a
+// secret's configuration would otherwise require it.
+func WithoutAutomaticSecretRenewal() NewOption {
+	return func(options *NewOptions) {
+		options.DisableAutomaticSecretRenewal = true
+	}
+}
 
 var _ Interface = &manager{}
 
@@ -119,39 +159,65 @@ func New(
 	logger logr.Logger,
 	clock clock.Clock,
 	c client.Client,
-	namespace string,
 	identity string,
-	rotation Config,
+	optionFns ...NewOption,
 ) (
 	Interface,
 	error,
 ) {
+	opts := &NewOptions{}
+	for _, f := range optionFns {
+		f(opts)
+	}
+
+	if len(opts.Namespaces) == 0 {
+		return nil, errors.New("must specify at least one namespace")
+	}
+
 	m := &manager{
 		store:                       make(secretStore),
 		clock:                       clock,
-		logger:                      logger.WithValues("namespace", namespace),
+		logger:                      logger,
 		client:                      c,
-		namespace:                   namespace,
 		identity:                    identity,
+		opts:                        opts,
 		lastRotationInitiationTimes: make(nameToUnixTime),
 	}
 
-	if err := m.initialize(ctx, rotation); err != nil {
-		return nil, err
+	if !opts.DisableAutomaticSecretRenewal {
+		if err := m.prepareExpiringSecretsForAutoRenewal(ctx); err != nil {
+			return nil, fmt.Errorf("failed to prepare expiring secrets for auto-renewal: %w", err)
+		}
+	}
+
+	// If the user has provided last rotation initiation times then convert to unix time and store the data in our
+	// internal map.
+	for name, time := range m.opts.SecretNamesToTimes {
+		m.lastRotationInitiationTimes[name] = unixTime(time)
 	}
 
 	return m, nil
 }
 
-func (m *manager) listSecrets(ctx context.Context) (*corev1.SecretList, error) {
-	secretList := &corev1.SecretList{}
-	return secretList, m.client.List(ctx, secretList, client.InNamespace(m.namespace), client.MatchingLabels{
-		LabelKeyManagedBy:       LabelValueSecretsManager,
-		LabelKeyManagerIdentity: m.identity,
-	})
+func (m *manager) listSecrets(ctx context.Context, listOptions ...client.ListOption) (*corev1.SecretList, error) {
+	secretListAllNamespaces := &corev1.SecretList{}
+
+	for _, namespace := range m.opts.Namespaces {
+		secretList := &corev1.SecretList{}
+		if err := m.client.List(ctx, secretList, append([]client.ListOption{
+			client.InNamespace(namespace),
+			client.MatchingLabels{LabelKeyManagedBy: LabelValueSecretsManager, LabelKeyManagerIdentity: m.identity},
+		}, listOptions...)...); err != nil {
+			return nil, fmt.Errorf("failed to list secrets in namespace %q: %w", namespace, err)
+		}
+
+		secretListAllNamespaces.Items = append(secretListAllNamespaces.Items, secretList.Items...)
+	}
+
+	return secretListAllNamespaces, nil
 }
 
-func (m *manager) initialize(ctx context.Context, rotation Config) error {
+func (m *manager) prepareExpiringSecretsForAutoRenewal(ctx context.Context) error {
 	secretList, err := m.listSecrets(ctx)
 	if err != nil {
 		return err
@@ -171,7 +237,7 @@ func (m *manager) initialize(ctx context.Context, rotation Config) error {
 
 	// Check if the secrets must be automatically renewed because they are about to expire.
 	for name, secret := range nameToNewestSecret {
-		if isCASecret(secret.Data) && !rotation.CASecretAutoRotation {
+		if isCASecret(secret.Data) && !m.opts.CASecretAutoRotation {
 			continue
 		}
 
@@ -181,14 +247,9 @@ func (m *manager) initialize(ctx context.Context, rotation Config) error {
 		}
 
 		if mustRenew {
-			m.logger.Info("Preparing secret for automatic renewal", "secret", secret.Name, "issuedAt", secret.Labels[LabelKeyIssuedAtTime], "validUntil", secret.Labels[LabelKeyValidUntilTime])
+			m.logger.Info("Preparing secret for automatic renewal", "secret", client.ObjectKeyFromObject(&secret), "issuedAt", secret.Labels[LabelKeyIssuedAtTime], "validUntil", secret.Labels[LabelKeyValidUntilTime])
 			m.lastRotationInitiationTimes[name] = unixTime(m.clock.Now())
 		}
-	}
-
-	// If the user has provided last rotation initiation times then use those.
-	for name, time := range rotation.SecretNamesToTimes {
-		m.lastRotationInitiationTimes[name] = unixTime(time)
 	}
 
 	return nil
@@ -286,6 +347,7 @@ func computeSecretInfo(obj *corev1.Secret) (secretInfo, error) {
 // ObjectMeta returns the object meta based on the given settings.
 func ObjectMeta(
 	namespace string,
+	labels map[string]string,
 	managerIdentity string,
 	config secretsutils.ConfigInterface,
 	ignoreConfigChecksumForCASecretName bool,
@@ -302,7 +364,7 @@ func ObjectMeta(
 		return metav1.ObjectMeta{}, err
 	}
 
-	labels := map[string]string{
+	secretLabels := map[string]string{
 		LabelKeyName:                       config.GetName(),
 		LabelKeyManagedBy:                  LabelValueSecretsManager,
 		LabelKeyManagerIdentity:            managerIdentity,
@@ -311,21 +373,29 @@ func ObjectMeta(
 	}
 
 	if signingCAChecksum != nil {
-		labels[LabelKeyChecksumSigningCA] = *signingCAChecksum
+		secretLabels[LabelKeyChecksumSigningCA] = *signingCAChecksum
 	}
 
 	if persist != nil && *persist {
-		labels[LabelKeyPersist] = LabelValueTrue
+		secretLabels[LabelKeyPersist] = LabelValueTrue
 	}
 
 	if bundleFor != nil {
-		labels[LabelKeyBundleFor] = *bundleFor
+		secretLabels[LabelKeyBundleFor] = *bundleFor
+	}
+
+	for k, v := range labels {
+		if _, exists := secretLabels[k]; exists {
+			// don't allow overriding of labels which are set by the secrets manager itself, as they are crucial for the correct functioning of the manager
+			continue
+		}
+		secretLabels[k] = v
 	}
 
 	return metav1.ObjectMeta{
-		Name:      computeSecretName(config, labels, ignoreConfigChecksumForCASecretName),
+		Name:      computeSecretName(config, secretLabels, ignoreConfigChecksumForCASecretName),
 		Namespace: namespace,
-		Labels:    labels,
+		Labels:    secretLabels,
 	}, nil
 }
 

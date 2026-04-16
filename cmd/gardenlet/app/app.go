@@ -44,21 +44,24 @@ import (
 
 	"github.com/gardener/gardener/cmd/utils/initrun"
 	"github.com/gardener/gardener/pkg/api/indexer"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/apis/operations"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
+	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/seedmanagement"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	clientmapbuilder "github.com/gardener/gardener/pkg/client/kubernetes/clientmap/builder"
 	kubeapiserverexposure "github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/controllerutils/routes"
 	"github.com/gardener/gardener/pkg/features"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/bootstrap"
 	"github.com/gardener/gardener/pkg/gardenlet/bootstrap/certificate"
 	"github.com/gardener/gardener/pkg/gardenlet/bootstrappers"
@@ -177,14 +180,18 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *g
 		return err
 	}
 
-	var selfHostedShootMeta *types.NamespacedName
+	var selfHostedShootInfo *gardenlet.SelfHostedShootInfo
 	if gardenlet.IsResponsibleForSelfHostedShoot() {
 		configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: v1beta1constants.ConfigMapNameShootInfo, Namespace: metav1.NamespaceSystem}}
 		if err := mgr.GetAPIReader().Get(ctx, client.ObjectKeyFromObject(configMap), configMap); err != nil {
 			return fmt.Errorf("failed reading ConfigMap %s: %w", client.ObjectKeyFromObject(configMap), err)
 		}
-		selfHostedShootMeta = &types.NamespacedName{Namespace: configMap.Data["shootNamespace"], Name: configMap.Data["shootName"]}
-		log.Info("Fetched information about self-hosted shoot", "shootMeta", selfHostedShootMeta)
+		selfHostedShootInfo = &gardenlet.SelfHostedShootInfo{
+			Meta:      types.NamespacedName{Namespace: configMap.Data["shootNamespace"], Name: configMap.Data["shootName"]},
+			UID:       types.UID(configMap.Data["uid"]),
+			StatusUID: types.UID(configMap.Data["statusUID"]),
+		}
+		log.Info("Fetched information about self-hosted shoot", "shootMeta", selfHostedShootInfo.Meta)
 	}
 
 	log.Info("Adding runnables to manager for bootstrapping")
@@ -197,7 +204,7 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *g
 					RuntimeClient:       mgr.GetClient(),
 					Log:                 mgr.GetLogger().WithName("bootstrap"),
 					Config:              cfg,
-					SelfHostedShootMeta: selfHostedShootMeta,
+					SelfHostedShootInfo: selfHostedShootInfo,
 					Result:              kubeconfigBootstrapResult,
 				},
 			},
@@ -206,7 +213,7 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *g
 					cancel:                    cancel,
 					mgr:                       mgr,
 					config:                    cfg,
-					selfHostedShootMeta:       selfHostedShootMeta,
+					selfHostedShootInfo:       selfHostedShootInfo,
 					healthManager:             healthManager,
 					kubeconfigBootstrapResult: kubeconfigBootstrapResult,
 				},
@@ -235,7 +242,7 @@ type garden struct {
 	cancel                    context.CancelFunc
 	mgr                       manager.Manager
 	config                    *gardenletconfigv1alpha1.GardenletConfiguration
-	selfHostedShootMeta       *types.NamespacedName
+	selfHostedShootInfo       *gardenlet.SelfHostedShootInfo
 	healthManager             gardenerhealthz.Manager
 	kubeconfigBootstrapResult *bootstrappers.KubeconfigBootstrapResult
 }
@@ -354,22 +361,52 @@ func (g *garden) Start(ctx context.Context) error {
 			opts.NewCache = func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
 				// gardenlet should watch only objects which are related to the shoot it is responsible for.
 				opts.ByObject = map[client.Object]cache.ByObject{
+					&gardencorev1beta1.BackupBucket{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							gardencore.BackupBucketShootRefName:      g.selfHostedShootInfo.Meta.Name,
+							gardencore.BackupBucketShootRefNamespace: g.selfHostedShootInfo.Meta.Namespace,
+						}),
+					},
+					&gardencorev1beta1.BackupEntry{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							gardencore.BackupEntryShootRefName:      g.selfHostedShootInfo.Meta.Name,
+							gardencore.BackupEntryShootRefNamespace: g.selfHostedShootInfo.Meta.Namespace,
+						}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&operationsv1alpha1.Bastion{}: {
+						Field:      fields.SelectorFromSet(fields.Set{operations.BastionShootName: g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&gardencorev1beta1.ControllerInstallation{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							gardencore.ShootRefName:      g.selfHostedShootInfo.Meta.Name,
+							gardencore.ShootRefNamespace: g.selfHostedShootInfo.Meta.Namespace,
+						}),
+					},
 					&gardencorev1beta1.Shoot{}: {
-						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootMeta.Name}),
-						Namespaces: map[string]cache.Config{g.selfHostedShootMeta.Namespace: {}},
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
 					},
 					&gardencorev1beta1.ShootState{}: {
-						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootMeta.Name}),
-						Namespaces: map[string]cache.Config{g.selfHostedShootMeta.Namespace: {}},
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
 					},
 					&seedmanagementv1alpha1.Gardenlet{}: {
-						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: gardenlet.ResourcePrefixSelfHostedShoot + g.selfHostedShootMeta.Name}),
-						Namespaces: map[string]cache.Config{g.selfHostedShootMeta.Namespace: {}},
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: gardenlet.ResourcePrefixSelfHostedShoot + g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
 					},
 					&coordinationv1.Lease{}: {
-						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: gardenlet.ResourcePrefixSelfHostedShoot + g.selfHostedShootMeta.Name}),
-						Namespaces: map[string]cache.Config{g.selfHostedShootMeta.Namespace: {}},
+						Field:      fields.SelectorFromSet(fields.Set{metav1.ObjectNameField: gardenlet.ResourcePrefixSelfHostedShoot + g.selfHostedShootInfo.Meta.Name}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
 					},
+					&seedmanagementv1alpha1.ManagedSeed{}: {
+						Field: fields.SelectorFromSet(fields.Set{
+							seedmanagement.ManagedSeedShootName: g.selfHostedShootInfo.Meta.Name,
+						}),
+						Namespaces: map[string]cache.Config{g.selfHostedShootInfo.Meta.Namespace: {}},
+					},
+					&gardencorev1beta1.Seed{}: {},
 				}
 
 				return kubernetes.AggregatorCacheFunc(
@@ -378,7 +415,14 @@ func (g *garden) Start(ctx context.Context) error {
 						// Gardenlet does not have the required RBAC permissions for listing/watching the following
 						// resources on cluster level. Hence, we need to watch them individually with the help of a
 						// SingleObject cache.
-						&corev1.ConfigMap{}: kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.ConfigMap{}),
+						&corev1.ConfigMap{}:                         kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.ConfigMap{}),
+						&corev1.Secret{}:                            kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.Secret{}),
+						&corev1.ServiceAccount{}:                    kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.ServiceAccount{}),
+						&gardencorev1.ControllerDeployment{}:        kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1.ControllerDeployment{}),
+						&gardencorev1beta1.ControllerRegistration{}: kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.ControllerRegistration{}),
+						&gardencorev1beta1.Seed{}:                   kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.Seed{}),
+						&corev1.Namespace{}:                         kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &corev1.Namespace{}),
+						&gardencorev1beta1.Project{}:                kubernetes.SingleObjectCacheFunc(log, kubernetes.GardenScheme, &gardencorev1beta1.Project{}),
 					},
 					kubernetes.GardenScheme,
 				)(config, opts)
@@ -422,8 +466,27 @@ func (g *garden) Start(ctx context.Context) error {
 	}
 
 	if !gardenlet.IsResponsibleForSelfHostedShoot() {
+		isSelfHostedShoot, err := gardenlet.SeedIsSelfHostedShoot(ctx, g.mgr.GetClient())
+		if err != nil {
+			return fmt.Errorf("failed checking if seed cluster is a self-hosted shoot: %w", err)
+		}
+
+		if isSelfHostedShoot {
+			// Abort startup if the corresponding Shoot does not yet exist in the garden cluster. This prevents
+			// GCM from creating `ControllerInstallation`s with `.spec.seedRef`. However, if the seed is a self-hosted
+			// shoot, we want all `ControllerInstallation`s to use `.spec.shootRef`. Self-hosted shoots must be in the
+			// garden namespace (for now), so the name is sufficient to identify the Shoot.
+			shoot := &gardencorev1beta1.Shoot{}
+			if err := gardenCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: v1beta1constants.GardenNamespace, Name: g.config.SeedConfig.Name}, shoot); err != nil {
+				if apierrors.IsNotFound(err) {
+					return fmt.Errorf("seed cluster is a self-hosted shoot but the corresponding Shoot %q does not yet exist in namespace %q; run `gardenadm connect` first", g.config.SeedConfig.Name, v1beta1constants.GardenNamespace)
+				}
+				return fmt.Errorf("failed getting Shoot for self-hosted seed: %w", err)
+			}
+		}
+
 		log.Info("Registering Seed object in garden cluster")
-		if err := g.registerSeed(ctx, gardenCluster.GetClient()); err != nil {
+		if err := g.registerSeed(ctx, gardenCluster.GetClient(), isSelfHostedShoot); err != nil {
 			return err
 		}
 	}
@@ -438,19 +501,35 @@ func (g *garden) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := g.runMigrations(ctx, log); err != nil {
+	if err := g.runMigrations(ctx, log, gardenCluster.GetClient()); err != nil {
 		return err
 	}
 
-	log.Info("Setting up shoot client map")
-	shootClientMap, err := clientmapbuilder.
-		NewShootClientMapBuilder().
-		WithGardenClient(gardenCluster.GetClient()).
-		WithSeedClient(g.mgr.GetClient()).
-		WithClientConnectionConfig(&g.config.ShootClientConnection.ClientConnectionConfiguration).
-		Build(log)
+	seedClientSet, err := kubernetes.NewWithConfig(
+		kubernetes.WithRESTConfig(g.mgr.GetConfig()),
+		kubernetes.WithRuntimeAPIReader(g.mgr.GetAPIReader()),
+		kubernetes.WithRuntimeClient(g.mgr.GetClient()),
+		kubernetes.WithRuntimeCache(g.mgr.GetCache()),
+	)
 	if err != nil {
-		return fmt.Errorf("failed to build shoot ClientMap: %w", err)
+		return fmt.Errorf("failed creating seed clientset: %w", err)
+	}
+
+	log.Info("Setting up shoot client map")
+	var shootClientMap clientmap.ClientMap
+	if g.selfHostedShootInfo != nil {
+		shootClientMap = clientmap.NewSelfHostedShootClientMap(seedClientSet)
+	} else {
+		var err error
+		shootClientMap, err = clientmapbuilder.
+			NewShootClientMapBuilder().
+			WithGardenClient(gardenCluster.GetClient()).
+			WithSeedClient(g.mgr.GetClient()).
+			WithClientConnectionConfig(&g.config.ShootClientConnection.ClientConnectionConfiguration).
+			Build(log)
+		if err != nil {
+			return fmt.Errorf("failed to build shoot ClientMap: %w", err)
+		}
 	}
 
 	log.Info("Adding runnables now that bootstrapping is finished")
@@ -460,13 +539,13 @@ func (g *garden) Start(ctx context.Context) error {
 	}
 
 	if g.config.GardenClientConnection.KubeconfigSecret != nil {
-		certificateManager, err := certificate.NewCertificateManager(log, gardenCluster, g.mgr.GetClient(), g.config, g.selfHostedShootMeta)
+		certificateManager, err := certificate.NewCertificateManager(log, gardenCluster, g.mgr.GetClient(), g.config, g.selfHostedShootInfo)
 		if err != nil {
 			return fmt.Errorf("failed to create a new certificate manager: %w", err)
 		}
 
 		runnables = append(runnables, manager.RunnableFunc(func(ctx context.Context) error {
-			return certificateManager.ScheduleCertificateRotation(ctx, g.cancel, g.mgr.GetEventRecorderFor("certificate-manager"))
+			return certificateManager.ScheduleCertificateRotation(ctx, g.cancel, g.mgr.GetEventRecorder("certificate-manager"))
 		}))
 	}
 
@@ -474,21 +553,22 @@ func (g *garden) Start(ctx context.Context) error {
 		return err
 	}
 
+	var shoot *gardencorev1beta1.Shoot
 	if gardenlet.IsResponsibleForSelfHostedShoot() {
+		shoot = &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: g.selfHostedShootInfo.Meta.Name, Namespace: g.selfHostedShootInfo.Meta.Namespace}}
 		if err := retry.Until(ctx, 5*time.Second, func(ctx context.Context) (done bool, err error) {
-			shoot := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: g.selfHostedShootMeta.Name, Namespace: g.selfHostedShootMeta.Namespace}}
 			if err := gardenCluster.GetClient().Get(ctx, client.ObjectKeyFromObject(shoot), shoot); err != nil {
 				if !apierrors.IsNotFound(err) {
 					return retry.SevereError(err)
 				}
-				log.Info("Shoot resource for self-hosted shoot not found yet, waiting for it to be created in the Gardener API (usually, the 'gardenadm connect' command invocation creates it)", "shoot", g.selfHostedShootMeta)
-				return retry.MinorError(fmt.Errorf("the Shoot resource %s for self-hosted shoot was not found yet", g.selfHostedShootMeta))
+				log.Info("Shoot resource for self-hosted shoot not found yet, waiting for it to be created in the Gardener API (usually, the 'gardenadm connect' command invocation creates it)", "shoot", g.selfHostedShootInfo)
+				return retry.MinorError(fmt.Errorf("the Shoot resource %s for self-hosted shoot was not found yet", g.selfHostedShootInfo))
 			}
 			return retry.Ok()
 		}); err != nil {
-			return fmt.Errorf("failed waiting for Shoot %s: %w", g.selfHostedShootMeta, err)
+			return fmt.Errorf("failed waiting for Shoot %s: %w", g.selfHostedShootInfo, err)
 		}
-		log.Info("Successfully fetched Shoot resource for self-hosted shoot", "shoot", g.selfHostedShootMeta)
+		log.Info("Successfully fetched Shoot resource for self-hosted shoot", "shoot", g.selfHostedShootInfo)
 	}
 
 	log.Info("Adding controllers to manager")
@@ -498,9 +578,11 @@ func (g *garden) Start(ctx context.Context) error {
 		g.cancel,
 		gardenCluster,
 		g.mgr,
+		seedClientSet,
 		shootClientMap,
 		g.config,
 		g.healthManager,
+		shoot,
 	); err != nil {
 		return fmt.Errorf("failed adding controllers to manager: %w", err)
 	}
@@ -508,7 +590,7 @@ func (g *garden) Start(ctx context.Context) error {
 	return nil
 }
 
-func (g *garden) registerSeed(ctx context.Context, gardenClient client.Client) error {
+func (g *garden) registerSeed(ctx context.Context, gardenClient client.Client, isSelfHostedShoot bool) error {
 	seed := &gardencorev1beta1.Seed{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: g.config.SeedConfig.Name,
@@ -520,6 +602,10 @@ func (g *garden) registerSeed(ctx context.Context, gardenClient client.Client) e
 		seed.Labels = utils.MergeStringMaps(map[string]string{
 			v1beta1constants.GardenRole: v1beta1constants.GardenRoleSeed,
 		}, g.config.SeedConfig.Labels)
+
+		if isSelfHostedShoot {
+			metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelSelfHostedShootCluster, "true")
+		}
 
 		var (
 			internalDNS = seed.Spec.DNS.Internal
@@ -710,12 +796,12 @@ func (g *garden) updateProcessingShootStatusToAborted(ctx context.Context, garde
 	return flow.Parallel(taskFns...)(ctx)
 }
 
-const virtualGardenService = "virtual-garden-" + v1beta1constants.DeploymentNameKubeAPIServer
+const virtualGardenService = operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer
 
 // overwriteGardenHostWhenDeployedInRuntimeCluster overwrites the garden REST config host to the internal service host
 // if the gardenlet is deployed in the runtime cluster of the garden and L7 load balancing is not active.
 func (g *garden) overwriteGardenHostWhenDeployedInRuntimeCluster(ctx context.Context, log logr.Logger, gardenRESTConfig *rest.Config) error {
-	seedIsGarden, err := gardenlet.SeedIsGarden(ctx, g.mgr.GetClient())
+	seedIsGarden, err := gardenlet.ClusterIsGarden(ctx, g.mgr.GetClient())
 	if err != nil {
 		return fmt.Errorf("failed to check whether seed is garden: %w", err)
 	}
@@ -756,13 +842,7 @@ func (g *garden) overwriteGardenHostWhenDeployedInRuntimeCluster(ctx context.Con
 }
 
 func addAllFieldIndexes(ctx context.Context, i client.FieldIndexer) error {
-	// TODO(rfranzke): Revisit this once `gardenadm connect` progresses (currently, this causes informers to be started
-	//  against the API server, but gardenlet does not have the needed permissions).
-	if gardenlet.IsResponsibleForSelfHostedShoot() {
-		return nil
-	}
-
-	for _, fn := range []func(context.Context, client.FieldIndexer) error{
+	fns := []func(context.Context, client.FieldIndexer) error{
 		// core API group
 		indexer.AddShootSeedName,
 		indexer.AddShootStatusSeedName,
@@ -775,7 +855,23 @@ func addAllFieldIndexes(ctx context.Context, i client.FieldIndexer) error {
 		indexer.AddBastionShootName,
 		// seedmanagement API group
 		indexer.AddManagedSeedShootName,
-	} {
+	}
+
+	// TODO(rfranzke): Revisit this once `gardenadm connect` progresses (currently, this causes informers to be started
+	//  against the API server, but gardenlet does not have the needed permissions).
+	if gardenlet.IsResponsibleForSelfHostedShoot() {
+		fns = []func(context.Context, client.FieldIndexer) error{
+			// core API group
+			indexer.AddBackupEntryBucketName,
+			indexer.AddControllerInstallationRegistrationRefName,
+			indexer.AddControllerInstallationShootRefName,
+			indexer.AddControllerInstallationShootRefNamespace,
+			// seedmanagement API group
+			indexer.AddManagedSeedShootName,
+		}
+	}
+
+	for _, fn := range fns {
 		if err := fn(ctx, i); err != nil {
 			return err
 		}

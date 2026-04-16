@@ -8,14 +8,15 @@ import (
 	"context"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/storage/names"
 
 	"github.com/gardener/gardener/pkg/api"
+	"github.com/gardener/gardener/pkg/api/core/validation"
 	"github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/apis/core/validation"
 )
 
 // Strategy defines the strategy for storing seeds.
@@ -57,7 +58,10 @@ func (s Strategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
 }
 
 // Canonicalize can be used to transform the object into its canonical format.
-func (Strategy) Canonicalize(_ runtime.Object) {
+func (Strategy) Canonicalize(obj runtime.Object) {
+	seed := obj.(*core.Seed)
+	metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelSeedProvider, seed.Spec.Provider.Type)
+	metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelSeedRegion, seed.Spec.Provider.Region)
 }
 
 func mustIncreaseGeneration(oldSeed, newSeed *core.Seed) bool {

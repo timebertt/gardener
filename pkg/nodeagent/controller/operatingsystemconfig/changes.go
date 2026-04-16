@@ -16,29 +16,19 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 	"k8s.io/utils/ptr"
 
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components"
 	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
 	oscutils "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/utils"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
+	"github.com/gardener/gardener/pkg/nodeagent"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
-
-var decoder runtime.Decoder
-
-func init() {
-	scheme := runtime.NewScheme()
-	utilruntime.Must(extensionsv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(kubeletconfigv1beta1.AddToScheme(scheme))
-	decoder = serializer.NewCodecFactory(scheme).UniversalDeserializer()
-}
 
 func extractOSCFromSecret(secret *corev1.Secret) (*extensionsv1alpha1.OperatingSystemConfig, string, error) {
 	oscRaw, ok := secret.Data[nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig]
@@ -47,14 +37,22 @@ func extractOSCFromSecret(secret *corev1.Secret) (*extensionsv1alpha1.OperatingS
 	}
 
 	osc := &extensionsv1alpha1.OperatingSystemConfig{}
-	if err := runtime.DecodeInto(decoder, oscRaw, osc); err != nil {
+	if err := runtime.DecodeInto(nodeagent.OSCDecoder, oscRaw, osc); err != nil {
 		return nil, "", fmt.Errorf("unable to decode OSC from secret data key %s: %w", nodeagentconfigv1alpha1.DataKeyOperatingSystemConfig, err)
 	}
 
 	return osc, secret.Annotations[nodeagentconfigv1alpha1.AnnotationKeyChecksumDownloadedOperatingSystemConfig], nil
 }
 
-func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC *extensionsv1alpha1.OperatingSystemConfig, newOSCChecksum string, currentOSVersion *string, skipPersist bool) (*operatingSystemConfigChanges, error) {
+func computeOperatingSystemConfigChanges(
+	log logr.Logger,
+	fs afero.Afero,
+	newOSC *extensionsv1alpha1.OperatingSystemConfig,
+	newOSCChecksum string,
+	currentOSVersion *string,
+	skipPersist bool,
+	hostName string,
+) (*operatingSystemConfigChanges, error) {
 	changes := &operatingSystemConfigChanges{
 		fs:                            fs,
 		OperatingSystemConfigChecksum: newOSCChecksum,
@@ -92,12 +90,12 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 
 	// osc.files and osc.unit.files should be changed the same way by OSC controller.
 	// The reason for assigning files to units is the detection of changes which require the restart of a unit.
-	newOSCFiles := collectAllFiles(newOSC)
+	newOSCFiles := CollectAllFiles(newOSC, hostName)
 
-	oldOSCRaw, err := fs.ReadFile(lastAppliedOperatingSystemConfigFilePath)
+	oldOSCRaw, err := fs.ReadFile(nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath)
 	if err != nil {
 		if !errors.Is(err, afero.ErrFileNotFound) {
-			return nil, fmt.Errorf("error reading last applied OSC from file path %s: %w", lastAppliedOperatingSystemConfigFilePath, err)
+			return nil, fmt.Errorf("error reading last applied OSC from file path %s: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
 		}
 
 		var (
@@ -141,11 +139,11 @@ func computeOperatingSystemConfigChanges(log logr.Logger, fs afero.Afero, newOSC
 	}
 
 	oldOSC := &extensionsv1alpha1.OperatingSystemConfig{}
-	if err := runtime.DecodeInto(decoder, oldOSCRaw, oldOSC); err != nil {
-		return nil, fmt.Errorf("unable to decode the old OSC read from file path %s: %w", lastAppliedOperatingSystemConfigFilePath, err)
+	if err := runtime.DecodeInto(nodeagent.OSCDecoder, oldOSCRaw, oldOSC); err != nil {
+		return nil, fmt.Errorf("unable to decode the old OSC read from file path %s: %w", nodeagentconfigv1alpha1.LastAppliedOperatingSystemConfigFilePath, err)
 	}
 
-	oldOSCFiles := collectAllFiles(oldOSC)
+	oldOSCFiles := CollectAllFiles(oldOSC, hostName)
 	// File changes have to be computed in one step for all files,
 	// because moving a file from osc.unit.files to osc.files or vice versa should not result in a change and a delete event.
 	changes.Files = computeFileDiffs(oldOSCFiles, newOSCFiles)
@@ -277,100 +275,56 @@ func getKubeletConfig(osc *extensionsv1alpha1.OperatingSystemConfig) (*kubeletco
 // ComputeKubeletConfigChange computes changes in the kubelet configuration relevant for in-place updates.
 // This function needs to be updated when the kubelet configuration triggers in https://github.com/gardener/gardener/blob/master/docs/usage/shoot-operations/shoot_updates.md#rolling-update-triggers are changed.
 func ComputeKubeletConfigChange(oldConfig, newConfig *kubeletconfigv1beta1.KubeletConfiguration) (bool, bool, error) {
-	var (
-		cpuManagerPolicyChanged = oldConfig.CPUManagerPolicy != newConfig.CPUManagerPolicy
-		oldRelevantEvictionHard = make(map[string]string)
-		newRelevantEvictionHard = make(map[string]string)
-	)
+	cpuManagerPolicyChanged := oldConfig.CPUManagerPolicy != newConfig.CPUManagerPolicy
+	collectRelevantEntries := func(data map[string]string, relevantKeys []string) map[string]string {
+		filteredData := make(map[string]string)
+		relevantKeysSet := sets.New(relevantKeys...)
+
+		for k, v := range data {
+			if !relevantKeysSet.Has(k) {
+				continue
+			}
+			filteredData[k] = v
+		}
+
+		return filteredData
+	}
 
 	// Copy only relevant config values for comparison.
-	if oldConfig.EvictionHard != nil {
-		oldRelevantEvictionHard[components.MemoryAvailable] = oldConfig.EvictionHard[components.MemoryAvailable]
-		oldRelevantEvictionHard[components.ImageFSAvailable] = oldConfig.EvictionHard[components.ImageFSAvailable]
-		oldRelevantEvictionHard[components.ImageFSInodesFree] = oldConfig.EvictionHard[components.ImageFSInodesFree]
-		oldRelevantEvictionHard[components.NodeFSAvailable] = oldConfig.EvictionHard[components.NodeFSAvailable]
-		oldRelevantEvictionHard[components.NodeFSInodesFree] = oldConfig.EvictionHard[components.NodeFSInodesFree]
-	}
-
-	if newConfig.EvictionHard != nil {
-		newRelevantEvictionHard[components.MemoryAvailable] = newConfig.EvictionHard[components.MemoryAvailable]
-		newRelevantEvictionHard[components.ImageFSAvailable] = newConfig.EvictionHard[components.ImageFSAvailable]
-		newRelevantEvictionHard[components.ImageFSInodesFree] = newConfig.EvictionHard[components.ImageFSInodesFree]
-		newRelevantEvictionHard[components.NodeFSAvailable] = newConfig.EvictionHard[components.NodeFSAvailable]
-		newRelevantEvictionHard[components.NodeFSInodesFree] = newConfig.EvictionHard[components.NodeFSInodesFree]
-	}
+	relevantEvictionNames := []string{components.MemoryAvailable, components.ImageFSAvailable, components.ImageFSInodesFree, components.NodeFSAvailable, components.NodeFSInodesFree}
+	oldRelevantEvictionHard := collectRelevantEntries(oldConfig.EvictionHard, relevantEvictionNames)
+	newRelevantEvictionHard := collectRelevantEntries(newConfig.EvictionHard, relevantEvictionNames)
 
 	if !maps.Equal(oldRelevantEvictionHard, newRelevantEvictionHard) {
 		return true, cpuManagerPolicyChanged, nil
 	}
 
-	oldReserved, err := sumResourceReservations(oldConfig.KubeReserved, oldConfig.SystemReserved)
-	if err != nil {
-		return false, cpuManagerPolicyChanged, fmt.Errorf("failed to sum resource reservations for old kubelet config: %w", err)
-	}
-	newReserved, err := sumResourceReservations(newConfig.KubeReserved, newConfig.SystemReserved)
-	if err != nil {
-		return false, cpuManagerPolicyChanged, fmt.Errorf("failed to sum resource reservations for new kubelet config: %w", err)
+	for _, config := range []*kubeletconfigv1beta1.KubeletConfiguration{oldConfig, newConfig} {
+		if err := validateQuantities(config); err != nil {
+			return false, cpuManagerPolicyChanged, fmt.Errorf("error validating quantities: %v", err)
+		}
 	}
 
-	return !maps.Equal(oldReserved, newReserved), cpuManagerPolicyChanged, nil
+	// Copy only relevant config values for comparison.
+	relevantKubeReservedNames := []string{"cpu", "memory", "ephemeral-storage", "pid"}
+	oldConfigKubeReserved := collectRelevantEntries(oldConfig.KubeReserved, relevantKubeReservedNames)
+	newConfigKubeReserved := collectRelevantEntries(newConfig.KubeReserved, relevantKubeReservedNames)
+
+	return !maps.Equal(oldConfigKubeReserved, newConfigKubeReserved), cpuManagerPolicyChanged, nil
 }
 
-func sumResourceReservations(left, right map[string]string) (map[string]string, error) {
-	if left == nil {
-		return right, nil
-	} else if right == nil {
-		return left, nil
+func validateQuantities(config *kubeletconfigv1beta1.KubeletConfiguration) error {
+	if config == nil {
+		return nil
 	}
 
-	out := make(map[string]string)
-
-	for _, resource := range []string{"cpu", "memory", "ephemeral-storage", "pid"} {
-		if quantity, err := sumQuantities(left[resource], right[resource]); err != nil {
-			return nil, fmt.Errorf("failed to sum %s reservations: %w", resource, err)
-		} else {
-			out[resource] = quantity.String()
+	for _, q := range config.KubeReserved {
+		if _, err := resource.ParseQuantity(q); err != nil {
+			return fmt.Errorf("failed to parse quantity: %w", err)
 		}
 	}
 
-	return out, nil
-}
-
-func sumQuantities(l, r string) (*resource.Quantity, error) {
-	var (
-		left, right resource.Quantity
-		err         error
-	)
-
-	if r == "" && l == "" {
-		return resource.NewQuantity(0, resource.DecimalSI), nil
-	}
-
-	if l != "" {
-		left, err = resource.ParseQuantity(l)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse left quantity: %w", err)
-		}
-
-		if r == "" {
-			return &left, nil
-		}
-	}
-
-	if r != "" {
-		right, err = resource.ParseQuantity(r)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse right quantity: %w", err)
-		}
-
-		if l == "" {
-			return &right, nil
-		}
-	}
-
-	copy := left.DeepCopy()
-	copy.Add(right)
-	return &copy, nil
+	return nil
 }
 
 func computeUnitDiffs(oldUnits, newUnits []extensionsv1alpha1.Unit, fileDiffs files) units {
@@ -502,8 +456,12 @@ func mergeUnits(specUnits, statusUnits []extensionsv1alpha1.Unit) []extensionsv1
 	return out
 }
 
-func collectAllFiles(osc *extensionsv1alpha1.OperatingSystemConfig) []extensionsv1alpha1.File {
-	return append(osc.Spec.Files, osc.Status.ExtensionFiles...)
+// CollectAllFiles returns the list of all files from spec and status of the given OSC, optionally filtered for the given node.
+func CollectAllFiles(osc *extensionsv1alpha1.OperatingSystemConfig, hostName string) []extensionsv1alpha1.File {
+	allFiles := slices.Clone(append(osc.Spec.Files, osc.Status.ExtensionFiles...))
+	return slices.DeleteFunc(allFiles, func(file extensionsv1alpha1.File) bool {
+		return file.HostName != nil && *file.HostName != hostName
+	})
 }
 
 func computeContainerdRegistryDiffs(newRegistries, oldRegistries []extensionsv1alpha1.RegistryConfig) containerdRegistries {

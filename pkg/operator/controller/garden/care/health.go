@@ -9,24 +9,25 @@ import (
 	"fmt"
 	"time"
 
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	commonprometheus "github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	kuberneteshealth "github.com/gardener/gardener/pkg/utils/kubernetes/health"
 	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
-
-const virtualGardenPrefix = "virtual-garden-"
 
 // health contains information needed to execute health checks for garden.
 type health struct {
@@ -47,6 +48,7 @@ func NewHealth(
 	clock clock.Clock,
 	conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration,
 	gardenNamespace string,
+	healthChecker *healthchecker.HealthChecker,
 ) HealthCheck {
 	return &health{
 		garden:              garden,
@@ -55,7 +57,7 @@ func NewHealth(
 		gardenClientSet:     gardenClientSet,
 		clock:               clock,
 		conditionThresholds: conditionThresholds,
-		healthChecker:       healthchecker.NewHealthChecker(runtimeClient, clock, conditionThresholds, garden.Status.LastOperation),
+		healthChecker:       healthChecker,
 	}
 }
 
@@ -85,11 +87,17 @@ func (h *health) Check(ctx context.Context, conditions GardenConditions) []garde
 			conditions.virtualComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.virtualComponentsHealthy, newVirtualComponentsCondition, err)
 			return nil
 		},
-		func(_ context.Context) error {
-			newObservabilityCondition := h.checkObservabilityComponents(conditions.observabilityComponentsHealthy, managedResources)
+	}
+
+	prometheuses, err := h.listPrometheuses(ctx)
+	if err != nil {
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+	} else {
+		taskFns = append(taskFns, func(_ context.Context) error {
+			newObservabilityCondition := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, managedResources, prometheuses)
 			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityCondition, nil)
 			return nil
-		},
+		})
 	}
 
 	_ = flow.Parallel(taskFns...)(ctx)
@@ -109,6 +117,15 @@ func (h *health) listManagedResources(ctx context.Context) ([]resourcesv1alpha1.
 	}
 
 	return append(managedResourceListGarden.Items, managedResourceListIstioSystem.Items...), nil
+}
+
+func (h *health) listPrometheuses(ctx context.Context) (*monitoringv1.PrometheusList, error) {
+	prometheusList := &monitoringv1.PrometheusList{}
+	if err := h.runtimeClient.List(ctx, prometheusList, client.InNamespace(h.gardenNamespace)); err != nil {
+		return nil, fmt.Errorf("failed listing Prometheuses in namespace %s: %w", h.gardenNamespace, err)
+	}
+
+	return prometheusList, nil
 }
 
 // checkAPIServerAvailability checks if the API server of a virtual garden is reachable and measures the response time.
@@ -137,8 +154,8 @@ func (h *health) checkVirtualComponents(ctx context.Context, condition gardencor
 	if exitCondition, err := h.healthChecker.CheckControlPlane(
 		ctx,
 		h.gardenNamespace,
-		sets.New(virtualGardenPrefix+v1beta1constants.DeploymentNameGardenerResourceManager, virtualGardenPrefix+v1beta1constants.DeploymentNameKubeAPIServer, virtualGardenPrefix+v1beta1constants.DeploymentNameKubeControllerManager),
-		sets.New(virtualGardenPrefix+v1beta1constants.ETCDMain, virtualGardenPrefix+v1beta1constants.ETCDEvents),
+		sets.New(operatorv1alpha1.DeploymentNameVirtualGardenGardenerResourceManager, operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer, operatorv1alpha1.DeploymentNameVirtualGardenKubeControllerManager),
+		sets.New(operatorv1alpha1.VirtualGardenETCDMain, operatorv1alpha1.VirtualGardenETCDEvents),
 		condition,
 	); err != nil || exitCondition != nil {
 		return exitCondition, err
@@ -155,11 +172,21 @@ func (h *health) checkVirtualComponents(ctx context.Context, condition gardencor
 }
 
 // checkObservabilityComponents checks whether the observability components are healthy.
-func (h *health) checkObservabilityComponents(condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
+func (h *health) checkObservabilityComponents(ctx context.Context, condition gardencorev1beta1.Condition, managedResources []resourcesv1alpha1.ManagedResource, prometheuses *monitoringv1.PrometheusList) *gardencorev1beta1.Condition {
 	if exitCondition := h.healthChecker.CheckManagedResources(condition, managedResources, func(managedResource resourcesv1alpha1.ManagedResource) bool {
 		return managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(operatorv1alpha1.ObservabilityComponentsHealthy)
 	}, nil); exitCondition != nil {
 		return exitCondition
+	}
+
+	filterFunc := func(prometheus *monitoringv1.Prometheus) bool {
+		return prometheus.Labels[commonprometheus.HealthCheckBy] == commonprometheus.GardenerOperator
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, filterFunc); exitCondition != nil {
+			return exitCondition
+		}
 	}
 
 	return ptr.To(v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy."))

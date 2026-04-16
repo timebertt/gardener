@@ -9,7 +9,9 @@
 # as needed. If the required tool (version) is not built/installed yet, make will make sure to build/install it.
 # The *_VERSION variables in this file contain the "default" values, but can be overwritten in the top level make file.
 
-ifeq ($(strip $(shell go list -m 2>/dev/null)),github.com/gardener/gardener)
+IS_GARDENER := $(shell go list -f '{{.Main}}' -m github.com/gardener/gardener)
+
+ifeq ($(IS_GARDENER),true)
 TOOLS_PKG_PATH             := ./hack/tools
 else
 # dependency on github.com/gardener/gardener/hack/tools is optional and only needed if other projects want to reuse
@@ -23,15 +25,13 @@ SYSTEM_ARCH                := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/
 TOOLS_BIN_DIR              := $(TOOLS_DIR)/bin/$(SYSTEM_NAME)-$(SYSTEM_ARCH)
 CONTROLLER_GEN             := $(TOOLS_BIN_DIR)/controller-gen
 EXTENSION_GEN              := $(TOOLS_BIN_DIR)/extension-generator
-GEN_CRD_API_REFERENCE_DOCS := $(TOOLS_BIN_DIR)/gen-crd-api-reference-docs
+CRD_REF_DOCS               := $(TOOLS_BIN_DIR)/crd-ref-docs
 GINKGO                     := $(TOOLS_BIN_DIR)/ginkgo
 GOIMPORTS                  := $(TOOLS_BIN_DIR)/goimports
 GOIMPORTSREVISER           := $(TOOLS_BIN_DIR)/goimports-reviser
 GOLANGCI_LINT              := $(TOOLS_BIN_DIR)/golangci-lint
 GOSEC                      := $(TOOLS_BIN_DIR)/gosec
 GO_ADD_LICENSE             := $(TOOLS_BIN_DIR)/addlicense
-GO_APIDIFF                 := $(TOOLS_BIN_DIR)/go-apidiff
-GO_VULN_CHECK              := $(TOOLS_BIN_DIR)/govulncheck
 GO_TO_PROTOBUF             := $(TOOLS_BIN_DIR)/go-to-protobuf
 HELM                       := $(TOOLS_BIN_DIR)/helm
 IMPORT_BOSS                := $(TOOLS_BIN_DIR)/import-boss
@@ -51,44 +51,43 @@ SKAFFOLD                   := $(TOOLS_BIN_DIR)/skaffold
 YQ                         := $(TOOLS_BIN_DIR)/yq
 VGOPATH                    := $(TOOLS_BIN_DIR)/vgopath
 TYPOS                      := $(TOOLS_BIN_DIR)/typos
+GOBUILDCACHE               := $(TOOLS_BIN_DIR)/gobuildcache
 
 # default tool versions
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_LINT_VERSION ?= v2.6.2
+GOLANGCI_LINT_VERSION ?= v2.11.4
 # renovate: datasource=github-releases depName=securego/gosec
-GOSEC_VERSION ?= v2.22.10
-# renovate: datasource=github-releases depName=joelanford/go-apidiff
-GO_APIDIFF_VERSION ?= v0.8.3
+GOSEC_VERSION ?= v2.25.0
 # renovate: datasource=github-releases depName=google/addlicense
 GO_ADD_LICENSE_VERSION ?= v1.2.0
 # renovate: datasource=github-releases depName=incu6us/goimports-reviser
-GOIMPORTSREVISER_VERSION ?= v3.10.0
-GO_VULN_CHECK_VERSION ?= latest
+GOIMPORTSREVISER_VERSION ?= v3.12.6
 # renovate: datasource=github-releases depName=helm/helm
-HELM_VERSION ?= v3.19.2
+HELM_VERSION ?= v3.20.2
 # renovate: datasource=github-releases depName=kubernetes-sigs/kind
-KIND_VERSION ?= v0.30.0
+KIND_VERSION ?= v0.31.0
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
-KUBECTL_VERSION ?= v1.34.2
-# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize
-KUSTOMIZE_VERSION ?= v5.3.0
+KUBECTL_VERSION ?= v1.35.3
+# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize\/(?<version>.*)$
+KUSTOMIZE_VERSION ?= v5.8.1
 # renovate: datasource=github-releases depName=prometheus/prometheus
-PROMTOOL_VERSION ?= 3.7.3
+PROMTOOL_VERSION ?= 3.10.0
 # renovate: datasource=github-releases depName=protocolbuffers/protobuf
-PROTOC_VERSION ?= v33.1
+PROTOC_VERSION ?= v34.1
 # renovate: datasource=github-releases depName=GoogleContainerTools/skaffold
-SKAFFOLD_VERSION ?= v2.17.0
+SKAFFOLD_VERSION ?= v2.18.3
 # renovate: datasource=github-releases depName=mikefarah/yq
-YQ_VERSION ?= v4.49.2
+YQ_VERSION ?= v4.52.5
 # renovate: datasource=github-releases depName=ironcore-dev/vgopath
-VGOPATH_VERSION ?= v0.1.9
+VGOPATH_VERSION ?= v0.1.10
 # renovate: datasource=github-releases depName=crate-ci/typos
-TYPOS_VERSION ?= v1.39.2
+TYPOS_VERSION ?= v1.45.1
+GOBUILDCACHE_VERSION ?= 83bfeb837b93a786ff37b33d0be108bcc74b089f
 
 # tool versions from go.mod
 CONTROLLER_GEN_VERSION ?= $(call version_gomod,sigs.k8s.io/controller-tools)
 GINKGO_VERSION ?= $(call version_gomod,github.com/onsi/ginkgo/v2)
-GEN_CRD_API_REFERENCE_DOCS_VERSION ?= $(call version_gomod,github.com/ahmetb/gen-crd-api-reference-docs)
+CRD_REF_DOCS_VERSION ?= $(call version_gomod,github.com/elastic/crd-ref-docs)
 GOIMPORTS_VERSION ?= $(call version_gomod,golang.org/x/tools)
 CODE_GENERATOR_VERSION ?= $(call version_gomod,k8s.io/code-generator)
 MOCKGEN_VERSION ?= $(call version_gomod,go.uber.org/mock)
@@ -117,7 +116,7 @@ export PATH := $(abspath $(TOOLS_BIN_DIR)):$(PATH)
 tool_version_file = $(TOOLS_BIN_DIR)/.version_$(subst $(TOOLS_BIN_DIR)/,,$(1))_$(2)
 
 # Use this function to get the version of a go module from go.mod
-version_gomod = $(shell go list -mod=mod -f '{{ .Version }}' -m $(1))
+version_gomod = $(shell go list -f '{{ .Version }}' -m $(1))
 
 # This target cleans up any previous version files for the given tool and creates the given version file.
 # This way, we can generically determine, which version was installed without calling each and every binary explicitly.
@@ -138,7 +137,7 @@ ifeq ($(shell if [ -d $(TOOLS_BIN_SOURCE_DIR) ]; then echo "found"; fi),found)
 endif
 
 .PHONY: create-tools-bin
-create-tools-bin: $(CONTROLLER_GEN) $(GEN_CRD_API_REFERENCE_DOCS) $(GINKGO) $(GOIMPORTS) $(GOIMPORTSREVISER) $(GOSEC) $(GO_ADD_LICENSE) $(GO_APIDIFF) $(GO_VULN_CHECK) $(GO_TO_PROTOBUF) $(HELM) $(IMPORT_BOSS) $(KIND) $(KUBECTL) $(MOCKGEN) $(OPENAPI_GEN) $(PROMTOOL) $(PROTOC) $(PROTOC_GEN_GOGO) $(SETUP_ENVTEST) $(SKAFFOLD) $(YQ) $(VGOPATH) $(KUSTOMIZE) $(TYPOS)
+create-tools-bin: $(CONTROLLER_GEN) $(CRD_REF_DOCS) $(GINKGO) $(GOIMPORTS) $(GOIMPORTSREVISER) $(GOSEC) $(GO_ADD_LICENSE) $(GO_TO_PROTOBUF) $(HELM) $(IMPORT_BOSS) $(KIND) $(KUBECTL) $(MOCKGEN) $(OPENAPI_GEN) $(PROMTOOL) $(PROTOC) $(PROTOC_GEN_GOGO) $(SETUP_ENVTEST) $(SKAFFOLD) $(YQ) $(KUSTOMIZE) $(TYPOS) $(GOBUILDCACHE)
 
 #########################################
 # Tools                                 #
@@ -147,8 +146,8 @@ create-tools-bin: $(CONTROLLER_GEN) $(GEN_CRD_API_REFERENCE_DOCS) $(GINKGO) $(GO
 $(CONTROLLER_GEN): $(call tool_version_file,$(CONTROLLER_GEN),$(CONTROLLER_GEN_VERSION))
 	go build -o $(CONTROLLER_GEN) sigs.k8s.io/controller-tools/cmd/controller-gen
 
-$(GEN_CRD_API_REFERENCE_DOCS): $(call tool_version_file,$(GEN_CRD_API_REFERENCE_DOCS),$(GEN_CRD_API_REFERENCE_DOCS_VERSION))
-	go build -o $(GEN_CRD_API_REFERENCE_DOCS) github.com/ahmetb/gen-crd-api-reference-docs
+$(CRD_REF_DOCS): $(call tool_version_file,$(CRD_REF_DOCS),$(CRD_REF_DOCS_VERSION))
+	go build -o $(CRD_REF_DOCS) github.com/elastic/crd-ref-docs
 
 $(GINKGO): $(call tool_version_file,$(GINKGO),$(GINKGO_VERSION))
 	go build -o $(GINKGO) github.com/onsi/ginkgo/v2/ginkgo
@@ -162,6 +161,9 @@ $(GOIMPORTSREVISER): $(call tool_version_file,$(GOIMPORTSREVISER),$(GOIMPORTSREV
 $(GOLANGCI_LINT): $(call tool_version_file,$(GOLANGCI_LINT),$(GOLANGCI_LINT_VERSION))
 	@# CGO_ENABLED has to be set to 1 in order for golangci-lint to be able to load plugins
 	@# see https://github.com/golangci/golangci-lint/issues/1276
+	@# We don't specify the GOTOOLCHAIN here, as we want to use the main module's go version to build golangci-lint.
+	@# Note, that the main module might not be the gardener/gardener module, if this Makefile is used in another
+	@# project, e.g., an extension.
 	GOBIN=$(abspath $(TOOLS_BIN_DIR)) CGO_ENABLED=1 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 $(GOSEC): $(call tool_version_file,$(GOSEC),$(GOSEC_VERSION))
@@ -169,12 +171,6 @@ $(GOSEC): $(call tool_version_file,$(GOSEC),$(GOSEC_VERSION))
 
 $(GO_ADD_LICENSE):  $(call tool_version_file,$(GO_ADD_LICENSE),$(GO_ADD_LICENSE_VERSION))
 	GOBIN=$(abspath $(TOOLS_BIN_DIR)) go install github.com/google/addlicense@$(GO_ADD_LICENSE_VERSION)
-
-$(GO_APIDIFF): $(call tool_version_file,$(GO_APIDIFF),$(GO_APIDIFF_VERSION))
-	GOBIN=$(abspath $(TOOLS_BIN_DIR)) go install github.com/joelanford/go-apidiff@$(GO_APIDIFF_VERSION)
-
-$(GO_VULN_CHECK): $(call tool_version_file,$(GO_VULN_CHECK),$(GO_VULN_CHECK_VERSION))
-	GOBIN=$(abspath $(TOOLS_BIN_DIR)) go install golang.org/x/vuln/cmd/govulncheck@$(GO_VULN_CHECK_VERSION)
 
 $(GO_TO_PROTOBUF): $(call tool_version_file,$(GO_TO_PROTOBUF),$(CODE_GENERATOR_VERSION))
 	go build -o $(GO_TO_PROTOBUF) k8s.io/code-generator/cmd/go-to-protobuf
@@ -202,12 +198,14 @@ $(KUSTOMIZE): $(call tool_version_file,$(KUSTOMIZE),$(KUSTOMIZE_VERSION))
 	tar zxvf - -C $(abspath $(TOOLS_BIN_DIR))
 	touch $(KUSTOMIZE) && chmod +x $(KUSTOMIZE)
 
-ifeq ($(strip $(shell go list -m 2>/dev/null)),github.com/gardener/gardener)
-$(LOGCHECK): $(TOOLS_PKG_PATH)/logcheck/go.* $(shell find $(TOOLS_PKG_PATH)/logcheck -type f -name '*.go')
-	cd $(TOOLS_PKG_PATH)/logcheck;GOTOOLCHAIN=auto CGO_ENABLED=1 go build -o $(abspath $(LOGCHECK)) -buildmode=plugin ./plugin
+# Explicitly specify the toolchain version to ensure logcheck is compiled with the same go version as golangci-lint,
+# i.e., the go toolchain version of the main module (required for loading golangci-lint plugins).
+ifeq ($(IS_GARDENER),true)
+$(LOGCHECK): $(TOOLS_PKG_PATH)/logcheck/go.* $(shell find $(TOOLS_PKG_PATH)/logcheck -type f -name '*.go') $(GOLANGCI_LINT)
+	cd $(TOOLS_PKG_PATH)/logcheck; GOTOOLCHAIN=$(shell go version -m -json $(GOLANGCI_LINT) | jq -r .GoVersion) CGO_ENABLED=1 go build -o $(abspath $(LOGCHECK)) -buildmode=plugin ./plugin
 else
-$(LOGCHECK): go.mod
-	cd $(shell go list -f '{{ .Dir }}' github.com/gardener/gardener/hack/tools/logcheck); GOTOOLCHAIN=auto CGO_ENABLED=1 go build -o $(LOGCHECK) -buildmode=plugin ./plugin
+$(LOGCHECK): go.mod $(GOLANGCI_LINT)
+	GOTOOLCHAIN=$(shell go version -m -json $(GOLANGCI_LINT) | jq -r .GoVersion) CGO_ENABLED=1 go build -o $(LOGCHECK) -buildmode=plugin github.com/gardener/gardener/hack/tools/logcheck/plugin
 endif
 
 $(MOCKGEN): $(call tool_version_file,$(MOCKGEN),$(MOCKGEN_VERSION))
@@ -228,7 +226,7 @@ $(TYPOS): $(call tool_version_file,$(TYPOS),$(TYPOS_VERSION))
 $(PROTOC_GEN_GOGO): $(call tool_version_file,$(PROTOC_GEN_GOGO),$(CODE_GENERATOR_VERSION))
 	go build -o $(PROTOC_GEN_GOGO) k8s.io/code-generator/cmd/go-to-protobuf/protoc-gen-gogo
 
-ifeq ($(strip $(shell go list -m 2>/dev/null)),github.com/gardener/gardener)
+ifeq ($(IS_GARDENER),true)
 $(REPORT_COLLECTOR): $(TOOLS_PKG_PATH)/report-collector/*.go
 	go build -o $(REPORT_COLLECTOR) $(TOOLS_PKG_PATH)/report-collector
 else
@@ -236,7 +234,7 @@ $(REPORT_COLLECTOR): go.mod
 	go build -o $(REPORT_COLLECTOR) github.com/gardener/gardener/hack/tools/report-collector
 endif
 
-ifeq ($(strip $(shell go list -m 2>/dev/null)),github.com/gardener/gardener)
+ifeq ($(IS_GARDENER),true)
 $(OIDC_METADATA): $(TOOLS_PKG_PATH)/oidcmeta/*.go
 	go build -o $(OIDC_METADATA) $(TOOLS_PKG_PATH)/oidcmeta
 else
@@ -244,7 +242,7 @@ $(OIDC_METADATA): go.mod
 	go build -o $(OIDC_METADATA) github.com/gardener/gardener/hack/tools/oidcmeta
 endif
 
-ifeq ($(strip $(shell go list -m 2>/dev/null)),github.com/gardener/gardener)
+ifeq ($(IS_GARDENER),true)
 $(EXTENSION_GEN): $(TOOLS_PKG_PATH)/extension-generator/*.go
 	go build -o $(EXTENSION_GEN) $(TOOLS_PKG_PATH)/extension-generator
 else
@@ -264,5 +262,9 @@ $(YQ): $(call tool_version_file,$(YQ),$(YQ_VERSION))
 	curl -L -o $(YQ) https://github.com/mikefarah/yq/releases/download/$(YQ_VERSION)/yq_$(SYSTEM_NAME)_$(SYSTEM_ARCH)
 	chmod +x $(YQ)
 
+# TODO(LucaBernstein): Remove VGOPATH after gardener/gardener@v1.142 has been released.
 $(VGOPATH): $(call tool_version_file,$(VGOPATH),$(VGOPATH_VERSION))
 	go build -o $(VGOPATH) github.com/ironcore-dev/vgopath
+
+$(GOBUILDCACHE): $(call tool_version_file,$(GOBUILDCACHE),$(GOBUILDCACHE_VERSION))
+	GOBIN=$(abspath $(TOOLS_BIN_DIR)) go install github.com/saracen/gobuildcache@$(GOBUILDCACHE_VERSION)

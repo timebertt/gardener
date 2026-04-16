@@ -164,7 +164,6 @@ func (k *kubeScheduler) Deploy(ctx context.Context) error {
 
 		port           int32 = 10259
 		probeURIScheme       = corev1.URISchemeHTTPS
-		env                  = k.computeEnvironmentVariables()
 		command              = k.computeCommand(port)
 	)
 
@@ -253,7 +252,6 @@ func (k *kubeScheduler) Deploy(ctx context.Context) error {
 								Protocol:      corev1.ProtocolTCP,
 							},
 						},
-						Env: env,
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse("10m"),
@@ -355,10 +353,15 @@ func (k *kubeScheduler) Deploy(ctx context.Context) error {
 			UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 		}
 		vpa.Spec.ResourcePolicy = &vpaautoscalingv1.PodResourcePolicy{
-			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-				ContainerName:    vpaautoscalingv1.DefaultContainerResourcePolicy,
-				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-			}},
+			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+				{
+					ContainerName:    containerName,
+					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff)},
+			},
 		}
 		return nil
 	}); err != nil {
@@ -446,13 +449,19 @@ func (k *kubeScheduler) Deploy(ctx context.Context) error {
 		serviceMonitor.Spec = monitoringv1.ServiceMonitorSpec{
 			Selector: metav1.LabelSelector{MatchLabels: getLabels()},
 			Endpoints: []monitoringv1.Endpoint{{
-				Port:      portNameMetrics,
-				Scheme:    "https",
-				TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: shoot.AccessSecretName},
-					Key:                  resourcesv1alpha1.DataKeyToken,
-				}},
+				Port:   portNameMetrics,
+				Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+				HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+					HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+						TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+						HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+							Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: shoot.AccessSecretName},
+								Key:                  resourcesv1alpha1.DataKeyToken,
+							}},
+						},
+					},
+				},
 				RelabelConfigs: []monitoringv1.RelabelConfig{{
 					Action: "labelmap",
 					Regex:  `__meta_kubernetes_service_label_(.+)`,
@@ -557,16 +566,6 @@ func (k *kubeScheduler) reconcileShootResources(ctx context.Context, serviceAcco
 	}
 
 	return managedresources.CreateForShoot(ctx, k.client, k.namespace, managedResourceName, managedresources.LabelValueGardener, false, data)
-}
-
-func (k *kubeScheduler) computeEnvironmentVariables() []corev1.EnvVar {
-	if k.config != nil && k.config.KubeMaxPDVols != nil {
-		return []corev1.EnvVar{{
-			Name:  "KUBE_MAX_PD_VOLS",
-			Value: *k.config.KubeMaxPDVols,
-		}}
-	}
-	return nil
 }
 
 func (k *kubeScheduler) computeComponentConfig() (string, error) {

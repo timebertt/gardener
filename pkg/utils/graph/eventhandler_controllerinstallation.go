@@ -44,7 +44,7 @@ func (g *graph) setupControllerInstallationWatch(_ context.Context, informer cac
 				newDeploymentRef = newControllerInstallation.Spec.DeploymentRef.Name
 			}
 
-			if oldControllerInstallation.Spec.SeedRef.Name != newControllerInstallation.Spec.SeedRef.Name ||
+			if (oldControllerInstallation.Spec.SeedRef != nil && newControllerInstallation.Spec.SeedRef != nil && oldControllerInstallation.Spec.SeedRef.Name != newControllerInstallation.Spec.SeedRef.Name) ||
 				oldControllerInstallation.Spec.RegistrationRef.Name != newControllerInstallation.Spec.RegistrationRef.Name ||
 				oldDeploymentRef != newDeploymentRef {
 				g.handleControllerInstallationCreateOrUpdate(newControllerInstallation)
@@ -77,12 +77,20 @@ func (g *graph) handleControllerInstallationCreateOrUpdate(controllerInstallatio
 
 	var (
 		controllerInstallationVertex = g.getOrCreateVertex(VertexTypeControllerInstallation, "", controllerInstallation.Name)
-		seedVertex                   = g.getOrCreateVertex(VertexTypeSeed, "", controllerInstallation.Spec.SeedRef.Name)
 		controllerRegistrationVertex = g.getOrCreateVertex(VertexTypeControllerRegistration, "", controllerInstallation.Spec.RegistrationRef.Name)
 	)
 
 	g.addEdge(controllerRegistrationVertex, controllerInstallationVertex)
-	g.addEdge(controllerInstallationVertex, seedVertex)
+
+	if controllerInstallation.Spec.SeedRef != nil {
+		seedVertex := g.getOrCreateVertex(VertexTypeSeed, "", controllerInstallation.Spec.SeedRef.Name)
+		g.addEdge(controllerInstallationVertex, seedVertex)
+	}
+
+	if controllerInstallation.Spec.ShootRef != nil {
+		shootVertex := g.getOrCreateVertex(VertexTypeShoot, controllerInstallation.Spec.ShootRef.Namespace, controllerInstallation.Spec.ShootRef.Name)
+		g.addEdge(controllerInstallationVertex, shootVertex)
+	}
 
 	if controllerInstallation.Spec.DeploymentRef != nil {
 		controllerDeploymentVertex := g.getOrCreateVertex(VertexTypeControllerDeployment, "", controllerInstallation.Spec.DeploymentRef.Name)

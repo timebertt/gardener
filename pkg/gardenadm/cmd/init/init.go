@@ -12,14 +12,18 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"k8s.io/utils/ptr"
 
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	seedsystem "github.com/gardener/gardener/pkg/component/seed/system"
 	gardenerextensions "github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/gardenadm/botanist"
 	"github.com/gardener/gardener/pkg/gardenadm/cmd"
 	"github.com/gardener/gardener/pkg/utils/flow"
+	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 )
 
 // NewCommand creates a new cobra.Command.
@@ -32,7 +36,10 @@ func NewCommand(globalOpts *cmd.Options) *cobra.Command {
 		Long:  "Bootstrap the first control plane node",
 
 		Example: `# Bootstrap the first control plane node
-gardenadm init --config-dir /path/to/manifests`,
+gardenadm init --config-dir /path/to/manifests
+
+# Bootstrap the first control plane node in a specific zone (required when multiple zones are configured in the ` + "`Shoot`" + ` resource)
+gardenadm init --config-dir /path/to/manifests --zone zone-a`,
 
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := opts.ParseArgs(args); err != nil {
@@ -75,20 +82,33 @@ func run(ctx context.Context, opts *Options) error {
 		return fmt.Errorf("failed checking whether pod network is already available: %w", err)
 	}
 
+	// If the self-hosted shoot is also the garden runtime cluster, then gardener-operator is taking over
+	// responsibility of some components (e.g., etcd-druid). Detect this by checking whether a Garden resource exists.
+	shootIsGarden, err := gardenletutils.ClusterIsGarden(ctx, b.SeedClientSet.Client())
+	if err != nil {
+		return fmt.Errorf("failed checking whether shoot is garden: %w", err)
+	}
+
 	var (
 		g                = flow.NewGraph("init")
 		allowBackup      = v1beta1helper.GetBackupConfigForShoot(b.Shoot.GetInfo(), nil) != nil
 		kubeProxyEnabled = v1beta1helper.KubeProxyEnabled(b.Shoot.GetInfo().Spec.Kubernetes.KubeProxy)
 
-		deployNamespace = g.Add(flow.Task{
+		deployControlPlaneNamespace = g.Add(flow.Task{
 			Name: "Deploying control plane namespace",
 			Fn:   b.DeployControlPlaneNamespace,
+		})
+		deployGardenNamespace = g.Add(flow.Task{
+			Name: "Deploying garden namespace",
+			Fn: func(ctx context.Context) error {
+				return gardenerutils.ReconcileGardenNamespace(ctx, b.SeedClientSet.Client(), v1beta1constants.GardenNamespace, b.Seed.GetInfo().Spec.Provider.Zones, true, nil)
+			},
 		})
 		deployCloudProviderSecret = g.Add(flow.Task{
 			Name:         "Deploying cloud provider account secret",
 			Fn:           b.DeployCloudProviderSecret,
 			SkipIf:       b.Shoot.Credentials == nil,
-			Dependencies: flow.NewTaskIDs(deployNamespace),
+			Dependencies: flow.NewTaskIDs(deployControlPlaneNamespace),
 		})
 		reconcileCustomResourceDefinitions = g.Add(flow.Task{
 			Name: "Reconciling CustomResourceDefinitions",
@@ -124,14 +144,32 @@ func run(ctx context.Context, opts *Options) error {
 		deployGardenerResourceManager = g.Add(flow.Task{
 			Name: "Deploying gardener-resource-manager",
 			Fn: func(ctx context.Context) error {
+				b.Components.RuntimeResourceManager.SetBootstrapControlPlaneNode(!podNetworkAvailable)
 				b.Shoot.Components.ControlPlane.ResourceManager.SetBootstrapControlPlaneNode(!podNetworkAvailable)
-				return b.Shoot.Components.ControlPlane.ResourceManager.Deploy(ctx)
+
+				if shootIsGarden {
+					return b.Shoot.Components.ControlPlane.ResourceManager.Deploy(ctx)
+				}
+
+				return flow.Parallel(
+					b.Components.RuntimeResourceManager.Deploy,
+					b.Shoot.Components.ControlPlane.ResourceManager.Deploy,
+				)(ctx)
 			},
-			Dependencies: flow.NewTaskIDs(approveGardenerNodeAgentCSR),
+			Dependencies: flow.NewTaskIDs(approveGardenerNodeAgentCSR, deployGardenNamespace),
 		})
 		waitUntilGardenerResourceManagerReady = g.Add(flow.Task{
-			Name:         "Waiting until gardener-resource-manager reports readiness",
-			Fn:           b.Shoot.Components.ControlPlane.ResourceManager.Wait,
+			Name: "Waiting until gardener-resource-manager reports readiness",
+			Fn: func(ctx context.Context) error {
+				if shootIsGarden {
+					return b.Shoot.Components.ControlPlane.ResourceManager.Wait(ctx)
+				}
+
+				return flow.Parallel(
+					b.Components.RuntimeResourceManager.Wait,
+					b.Shoot.Components.ControlPlane.ResourceManager.Wait,
+				)(ctx)
+			},
 			Dependencies: flow.NewTaskIDs(deployGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
@@ -215,15 +253,33 @@ func run(ctx context.Context, opts *Options) error {
 		deployGardenerResourceManagerIntoPodNetwork = g.Add(flow.Task{
 			Name: "Redeploying gardener-resource-manager into pod network",
 			Fn: func(ctx context.Context) error {
+				b.Components.RuntimeResourceManager.SetBootstrapControlPlaneNode(false)
 				b.Shoot.Components.ControlPlane.ResourceManager.SetBootstrapControlPlaneNode(false)
-				return b.Shoot.Components.ControlPlane.ResourceManager.Deploy(ctx)
+
+				if shootIsGarden {
+					return b.Shoot.Components.ControlPlane.ResourceManager.Deploy(ctx)
+				}
+
+				return flow.Parallel(
+					b.Components.RuntimeResourceManager.Deploy,
+					b.Shoot.Components.ControlPlane.ResourceManager.Deploy,
+				)(ctx)
 			},
 			SkipIf:       podNetworkAvailable,
 			Dependencies: flow.NewTaskIDs(waitUntilCoreDNSReady),
 		})
 		waitUntilGardenerResourceManagerInPodNetworkReady = g.Add(flow.Task{
-			Name:         "Waiting until gardener-resource-manager (in pod network) reports readiness",
-			Fn:           b.Shoot.Components.ControlPlane.ResourceManager.Wait,
+			Name: "Waiting until gardener-resource-manager (in pod network) reports readiness",
+			Fn: func(ctx context.Context) error {
+				if shootIsGarden {
+					return b.Shoot.Components.ControlPlane.ResourceManager.Wait(ctx)
+				}
+
+				return flow.Parallel(
+					b.Components.RuntimeResourceManager.Wait,
+					b.Shoot.Components.ControlPlane.ResourceManager.Wait,
+				)(ctx)
+			},
 			SkipIf:       podNetworkAvailable,
 			Dependencies: flow.NewTaskIDs(deployGardenerResourceManagerIntoPodNetwork),
 		})
@@ -260,13 +316,13 @@ func run(ctx context.Context, opts *Options) error {
 		reconcileBackupBucket = g.Add(flow.Task{
 			Name:         "Deploying BackupBucket for ETCD data",
 			Fn:           b.ReconcileBackupBucket,
-			SkipIf:       !allowBackup,
+			SkipIf:       !allowBackup || opts.UseBootstrapEtcd,
 			Dependencies: flow.NewTaskIDs(syncPointBootstrapped),
 		})
 		reconcileBackupEntry = g.Add(flow.Task{
 			Name:         "Deploying BackupEntry for ETCD data",
 			Fn:           b.ReconcileBackupEntry,
-			SkipIf:       !allowBackup,
+			SkipIf:       !allowBackup || opts.UseBootstrapEtcd,
 			Dependencies: flow.NewTaskIDs(reconcileBackupBucket),
 		})
 		deployControlPlane = g.Add(flow.Task{
@@ -282,16 +338,28 @@ func run(ctx context.Context, opts *Options) error {
 		deployEtcdDruid = g.Add(flow.Task{
 			Name:         "Deploying ETCD Druid",
 			Fn:           b.DeployEtcdDruid,
+			SkipIf:       opts.UseBootstrapEtcd || shootIsGarden,
 			Dependencies: flow.NewTaskIDs(syncPointBootstrapped),
 		})
 		deployEtcds = g.Add(flow.Task{
-			Name:         "Deploying main and events ETCDs",
-			Fn:           b.DeployEtcd,
+			Name: "Deploying main and events ETCDs",
+			Fn: func(ctx context.Context) error {
+				machineIP, err := b.MachineIP()
+				if err != nil {
+					return fmt.Errorf("failed determining the machine IP address")
+				}
+
+				b.Shoot.Components.ControlPlane.EtcdMain.SetStaticPodControlPlaneNodesIPAddresses(machineIP)
+				b.Shoot.Components.ControlPlane.EtcdEvents.SetStaticPodControlPlaneNodesIPAddresses(machineIP)
+				return b.DeployEtcd(ctx)
+			},
+			SkipIf:       opts.UseBootstrapEtcd,
 			Dependencies: flow.NewTaskIDs(deployEtcdDruid, reconcileBackupEntry),
 		})
 		waitUntilEtcdsReady = g.Add(flow.Task{
 			Name:         "Waiting until main and event ETCDs have been reconciled",
 			Fn:           b.WaitUntilEtcdsReconciled,
+			SkipIf:       opts.UseBootstrapEtcd,
 			Dependencies: flow.NewTaskIDs(deployEtcds),
 		})
 		deployControlPlaneDeployments = g.Add(flow.Task{
@@ -300,24 +368,78 @@ func run(ctx context.Context, opts *Options) error {
 			Dependencies: flow.NewTaskIDs(waitUntilControlPlaneReady, waitUntilEtcdsReady),
 		})
 		waitUntilControlPlaneDeploymentsReady = g.Add(flow.Task{
-			Name:         "Waiting until control plane components (static pods) are ready",
-			Fn:           b.WaitUntilControlPlaneDeploymentsReady,
+			Name: "Waiting until control plane components (static pods) are ready",
+			Fn: func(ctx context.Context) error {
+				return b.WaitUntilOperatingSystemConfigUpdatedForAllWorkerPools(ctx, true)
+			},
 			Dependencies: flow.NewTaskIDs(deployControlPlaneDeployments),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Finalizing ETCD bootstrap transition (cleanup bootstrap ETCD left-overs)",
 			Fn:           b.FinalizeEtcdBootstrapTransition,
+			SkipIf:       opts.UseBootstrapEtcd,
 			Dependencies: flow.NewTaskIDs(waitUntilControlPlaneDeploymentsReady),
 		})
+		// A lot of health checks rely on the kube-controller-manager being active. It might take some time after the
+		// etcd migration for the kube-controller-manager to become active again, so we explicitly wait for that here.
+		waitUntilKubeControllerManagerIsActive = g.Add(flow.Task{
+			Name: "Waiting until kube-controller-manager is active",
+			Fn: flow.TaskFn(func(ctx context.Context) error {
+				b.Shoot.Components.ControlPlane.KubeControllerManager.SetShootClient(b.SeedClientSet.Client())
+				return b.Shoot.Components.ControlPlane.KubeControllerManager.WaitForControllerToBeActive(ctx)
+			}).RetryUntilTimeout(time.Second, 5*time.Minute),
+			Dependencies: flow.NewTaskIDs(waitUntilControlPlaneDeploymentsReady),
+		})
+		// During the migration from the bootstrap etcds to the druid-managed etcds, components serving webhooks might be
+		// crash-looping while retrying to connect to the API server. Therefore, we explicitly wait for them to be healthy
+		// again before deploying other components.
+		waitUntilWebhookComponentsReady = g.Add(flow.Task{
+			Name: "Waiting until components with webhooks are ready",
+			Fn: flow.Sequential(
+				flow.Parallel(
+					b.Components.RuntimeResourceManager.Wait,
+					b.Shoot.Components.ControlPlane.ResourceManager.Wait,
+				),
+				b.WaitUntilExtensionControllerInstallationsHealthy,
+			).RetryUntilTimeout(time.Second, 5*time.Minute),
+			Dependencies: flow.NewTaskIDs(waitUntilKubeControllerManagerIsActive),
+		})
+		deployMachineControllerManager = g.Add(flow.Task{
+			Name:         "Deploying machine-controller-manager",
+			Fn:           flow.TaskFn(b.DeployMachineControllerManager).RetryUntilTimeout(time.Second, time.Minute),
+			SkipIf:       !b.Shoot.HasManagedInfrastructure(),
+			Dependencies: flow.NewTaskIDs(waitUntilWebhookComponentsReady),
+		})
+		deployWorker = g.Add(flow.Task{
+			Name:         "Deploying shoot worker pools",
+			Fn:           b.DeployWorker,
+			SkipIf:       !b.Shoot.HasManagedInfrastructure(),
+			Dependencies: flow.NewTaskIDs(deployMachineControllerManager),
+		})
+		waitUntilWorkerReady = g.Add(flow.Task{
+			Name:         "Waiting until shoot worker nodes have been reconciled",
+			Fn:           b.Shoot.Components.Extensions.Worker.Wait,
+			SkipIf:       !b.Shoot.HasManagedInfrastructure(),
+			Dependencies: flow.NewTaskIDs(deployWorker),
+		})
+		// We need to deploy the worker before activating the node-agent-authorizer. Without the machine objects,
+		// the node-agent-authorizer would reject requests from gardener-node-agent because it cannot find a corresponding
+		// machine for them.
 		finalizeGardenerNodeAgentBootstrapping = g.Add(flow.Task{
 			Name:         "Finalizing gardener-node-agent bootstrapping (remove cluster-admin access, activate node-agent authorizer)",
 			Fn:           b.FinalizeGardenerNodeAgentBootstrapping,
-			Dependencies: flow.NewTaskIDs(waitUntilControlPlaneDeploymentsReady),
+			Dependencies: flow.NewTaskIDs(waitUntilWorkerReady),
 		})
-		_ = g.Add(flow.Task{
+		waitUntilGardenerNodeAgentLeaseIsRenewed = g.Add(flow.Task{
 			Name:         "Waiting until gardener-node-agent lease is renewed",
 			Fn:           b.WaitUntilGardenerNodeAgentLeaseIsRenewed,
 			Dependencies: flow.NewTaskIDs(finalizeGardenerNodeAgentBootstrapping),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deploying cluster-autoscaler",
+			Fn:           b.DeployClusterAutoscaler,
+			SkipIf:       !b.Shoot.HasManagedInfrastructure(),
+			Dependencies: flow.NewTaskIDs(waitUntilGardenerNodeAgentLeaseIsRenewed),
 		})
 	)
 
@@ -370,6 +492,10 @@ func bootstrapControlPlane(ctx context.Context, opts *Options) (*botanist.Garden
 		return nil, err
 	}
 
+	if opts.Zone != "" {
+		b.Zone = ptr.To(opts.Zone)
+	}
+
 	kubeconfigFileExists, err := b.FS.Exists(botanist.PathKubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed checking whether kubeconfig file %s exists: %w", botanist.PathKubeconfig, err)
@@ -386,7 +512,7 @@ func bootstrapControlPlane(ctx context.Context, opts *Options) (*botanist.Garden
 		initializeSecretsManagement = g.Add(flow.Task{
 			Name:   "Initializing secrets management",
 			Fn:     b.InitializeSecretsManagement,
-			SkipIf: kubeconfigFileExists,
+			SkipIf: kubeconfigFileExists && !b.IsRestorePhase(),
 		})
 		writeKubeletBootstrapKubeconfig = g.Add(flow.Task{
 			Name:         "Writing kubelet bootstrap kubeconfig with a fake token to disk to make kubelet start",
@@ -400,27 +526,38 @@ func bootstrapControlPlane(ctx context.Context, opts *Options) (*botanist.Garden
 			SkipIf:       kubeconfigFileExists,
 			Dependencies: flow.NewTaskIDs(initializeSecretsManagement),
 		})
+		persistBootstrapSecrets = g.Add(flow.Task{
+			Name: "Persisting bootstrap secrets as ShootState for retry resilience",
+			Fn: func(ctx context.Context) error {
+				return b.PersistBootstrapSecrets(ctx, opts.ConfigDir)
+			},
+			SkipIf:       b.IsRestorePhase(),
+			Dependencies: flow.NewTaskIDs(deployOperatingSystemConfigSecretForNodeAgent),
+		})
 		applyOperatingSystemConfig = g.Add(flow.Task{
 			Name:         "Applying OperatingSystemConfig using gardener-node-agent's reconciliation logic",
 			Fn:           b.ApplyOperatingSystemConfig,
 			SkipIf:       kubeconfigFileExists,
-			Dependencies: flow.NewTaskIDs(writeKubeletBootstrapKubeconfig, deployOperatingSystemConfigSecretForNodeAgent),
+			Dependencies: flow.NewTaskIDs(writeKubeletBootstrapKubeconfig, persistBootstrapSecrets),
 		})
 		initializeClientSet = g.Add(flow.Task{
 			Name: "Initializing connection to Kubernetes control plane",
 			Fn: flow.TaskFn(func(_ context.Context) error {
 				clientSet, err = b.CreateClientSet(ctx)
 				return err
-			}).RetryUntilTimeout(2*time.Second, time.Minute),
+			}).RetryUntilTimeout(2*time.Second, 2*time.Minute),
 			Dependencies: flow.NewTaskIDs(applyOperatingSystemConfig),
 		})
 		_ = g.Add(flow.Task{
 			Name: "Importing secrets into control plane",
 			Fn: func(ctx context.Context) error {
-				return b.MigrateSecrets(ctx, b.SeedClientSet.Client(), clientSet.Client())
+				if err := b.MigrateSecrets(ctx, b.SeedClientSet.Client(), clientSet.Client()); err != nil {
+					return err
+				}
+				return b.CleanupBootstrapSecrets(opts.ConfigDir)
 			},
-			SkipIf:       kubeconfigFileExists,
-			Dependencies: flow.NewTaskIDs(initializeClientSet),
+			SkipIf:       kubeconfigFileExists && !b.IsRestorePhase(),
+			Dependencies: flow.NewTaskIDs(persistBootstrapSecrets, initializeClientSet),
 		})
 	)
 

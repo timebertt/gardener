@@ -6,21 +6,20 @@ package genericactuator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
 	extensionsworkercontroller "github.com/gardener/gardener/extensions/pkg/controller/worker"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/utils/flow"
 	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
 )
 
@@ -48,16 +47,10 @@ func RestoreWithoutReconcile(
 		return fmt.Errorf("failed to generate the machine deployments: %w", err)
 	}
 
-	// Get the list of all existing machine deployments.
-	existingMachineDeployments := &machinev1alpha1.MachineDeploymentList{}
-	if err := seedClient.List(ctx, existingMachineDeployments, client.InNamespace(worker.Namespace)); err != nil {
-		return err
-	}
-
 	// Parse the worker state to a separate machineDeployment states and attach them to
 	// the corresponding machineDeployments which are to be deployed later
 	log.Info("Extracting machine state")
-	if err := addStateToMachineDeployment(ctx, log, gardenReader, cluster.Shoot, wantedMachineDeployments); err != nil {
+	if err := addStateToMachineDeployment(ctx, log, gardenReader, cluster.Shoot, worker, wantedMachineDeployments); err != nil {
 		return err
 	}
 
@@ -71,6 +64,12 @@ func RestoreWithoutReconcile(
 	// Do the actual restoration
 	if err := restoreMachineSetsAndMachines(ctx, log, seedClient, wantedMachineDeployments); err != nil {
 		return fmt.Errorf("failed restoration of the machineSet and the machines: %w", err)
+	}
+
+	// Get the list of all existing machine deployments.
+	existingMachineDeployments := &machinev1alpha1.MachineDeploymentList{}
+	if err := seedClient.List(ctx, existingMachineDeployments, client.InNamespace(worker.Namespace)); err != nil {
+		return err
 	}
 
 	// Generate machine deployment configuration based on previously computed list of deployments and deploy them.
@@ -103,35 +102,42 @@ func addStateToMachineDeployment(
 	log logr.Logger,
 	gardenReader client.Reader,
 	shoot *gardencorev1beta1.Shoot,
+	worker *extensionsv1alpha1.Worker,
 	wantedMachineDeployments extensionsworkercontroller.MachineDeployments,
 ) error {
 	var state []byte
 
-	// We use the `gardenReader` here to prevent controller-runtime from trying to cache/list the ShootStates.
-	shootState := &gardencorev1beta1.ShootState{ObjectMeta: metav1.ObjectMeta{Name: shoot.Name, Namespace: shoot.Namespace}}
-	if err := gardenReader.Get(ctx, client.ObjectKeyFromObject(shootState), shootState); err != nil {
-		return err
-	}
+	if worker.Status.State != nil && len(worker.Status.State.Raw) > 0 {
+		log.Info("Reading machine state from Worker status")
+		state = worker.Status.State.Raw
+	} else {
+		// TODO(timebertt): Remove this fallback logic after a few gardener releases.
+		if gardenReader == nil {
+			return fmt.Errorf("cannot fetch machine state from ShootState because garden client is missing")
+		}
 
-	gardenerData := v1beta1helper.GardenerResourceDataList(shootState.Spec.Gardener)
-	if machineState := gardenerData.Get(v1beta1constants.DataTypeMachineState); machineState != nil && machineState.Type == v1beta1constants.DataTypeMachineState {
-		log.Info("Fetching machine state from ShootState succeeded", "shootState", client.ObjectKeyFromObject(shootState))
-		var err error
-		state, err = shootstate.DecompressMachineState(machineState.Data.Raw)
-		if err != nil {
-			return err
+		shootState := &gardencorev1beta1.ShootState{ObjectMeta: metav1.ObjectMeta{Name: shoot.Name, Namespace: shoot.Namespace}}
+		log.Info("Reading machine state from ShootState as fallback", "shootState", client.ObjectKeyFromObject(shootState))
+
+		// We use the `gardenReader` here to prevent controller-runtime from trying to cache/list the ShootStates.
+		if err := gardenReader.Get(ctx, client.ObjectKeyFromObject(shootState), shootState); err != nil {
+			return fmt.Errorf("failed reading ShootState %q from garden: %w", client.ObjectKeyFromObject(shootState), err)
+		}
+
+		gardenerData := v1beta1helper.GardenerResourceDataList(shootState.Spec.Gardener)
+		if machineState := gardenerData.Get(v1beta1constants.DataTypeMachineState); machineState != nil && machineState.Type == v1beta1constants.DataTypeMachineState {
+			state = machineState.Data.Raw
 		}
 	}
 
-	if len(state) == 0 {
-		log.Info("Machine state is empty, no state to add")
-		return nil
+	machineState, err := shootstate.UnmarshalMachineState(state)
+	if err != nil {
+		return err
 	}
 
-	// Parse the worker state to MachineDeploymentStates
-	machineState := &shootstate.MachineState{MachineDeployments: make(map[string]*shootstate.MachineDeploymentState)}
-	if err := json.Unmarshal(state, &machineState); err != nil {
-		return err
+	if len(machineState.MachineDeployments) == 0 {
+		log.Info("Machine state is empty, no state to add")
+		return nil
 	}
 
 	// Attach the parsed MachineDeploymentStates to the wanted MachineDeployments
@@ -144,23 +150,29 @@ func addStateToMachineDeployment(
 
 func restoreMachineSetsAndMachines(ctx context.Context, log logr.Logger, cl client.Client, wantedMachineDeployments extensionsworkercontroller.MachineDeployments) error {
 	log.Info("Deploying Machines and MachineSets")
+
+	var taskFns []flow.TaskFn
 	for _, wantedMachineDeployment := range wantedMachineDeployments {
 		for _, machineSet := range wantedMachineDeployment.State.MachineSets {
-			if err := cl.Create(ctx, &machineSet); client.IgnoreAlreadyExists(err) != nil {
-				return err
-			}
+			taskFns = append(taskFns, func(ctx context.Context) error {
+				if err := client.IgnoreAlreadyExists(cl.Create(ctx, &machineSet)); err != nil {
+					return fmt.Errorf("could not restore MachineSet '%s': %w", client.ObjectKeyFromObject(&machineSet), err)
+				}
+				return nil
+			})
 		}
 
 		for _, machine := range wantedMachineDeployment.State.Machines {
-			if err := cl.Create(ctx, &machine); err != nil {
-				if !apierrors.IsAlreadyExists(err) {
-					return err
+			taskFns = append(taskFns, func(ctx context.Context) error {
+				if err := client.IgnoreAlreadyExists(cl.Create(ctx, &machine)); err != nil {
+					return fmt.Errorf("could not restore Machine '%s': %w", client.ObjectKeyFromObject(&machine), err)
 				}
-			}
+				return nil
+			})
 		}
 	}
 
-	return nil
+	return flow.ParallelN(maxConcurrentMachineTasks, taskFns...)(ctx)
 }
 
 func removeWantedDeploymentWithoutState(wantedMachineDeployments extensionsworkercontroller.MachineDeployments) extensionsworkercontroller.MachineDeployments {

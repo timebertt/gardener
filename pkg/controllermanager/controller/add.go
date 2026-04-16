@@ -11,8 +11,8 @@ import (
 	kubernetesclientset "k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/bastion"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/certificatesigningrequest"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/cloudprofile"
@@ -107,7 +107,7 @@ func AddToManager(ctx context.Context, mgr manager.Manager, cfg *controllermanag
 		return fmt.Errorf("failed adding ManagedSeedSet controller: %w", err)
 	}
 
-	if err := project.AddToManager(mgr, *cfg); err != nil {
+	if err := project.AddToManager(ctx, mgr, *cfg); err != nil {
 		return fmt.Errorf("failed adding Project controller: %w", err)
 	}
 

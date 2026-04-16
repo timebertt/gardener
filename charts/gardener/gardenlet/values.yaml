@@ -1,5 +1,6 @@
 replicaCount: 2
 revisionHistoryLimit: 2
+isolateClusterResources: false
 serviceAccountName: gardenlet
 invalidateServiceAccountToken: true
 image:
@@ -135,6 +136,7 @@ config:
       concurrentSyncs: 5
     tokenRequestorWorkloadIdentity:
       concurrentSyncs: 5
+    # tokenExpirationDuration: 6h  
     vpaEvictionRequirements:
       concurrentSyncs: 5
   resources:
@@ -199,6 +201,14 @@ config:
 #     etcdConnectionTimeout: 5s
 # logging:
 #   enabled: false
+#   vali:
+#     enabled: true
+#     garden:
+#       storage: "100Gi"
+#   victoriaLogs:
+#     enabled: true
+#     garden:
+#       storage: "100Gi"
 # monitoring:
 #   shoot:
 #     remoteWrite:
@@ -215,6 +225,7 @@ config:
 nodeToleration:
   defaultNotReadyTolerationSeconds: 60
   defaultUnreachableTolerationSeconds: 60
+tolerations: []
 
 #selfUpgrade:
 #  deployment:

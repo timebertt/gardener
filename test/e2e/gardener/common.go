@@ -14,7 +14,7 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 )
 
 // DefaultManagedSeedName returns the name of the managed seed used in e2e tests
@@ -38,7 +38,7 @@ func baseShoot(name string) *gardencorev1beta1.Shoot {
 				Name: "local",
 			},
 			Kubernetes: gardencorev1beta1.Kubernetes{
-				Version:       "1.33.0",
+				Version:       "1.34",
 				KubeAPIServer: &gardencorev1beta1.KubeAPIServerConfig{},
 			},
 			Provider: gardencorev1beta1.Provider{
@@ -60,7 +60,7 @@ func DefaultShoot(name string) *gardencorev1beta1.Shoot {
 	metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, v1beta1constants.AnnotationShootCloudConfigExecutionMaxDelaySeconds, "0")
 	metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, v1beta1constants.AnnotationAuthenticationIssuer, v1beta1constants.AnnotationAuthenticationIssuerManaged)
 
-	shoot.Spec.SecretBindingName = ptr.To("local")
+	shoot.Spec.CredentialsBindingName = ptr.To("local")
 	shoot.Spec.Kubernetes.Kubelet = &gardencorev1beta1.KubeletConfig{
 		SerializeImagePulls: ptr.To(false),
 		RegistryPullQPS:     ptr.To[int32](10),

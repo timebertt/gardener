@@ -23,6 +23,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
@@ -32,8 +33,6 @@ import (
 	mockresourcemanager "github.com/gardener/gardener/pkg/component/gardener/resourcemanager/mock"
 	mockkubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/mock"
 	"github.com/gardener/gardener/pkg/component/shared"
-	"github.com/gardener/gardener/pkg/features"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/operation"
 	. "github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
@@ -73,16 +72,22 @@ var _ = Describe("ResourceManager", func() {
 			botanist.Shoot = &shootpkg.Shoot{
 				KubernetesVersion:     semver.MustParse("1.32.1"),
 				ExternalClusterDomain: ptr.To("foo.local.gardener.cloud"),
+				ControlPlaneNamespace: "shoot--foo--bar",
 			}
-			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{})
+			botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					CredentialsBindingName: ptr.To("foo-credentials"),
+				},
+			})
 		})
 
 		It("should successfully create a resource-manager component", func() {
 			resourceManager, err := botanist.DefaultResourceManager()
 			Expect(resourceManager).NotTo(BeNil())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(resourceManager.GetValues().PodTopologySpreadConstraintsEnabled).To(BeFalse())
 
+			Expect(resourceManager.GetValues().PodTopologySpreadConstraintsEnabled).To(BeFalse())
+			Expect(resourceManager.GetValues().MachineNamespace).To(HaveValue(Equal("shoot--foo--bar")))
 		})
 
 		It("should consider node toleration configuration", func() {
@@ -146,71 +151,40 @@ var _ = Describe("ResourceManager", func() {
 			Expect(resourceManager.GetValues().NodeAgentAuthorizerAuthorizeWithSelectors).To(PointTo(Equal(true)))
 		})
 
-		When("VPAInPlaceUpdates feature gate is enabled", func() {
+		Context("self-hosted shoots", func() {
 			BeforeEach(func() {
-				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VPAInPlaceUpdates, true))
+				shoot := botanist.Shoot.GetInfo()
+				shoot.Spec.Provider.Workers = []gardencorev1beta1.Worker{{
+					Name:         "control-plane",
+					ControlPlane: &gardencorev1beta1.WorkerControlPlane{},
+				}}
+				botanist.Shoot.SetInfo(shoot)
+				botanist.Shoot.ControlPlaneNamespace = "kube-system"
 			})
 
-			Context("without feature gates", func() {
-				BeforeEach(func() {
-					botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
-						Spec: gardencorev1beta1.ShootSpec{
-							Kubernetes: gardencorev1beta1.Kubernetes{
-								VerticalPodAutoscaler: &gardencorev1beta1.VerticalPodAutoscaler{
-									FeatureGates: nil,
-								},
-							},
-						},
-					})
-				})
-
-				It("should set VPAInPlaceUpdatesEnabled=true", func() {
+			Context("managed infrastructure", func() {
+				It("should correctly configure the resource-manager component", func() {
 					resourceManager, err := botanist.DefaultResourceManager()
 					Expect(resourceManager).NotTo(BeNil())
 					Expect(err).NotTo(HaveOccurred())
-					Expect(resourceManager.GetValues().VPAInPlaceUpdatesEnabled).To(BeTrue())
+
+					Expect(resourceManager.GetValues().MachineNamespace).To(HaveValue(Equal("kube-system")))
 				})
 			})
 
-			Context("with Shoot Vertical Pod Autoscaler InPlaceOrRecreate feature gate enabled", func() {
+			Context("unmanaged infrastructure", func() {
 				BeforeEach(func() {
-					botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
-						Spec: gardencorev1beta1.ShootSpec{
-							Kubernetes: gardencorev1beta1.Kubernetes{
-								VerticalPodAutoscaler: &gardencorev1beta1.VerticalPodAutoscaler{
-									FeatureGates: map[string]bool{"InPlaceOrRecreate": true},
-								},
-							},
-						},
-					})
+					shoot := botanist.Shoot.GetInfo()
+					shoot.Spec.CredentialsBindingName = nil
+					botanist.Shoot.SetInfo(shoot)
 				})
 
-				It("should set VPAInPlaceUpdatesEnabled=true", func() {
+				It("should correctly configure the resource-manager component", func() {
 					resourceManager, err := botanist.DefaultResourceManager()
 					Expect(resourceManager).NotTo(BeNil())
 					Expect(err).NotTo(HaveOccurred())
-					Expect(resourceManager.GetValues().VPAInPlaceUpdatesEnabled).To(BeTrue())
-				})
-			})
 
-			Context("with Shoot Vertical Pod Autoscaler InPlaceOrRecreate feature gate disabled", func() {
-				BeforeEach(func() {
-					botanist.Shoot.SetInfo(&gardencorev1beta1.Shoot{
-						Spec: gardencorev1beta1.ShootSpec{
-							Kubernetes: gardencorev1beta1.Kubernetes{
-								VerticalPodAutoscaler: &gardencorev1beta1.VerticalPodAutoscaler{
-									FeatureGates: map[string]bool{"InPlaceOrRecreate": false},
-								},
-							},
-						},
-					})
-				})
-
-				It("should set VPAInPlaceUpdatesEnabled=false", func() {
-					resourceManager, err := botanist.DefaultResourceManager()
-					Expect(resourceManager).NotTo(BeNil())
-					Expect(err).NotTo(HaveOccurred())
-					Expect(resourceManager.GetValues().VPAInPlaceUpdatesEnabled).To(BeFalse())
+					Expect(resourceManager.GetValues().MachineNamespace).To(BeNil())
 				})
 			})
 		})
@@ -457,13 +431,6 @@ var _ = Describe("ResourceManager", func() {
 							return nil
 						}),
 
-						// delete bootstrap kubeconfig
-						c.EXPECT().Delete(ctx, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, obj *corev1.Secret, _ ...client.DeleteOption) error {
-							Expect(obj.Name).To(Equal(bootstrapKubeconfigSecret.Name))
-							Expect(obj.Namespace).To(Equal(bootstrapKubeconfigSecret.Namespace))
-							return nil
-						}),
-
 						// set secrets and deploy with shoot access token
 						resourceManager.EXPECT().SetSecrets(secrets),
 						resourceManager.EXPECT().Deploy(ctx),
@@ -649,45 +616,6 @@ var _ = Describe("ResourceManager", func() {
 
 						Expect(botanist.DeployGardenerResourceManager(ctx).Error()).To(ContainSubstring(fmt.Sprintf("managed resource %s/%s is not healthy", controlPlaneNamespace, managedResource.Name)))
 					})
-				})
-
-				It("fails because the bootstrap kubeconfig cannot be deleted", func() {
-					gomock.InOrder(
-						// create bootstrap kubeconfig
-						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, s *corev1.Secret, _ ...client.CreateOption) error {
-							Expect(s.Data["kubeconfig"]).NotTo(BeNil())
-							return nil
-						}),
-
-						// set secrets and deploy with bootstrap kubeconfig
-						resourceManager.EXPECT().SetSecrets(&secretMatcher{
-							bootstrapKubeconfigName: &bootstrapKubeconfigSecret.Name,
-						}),
-						resourceManager.EXPECT().Deploy(ctx),
-
-						// wait for shoot access secret to be reconciled and managed resource to be healthy
-						c.EXPECT().Get(gomock.Any(), client.ObjectKeyFromObject(shootAccessSecret), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, obj *corev1.Secret, _ ...client.GetOption) error {
-							obj.Annotations = map[string]string{"serviceaccount.resources.gardener.cloud/token-renew-timestamp": time.Now().Add(time.Hour).Format(time.RFC3339)}
-							return nil
-						}),
-						c.EXPECT().Get(gomock.Any(), client.ObjectKeyFromObject(managedResource), gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, obj *resourcesv1alpha1.ManagedResource, _ ...client.GetOption) error {
-							obj.Status.ObservedGeneration = obj.Generation
-							obj.Status.Conditions = []gardencorev1beta1.Condition{
-								{Type: "ResourcesApplied", Status: gardencorev1beta1.ConditionTrue},
-								{Type: "ResourcesHealthy", Status: gardencorev1beta1.ConditionTrue},
-							}
-							return nil
-						}),
-
-						// delete bootstrap kubeconfig
-						c.EXPECT().Delete(ctx, gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, obj *corev1.Secret, _ ...client.DeleteOption) error {
-							Expect(obj.Name).To(Equal(bootstrapKubeconfigSecret.Name))
-							Expect(obj.Namespace).To(Equal(bootstrapKubeconfigSecret.Namespace))
-							return fakeErr
-						}),
-					)
-
-					Expect(botanist.DeployGardenerResourceManager(ctx)).To(MatchError(fakeErr))
 				})
 			})
 		})

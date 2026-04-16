@@ -6,6 +6,7 @@ package unstructured
 
 import (
 	"context"
+	"maps"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,7 +25,7 @@ var systemMetadataFields = []string{"ownerReferences", "uid", "resourceVersion",
 // This function can be combined with runtime.DefaultUnstructuredConverter.FromUnstructured to get the object content
 // as runtime.RawExtension.
 func GetObjectByRef(ctx context.Context, c client.Client, ref *autoscalingv1.CrossVersionObjectReference, namespace string) (map[string]any, error) {
-	gvk, err := gvkFromCrossVersionObjectReference(ref)
+	gvk, err := GVKFromCrossVersionObjectReference(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +59,7 @@ func GetObject(ctx context.Context, c client.Client, gvk schema.GroupVersionKind
 // This function can be combined with runtime.DefaultUnstructuredConverter.ToUnstructured to create or update an object
 // from runtime.RawExtension.
 func CreateOrPatchObjectByRef(ctx context.Context, c client.Client, ref *autoscalingv1.CrossVersionObjectReference, namespace string, content map[string]any) error {
-	gvk, err := gvkFromCrossVersionObjectReference(ref)
+	gvk, err := GVKFromCrossVersionObjectReference(ref)
 	if err != nil {
 		return err
 	}
@@ -90,7 +91,7 @@ func CreateOrPatchObject(ctx context.Context, c client.Client, gvk schema.GroupV
 
 // DeleteObjectByRef deletes the object with the given reference and namespace using the given client.
 func DeleteObjectByRef(ctx context.Context, c client.Client, ref *autoscalingv1.CrossVersionObjectReference, namespace string) error {
-	gvk, err := gvkFromCrossVersionObjectReference(ref)
+	gvk, err := GVKFromCrossVersionObjectReference(ref)
 	if err != nil {
 		return err
 	}
@@ -109,7 +110,8 @@ func DeleteObject(ctx context.Context, c client.Client, gvk schema.GroupVersionK
 	return client.IgnoreNotFound(c.Delete(ctx, obj))
 }
 
-func gvkFromCrossVersionObjectReference(ref *autoscalingv1.CrossVersionObjectReference) (schema.GroupVersionKind, error) {
+// GVKFromCrossVersionObjectReference resolves [autoscalingv1.CrossVersionObjectReference] to [schema.GroupVersionKind].
+func GVKFromCrossVersionObjectReference(ref *autoscalingv1.CrossVersionObjectReference) (schema.GroupVersionKind, error) {
 	gv, err := schema.ParseGroupVersion(ref.APIVersion)
 	if err != nil {
 		return schema.GroupVersionKind{}, err
@@ -150,9 +152,7 @@ func mergeObjectContents(dest, src map[string]any) map[string]any {
 func FilterMetadata(content map[string]any, fields ...string) map[string]any {
 	// Copy content to result
 	result := make(map[string]any)
-	for key, value := range content {
-		result[key] = value
-	}
+	maps.Copy(result, content)
 
 	// Delete specified fields from result
 	if metadata, ok := result["metadata"].(map[string]any); ok {

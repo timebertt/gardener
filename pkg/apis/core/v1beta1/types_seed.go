@@ -104,7 +104,7 @@ type SeedStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
-	Conditions []Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,3,rep,name=conditions"`
+	Conditions []Condition `json:"conditions,omitempty" patchMergeKey:"type" patchStrategy:"merge" protobuf:"bytes,3,rep,name=conditions"`
 	// ObservedGeneration is the most recent generation observed for this Seed. It corresponds to the
 	// Seed's generation, which is updated on mutation by the API Server.
 	// +optional
@@ -177,7 +177,8 @@ type SeedDNSProviderConfig struct {
 	Zone *string `json:"zone,omitempty" protobuf:"bytes,3,opt,name=zone"`
 	// CredentialsRef is a reference to a resource holding the credentials used for
 	// authentication with the DNS provider.
-	// As of now, only v1.Secrets are supported.
+	// Supported referenced resources are v1.Secrets and
+	// security.gardener.cloud/v1alpha1.WorkloadIdentity
 	CredentialsRef corev1.ObjectReference `json:"credentialsRef" protobuf:"bytes,4,opt,name=credentialsRef"`
 }
 
@@ -185,14 +186,22 @@ type SeedDNSProviderConfig struct {
 type SeedDNSProvider struct {
 	// Type describes the type of the dns-provider, for example `aws-route53`
 	Type string `json:"type" protobuf:"bytes,1,opt,name=type"`
-	// SecretRef is a reference to a Secret object containing cloud provider credentials used for registering external domains.
-	SecretRef corev1.SecretReference `json:"secretRef" protobuf:"bytes,2,opt,name=secretRef"`
+
+	// SecretRef is tombstoned to show why 2 is reserved protobuf tag.
+	// SecretRef corev1.SecretReference `json:"secretRef" protobuf:"bytes,2,opt,name=secretRef"`
 
 	// Domains is tombstoned to show why 3 is reserved protobuf tag.
 	// Domains *DNSIncludeExclude `json:"domains,omitempty" protobuf:"bytes,3,opt,name=domains"`
 
 	// Zones is tombstoned to show why 4 is reserved protobuf tag.
 	// Zones *DNSIncludeExclude `json:"zones,omitempty" protobuf:"bytes,4,opt,name=zones"`
+
+	// CredentialsRef is a reference to a resource holding the credentials used for
+	// authentication with the DNS provider.
+	// Supported referenced resources are v1.Secrets and
+	// security.gardener.cloud/v1alpha1.WorkloadIdentity
+	// +optional
+	CredentialsRef *corev1.ObjectReference `json:"credentialsRef,omitempty" protobuf:"bytes,5,opt,name=credentialsRef"`
 }
 
 // Ingress configures the Ingress specific settings of the cluster
@@ -293,7 +302,33 @@ type SeedSettings struct {
 	// See https://github.com/gardener/gardener/blob/master/docs/operations/topology_aware_routing.md.
 	// +optional
 	TopologyAwareRouting *SeedSettingTopologyAwareRouting `json:"topologyAwareRouting,omitempty" protobuf:"bytes,8,opt,name=topologyAwareRouting"`
+	// ZoneSelection controls whether shoot control plane zone placement is derived from the shoot's worker pool zones
+	// rather than randomly selected from seed zones.
+	// See https://github.com/gardener/gardener/blob/master/docs/operations/seed_settings.md#zone-selection.
+	// +optional
+	ZoneSelection *SeedSettingZoneSelection `json:"zoneSelection,omitempty" protobuf:"bytes,9,opt,name=zoneSelection"`
 }
+
+// SeedSettingZoneSelection controls whether shoot control plane zone placement is derived
+// from the shoot's worker pool zones rather than randomly selected from seed zones.
+type SeedSettingZoneSelection struct {
+	// Mode controls the zone selection behavior.
+	// "Prefer" tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+	// "Enforce" requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+	// +kubebuilder:validation:Enum=Prefer;Enforce
+	Mode ZoneSelectionMode `json:"mode" protobuf:"bytes,1,opt,name=mode,casttype=ZoneSelectionMode"`
+}
+
+// ZoneSelectionMode is the mode for zone selection.
+// +kubebuilder:validation:Enum=Prefer;Enforce
+type ZoneSelectionMode string
+
+const (
+	// ZoneSelectionModePrefer tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+	ZoneSelectionModePrefer ZoneSelectionMode = "Prefer"
+	// ZoneSelectionModeEnforce requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+	ZoneSelectionModeEnforce ZoneSelectionMode = "Enforce"
+)
 
 // SeedSettingExcessCapacityReservation controls the excess capacity reservation for shoot control planes in the seed.
 type SeedSettingExcessCapacityReservation struct {
@@ -474,7 +509,7 @@ type SeedVolume struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	Providers []SeedVolumeProvider `json:"providers,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,2,rep,name=providers"`
+	Providers []SeedVolumeProvider `json:"providers,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,2,rep,name=providers"`
 }
 
 // SeedVolumeProvider is a storage class provisioner type.

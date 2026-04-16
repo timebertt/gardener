@@ -47,7 +47,7 @@ spec:
       ipFamilies:
       - IPv4
       nodes:
-      - 172.18.0.0/16
+      - 172.18.0.0/24
       pods:
       # Subnet for automatic pod IP assignment (calico default IPPool) in the kind cluster.
       - 10.1.0.0/16
@@ -63,6 +63,9 @@ spec:
     # loadBalancerServices:
     #   annotations:
     #     foo: bar
+    #   externalTrafficPolicy: Local
+    #   proxyProtocol:
+    #     allowed: true
       verticalPodAutoscaler:
         enabled: true
       # featureGates:
@@ -129,9 +132,9 @@ spec:
     #     - RS256
     #     requiredClaims:
     #       key: value
-    #   structuredAuthentication: # requires Kubernetes version >= 1.30
+    #   structuredAuthentication:
     #     configMapName: name-of-configmap-containing-authentication-config
-    #   structuredAuthorization: # requires Kubernetes version >= 1.30
+    #   structuredAuthorization:
     #     configMapName: name-of-configmap-containing-authorization-config
     #     kubeconfigs:
     #     - authorizerName: name-of-authorizer-in-authorization-config
@@ -159,7 +162,6 @@ spec:
     #     batchMaxSize: 1337
     #     version: audit.k8s.io/v1
     #   watchCacheSizes: # See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
-    #     default: 100
     #     resources:
     #     - resource: secrets
     #       size: 500
@@ -186,6 +188,8 @@ spec:
     #     resources: # secrets are always encrypted
     #     - configmaps
     #     - customresource.fancyoperator.io
+    #     provider:
+    #       type: "aescbc"
     #   autoscaling:
     #     minAllowed:
     #       cpu: "1"
@@ -232,6 +236,8 @@ spec:
     #     resources:
     #     - shoots.core.gardener.cloud
     #     - managedseeds.seedmanagement.gardener.cloud
+    #     provider:
+    #       type: "aescbc"
     #   requests:
     #     maxNonMutatingInflight: 400
     #     maxMutatingInflight: 200
@@ -307,7 +313,14 @@ spec:
     #       description: A nice container for debugging purposes
     #   ingress:
     #     enabled: true
-      gardenerDiscoveryServer: {}
+      gardenerDiscoveryServer:
+      # domain:
+      #   name: discovery.local.gardener.cloud
+      #   provider: primary
+      # tlsSecretName: gardener-discovery-server-tls
+    # gardenerResourceManager:
+    #   additionalTargetNamespaces:
+    #   - my-custom-namespace
     maintenance:
       timeWindow:
         begin: 220000+0100

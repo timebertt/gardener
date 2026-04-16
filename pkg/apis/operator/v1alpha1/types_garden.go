@@ -181,6 +181,25 @@ type SettingLoadBalancerServices struct {
 	// Annotations is a map of annotations that will be injected/merged into every load balancer service object.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
+	// ExternalTrafficPolicy specifies how nodes distribute service traffic they receive on one of the service's
+	// externally-facing addresses.
+	// Defaults to "Cluster". Can be set to "Local" when the load balancer is transparent (preserves client IP).
+	// +optional
+	ExternalTrafficPolicy *corev1.ServiceExternalTrafficPolicy `json:"externalTrafficPolicy,omitempty"`
+	// ProxyProtocol controls whether ProxyProtocol is (optionally) allowed for the load balancer services.
+	// Defaults to nil, which is equivalent to not allowing ProxyProtocol.
+	// +optional
+	ProxyProtocol *LoadBalancerServicesProxyProtocol `json:"proxyProtocol,omitempty"`
+}
+
+// LoadBalancerServicesProxyProtocol controls whether ProxyProtocol is (optionally) allowed for the load balancer services.
+type LoadBalancerServicesProxyProtocol struct {
+	// Allowed controls whether the ProxyProtocol is optionally allowed for the load balancer services.
+	// This should only be enabled if the load balancer services are already using ProxyProtocol or will be reconfigured to use it soon.
+	// Until the load balancers are configured with ProxyProtocol, enabling this setting may allow clients to spoof their source IP addresses.
+	// The option allows a migration from non-ProxyProtocol to ProxyProtocol without downtime (depending on the infrastructure).
+	// Defaults to false.
+	Allowed bool `json:"allowed"`
 }
 
 // SettingVerticalPodAutoscaler controls certain settings for the vertical pod autoscaler components deployed in the
@@ -480,8 +499,15 @@ type Gardener struct {
 	// +optional
 	Dashboard *GardenerDashboardConfig `json:"gardenerDashboard,omitempty"`
 	// DiscoveryServer contains configuration settings for the gardener-discovery-server.
+	// Once enabled, the gardener-discovery-server deployment cannot be removed and its domain cannot be changed.
+	// Otherwise, workload identity and/or shoot service account tokens referencing the gardener-discovery-server in the
+	// issuer URL might become unusable.
+	// This field is optional, but once set, it cannot be removed anymore.
 	// +optional
 	DiscoveryServer *GardenerDiscoveryServerConfig `json:"gardenerDiscoveryServer,omitempty"`
+	// ResourceManager contains configuration settings for the gardener-resource-manager.
+	// +optional
+	ResourceManager *GardenerResourceManagerConfig `json:"gardenerResourceManager,omitempty"`
 }
 
 // GardenerAPIServerConfig contains configuration settings for the gardener-apiserver.
@@ -572,7 +598,7 @@ type ResourceLimit struct {
 	Resources []string `json:"resources"`
 	// Size specifies the imposed limit.
 	// +optional
-	Size *resource.Quantity `json:"size"`
+	Size *resource.Quantity `json:"size,omitempty"`
 	// Count specifies the maximum number of resources of the given kind. Only cluster-scoped resources are considered.
 	// +optional
 	Count *int64 `json:"count,omitempty"`
@@ -602,6 +628,13 @@ type ProjectQuotaConfiguration struct {
 	// Defaults to empty LabelSelector, which matches all projects.
 	// +optional
 	ProjectSelector *metav1.LabelSelector `json:"projectSelector,omitempty"`
+}
+
+// GardenerResourceManagerConfig contains configuration settings for the gardener-resource-manager.
+type GardenerResourceManagerConfig struct {
+	// AdditionalTargetNamespaces allows specifying custom target namespaces for the gardener-resource-manager instance.
+	// +optional
+	AdditionalTargetNamespaces []string `json:"additionalTargetNamespaces,omitempty"`
 }
 
 // GardenerSchedulerConfig contains configuration settings for the gardener-scheduler.
@@ -732,7 +765,19 @@ type DashboardIngress struct {
 }
 
 // GardenerDiscoveryServerConfig contains configuration settings for the gardener-discovery-server.
-type GardenerDiscoveryServerConfig struct{}
+type GardenerDiscoveryServerConfig struct {
+	// Domain overrides the default ingress domain and optionally the DNS provider for the gardener-discovery-server.
+	// This field is optional, but once the gardener-discovery-server is enabled, its domain cannot be changed anymore.
+	// Defaults to "discovery.<first-runtime-ingress-domain>".
+	// +optional
+	Domain *DNSDomain `json:"domain,omitempty"`
+	// TLSSecretName is the name of a secret (in the garden namespace) containing
+	// a trusted TLS certificate for the domain. If not configured, Gardener falls
+	// back to a secret labelled with 'gardener.cloud/role=garden-cert', if in turn not
+	// configured it generates a self-signed certificate.
+	// +optional
+	TLSSecretName *string `json:"tlsSecretName,omitempty"`
+}
 
 const (
 	// ClusterTypeGarden enables the resource only for the garden cluster.
@@ -764,14 +809,6 @@ type GardenStatus struct {
 	// Credentials contains information about the virtual garden cluster credentials.
 	// +optional
 	Credentials *Credentials `json:"credentials,omitempty"`
-	// EncryptedResources is the list of resources which are currently encrypted in the virtual garden by the virtual kube-apiserver.
-	// Resources which are encrypted by default will not appear here.
-	// See https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config for more details.
-	//
-	// Deprecated: This field is deprecated and will be removed with release v1.138.
-	// This field will be removed in favor of `status.credentials.encryptionAtRest.resources`.
-	// +optional
-	EncryptedResources []string `json:"encryptedResources,omitempty"`
 }
 
 // Credentials contains information about the virtual garden cluster credentials.
@@ -810,6 +847,14 @@ type EncryptionAtRest struct {
 	// See https://github.com/gardener/gardener/blob/master/docs/concepts/operator.md#etcd-encryption-config for more details.
 	// +optional
 	Resources []string `json:"resources,omitempty"`
+	// Provider contains information about virtual garden encryption provider.
+	Provider EncryptionProviderStatus `json:"provider"`
+}
+
+// EncryptionProviderStatus contains information about virtual garden encryption provider.
+type EncryptionProviderStatus struct {
+	// Type is the used encryption provider type.
+	Type gardencorev1beta1.EncryptionProviderType `json:"type"`
 }
 
 // WorkloadIdentityKeyRotation contains information about the workload identity key credential rotation.

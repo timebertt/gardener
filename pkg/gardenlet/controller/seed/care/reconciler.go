@@ -18,11 +18,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
 // NewHealthCheck is used to create a new Health check instance.
@@ -65,7 +66,11 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, req reconcile.Reque
 		r.SeedClient,
 		r.Clock,
 		r.Namespace,
-		r.conditionThresholdsToProgressingMapping(),
+		checker.NewHealthChecker(
+			log,
+			r.SeedClient,
+			r.Clock,
+			checker.WithConditionThresholds(r.conditionThresholdsToProgressingMapping())),
 	).Check(
 		ctx,
 		seedConditions,

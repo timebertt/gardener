@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,16 +26,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/api/operator/v1alpha1/helper"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
-	"github.com/gardener/gardener/pkg/apis/operator/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/features"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	"github.com/gardener/gardener/pkg/utils/gardener/tokenrequest"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
@@ -56,7 +57,7 @@ type Reconciler struct {
 	RuntimeVersion        *semver.Version
 	Config                operatorconfigv1alpha1.OperatorConfiguration
 	Clock                 clock.Clock
-	Recorder              record.EventRecorder
+	Recorder              events.EventRecorder
 	Identity              *gardencorev1beta1.Gardener
 	ComponentImageVectors imagevector.ComponentImageVectors
 	GardenNamespace       string
@@ -101,12 +102,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		log.WithName("secretsmanager"),
 		r.Clock,
 		r.RuntimeClientSet.Client(),
-		r.GardenNamespace,
 		operatorv1alpha1.SecretManagerIdentityOperator,
-		secretsmanager.Config{
-			CASecretAutoRotation: true,
-			SecretNamesToTimes:   lastSecretRotationStartTimes(garden),
-		},
+		secretsmanager.WithCASecretAutoRotation(),
+		secretsmanager.WithSecretNamesToTimes(lastSecretRotationStartTimes(garden)),
+		secretsmanager.WithNamespaces(r.GardenNamespace),
 	)
 	if err != nil {
 		return reconcile.Result{}, r.updateStatusOperationError(ctx, garden, err, operationType)
@@ -121,7 +120,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	if result, err := r.reconcile(ctx, log, garden, secretsManager, targetVersion); err != nil {
 		return result, r.updateStatusOperationError(ctx, garden, err, operationType)
-	} else if result.Requeue {
+	} else if result.RequeueAfter > 0 {
 		return result, nil
 	}
 
@@ -134,7 +133,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// The second reconciliation will remove the old key and set the phase to completed.
 	if etcdEncryptionKeyRotationPhase := helper.GetETCDEncryptionKeyRotationPhase(garden.Status.Credentials); etcdEncryptionKeyRotationPhase == gardencorev1beta1.RotationPrepared &&
 		helper.ShouldETCDEncryptionKeyRotationBeAutoCompleteAfterPrepared(garden.Status.Credentials) {
-		return reconcile.Result{RequeueAfter: 5 * time.Millisecond}, nil
+		return reconcile.Result{RequeueAfter: controllerutils.DefaultRequeueAfterDuration}, nil
 	}
 
 	return reconcile.Result{RequeueAfter: r.Config.Controllers.Garden.SyncPeriod.Duration}, nil
@@ -421,7 +420,7 @@ func (r *Reconciler) updateStatusOperationError(ctx context.Context, garden *ope
 }
 
 func (r *Reconciler) generateGenericTokenKubeconfig(ctx context.Context, garden *operatorv1alpha1.Garden, secretsManager secretsmanager.Interface) error {
-	kubeAPIServerAddress := namePrefix + v1beta1constants.DeploymentNameKubeAPIServer
+	kubeAPIServerAddress := operatorv1alpha1.DeploymentNameVirtualGardenKubeAPIServer
 	if features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) {
 		kubeAPIServerAddress = v1beta1helper.GetAPIServerDomain(garden.Spec.VirtualCluster.DNS.Domains[0].Name)
 	}
@@ -531,6 +530,7 @@ func completeRotationWorkloadIdentityKey(garden *operatorv1alpha1.Garden, now *m
 func caCertConfigurations() []secretsutils.ConfigInterface {
 	return append([]secretsutils.ConfigInterface{
 		&secretsutils.CertificateSecretConfig{Name: operatorv1alpha1.SecretNameCARuntime, CertType: secretsutils.CACert, Validity: ptr.To(30 * 24 * time.Hour)},
+		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAVirtualGardenIstioBasicAuthServer, CommonName: "istio-basic-auth-server", CertType: secretsutils.CACert, Validity: ptr.To(30 * 24 * time.Hour)},
 	}, nonAutoRotatedCACertConfigurations()...)
 }
 
@@ -548,7 +548,7 @@ func nonAutoRotatedCACertConfigurations() []secretsutils.ConfigInterface {
 func caCertGenerateOptionsFor(name string, rotationPhase gardencorev1beta1.CredentialsRotationPhase) []secretsmanager.GenerateOption {
 	options := []secretsmanager.GenerateOption{secretsmanager.Rotate(secretsmanager.KeepOld)}
 
-	if name == operatorv1alpha1.SecretNameCARuntime {
+	if name == operatorv1alpha1.SecretNameCARuntime || name == v1beta1constants.SecretNameCAVirtualGardenIstioBasicAuthServer {
 		options = append(options, secretsmanager.IgnoreOldSecretsAfter(24*time.Hour))
 	} else if rotationPhase == gardencorev1beta1.RotationCompleting {
 		options = append(options, secretsmanager.IgnoreOldSecrets())

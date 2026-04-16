@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega/gstruct"
 	"github.com/robfig/cron"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/component-base/version"
 	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
@@ -21,9 +21,9 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 )
 
 var _ = Describe("Shoot Hibernation", func() {
@@ -185,7 +185,7 @@ var _ = Describe("Shoot Hibernation", func() {
 				reconciler := &Reconciler{
 					Client:   c,
 					Config:   config,
-					Recorder: record.NewFakeRecorder(1),
+					Recorder: events.NewFakeRecorder(1),
 					Clock:    fakeClock,
 				}
 

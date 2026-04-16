@@ -17,16 +17,6 @@ type OpenIDConnectPresetSpec struct {
 	// configuration already set on the Shoot object.
 	Server KubeAPIServerOpenIDConnect
 
-	// Client contains the configuration used for client OIDC authentication
-	// of Shoot clusters.
-	// This configuration is not overwriting any existing OpenID Connect
-	// client authentication already set on the Shoot object.
-	//
-	// Deprecated: The OpenID Connect configuration this field specifies is not used and will be forbidden starting from Kubernetes 1.31.
-	// It's use was planned for generating OIDC kubeconfig https://github.com/gardener/gardener/issues/1433
-	// TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dropped.
-	Client *OpenIDConnectClientAuthentication
-
 	// ShootSelector decides whether to apply the configuration if the
 	// Shoot has matching labels.
 	// Use the selector only if the OIDC Preset is opt-in, because end
@@ -70,7 +60,7 @@ type KubeAPIServerOpenIDConnect struct {
 // OpenIDConnectClientAuthentication contains configuration for OIDC clients.
 type OpenIDConnectClientAuthentication struct {
 	// The client Secret for the OpenID Connect client.
-	Secret *string
+	Secret *string // #nosec: G117 -- Field name for API spec.
 
 	// Extra configuration added to kubeconfig's auth-provider.
 	// Must not be any of idp-issuer-url, client-id, client-secret, idp-certificate-authority, idp-certificate-authority-data, id-token or refresh-token

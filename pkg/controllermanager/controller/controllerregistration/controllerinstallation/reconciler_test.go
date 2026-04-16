@@ -1,0 +1,1165 @@
+// SPDX-FileCopyrightText: SAP SE or an SAP affiliate company and Gardener contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package controllerinstallation
+
+import (
+	"context"
+	"errors"
+
+	"github.com/go-logr/logr"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
+	"go.uber.org/goleak"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+)
+
+var _ = Describe("Reconciler", func() {
+	var (
+		ctx        = context.TODO()
+		log        = logr.Discard()
+		fakeClient client.Client
+
+		seedName       = "seed"
+		sourceSeedName = "sourceSeed"
+		seedLabels     = map[string]string{"foo": "bar"}
+
+		alwaysPolicy         = gardencorev1beta1.ControllerDeploymentPolicyAlways
+		alwaysIfShootsPolicy = gardencorev1beta1.ControllerDeploymentPolicyAlwaysExceptNoShoots
+		onDemandPolicy       = gardencorev1beta1.ControllerDeploymentPolicyOnDemand
+		now                  = metav1.Now()
+
+		type1  = "type1"
+		type2  = "type2"
+		type3  = "type3"
+		type4  = "type4"
+		type5  = "type5"
+		type6  = "type6"
+		type8  = "type8"
+		type9  = "type9"
+		type10 = "type10"
+		type11 = "type11"
+		type12 = "type12"
+
+		sourceType = "sourceType"
+
+		backupBucket1 = &gardencorev1beta1.BackupBucket{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "bb1",
+			},
+			Spec: gardencorev1beta1.BackupBucketSpec{
+				SeedName: &seedName,
+				Provider: gardencorev1beta1.BackupBucketProvider{
+					Type: type2,
+				},
+			},
+		}
+		backupBucket2 = &gardencorev1beta1.BackupBucket{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "bb2",
+			},
+			Spec: gardencorev1beta1.BackupBucketSpec{
+				SeedName: &seedName,
+				Provider: gardencorev1beta1.BackupBucketProvider{
+					Type: type3,
+				},
+			},
+		}
+		sourceBackupBucket = &gardencorev1beta1.BackupBucket{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "sourceBackupBucket",
+			},
+			Spec: gardencorev1beta1.BackupBucketSpec{
+				SeedName: &sourceSeedName,
+				Provider: gardencorev1beta1.BackupBucketProvider{
+					Type: sourceType,
+				},
+			},
+		}
+
+		backupBucketsMap = map[string]*gardencorev1beta1.BackupBucket{
+			backupBucket1.Name:      backupBucket1,
+			backupBucket2.Name:      backupBucket2,
+			sourceBackupBucket.Name: sourceBackupBucket,
+		}
+
+		backupEntry2 = &gardencorev1beta1.BackupEntry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "be2",
+			},
+			Spec: gardencorev1beta1.BackupEntrySpec{
+				SeedName:   &seedName,
+				BucketName: backupBucket1.Name,
+			},
+		}
+		backupEntry3 = &gardencorev1beta1.BackupEntry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "be3",
+			},
+			Spec: gardencorev1beta1.BackupEntrySpec{
+				SeedName:   &seedName,
+				BucketName: backupBucket1.Name,
+			},
+		}
+		sourceBackupEntry = &gardencorev1beta1.BackupEntry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "sourceBackupEntry",
+			},
+			Spec: gardencorev1beta1.BackupEntrySpec{
+				SeedName:   &seedName,
+				BucketName: sourceBackupBucket.Name,
+			},
+		}
+		backupEntryList = &gardencorev1beta1.BackupEntryList{
+			Items: []gardencorev1beta1.BackupEntry{
+				*backupEntry2,
+				*backupEntry3,
+				*sourceBackupEntry,
+			},
+		}
+
+		seed = &gardencorev1beta1.Seed{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   seedName,
+				Labels: seedLabels,
+			},
+			Spec: gardencorev1beta1.SeedSpec{
+				Provider: gardencorev1beta1.SeedProvider{
+					Type: type11,
+				},
+				Backup: &gardencorev1beta1.Backup{
+					Provider: type8,
+				},
+				DNS: gardencorev1beta1.SeedDNS{
+					Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+						Type: type9,
+						CredentialsRef: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "internal-dns-secret",
+							Namespace:  "garden",
+						},
+					},
+				},
+			},
+		}
+
+		shoot1 = &gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "s1",
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				Provider: gardencorev1beta1.Provider{
+					Type: type1,
+				},
+			},
+		}
+		shoot2 = &gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "s2",
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				SeedName: &seedName,
+				Provider: gardencorev1beta1.Provider{
+					Type: type2,
+					Workers: []gardencorev1beta1.Worker{
+						{
+							Machine: gardencorev1beta1.Machine{
+								Image: &gardencorev1beta1.ShootMachineImage{
+									Name: type5,
+								},
+							},
+						},
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Type: ptr.To(type3),
+				},
+				Extensions: []gardencorev1beta1.Extension{
+					{Type: type4},
+				},
+			},
+		}
+		shoot3 = &gardencorev1beta1.Shoot{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "s3",
+			},
+			Spec: gardencorev1beta1.ShootSpec{
+				SeedName: &seedName,
+				Provider: gardencorev1beta1.Provider{
+					Type: type6,
+					Workers: []gardencorev1beta1.Worker{
+						{
+							CRI: &gardencorev1beta1.CRI{
+								ContainerRuntimes: []gardencorev1beta1.ContainerRuntime{
+									{Type: type12},
+								},
+							},
+						},
+					},
+				},
+				Networking: &gardencorev1beta1.Networking{
+					Type: ptr.To(type3),
+				},
+			},
+		}
+		shootList = []gardencorev1beta1.Shoot{
+			*shoot1,
+			*shoot2,
+			*shoot3,
+		}
+
+		controllerDeployment = &gardencorev1.ControllerDeployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "fooDeployment",
+			},
+			Helm: &gardencorev1.HelmControllerDeployment{
+				RawChart: []byte("foo"),
+			},
+		}
+
+		controllerRegistration1 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr1",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Resources: []gardencorev1beta1.ControllerResource{
+					{
+						Kind: extensionsv1alpha1.BackupBucketResource,
+						Type: type1,
+					},
+					{
+						Kind:       extensionsv1alpha1.ExtensionResource,
+						AutoEnable: []gardencorev1beta1.ClusterType{"shoot"},
+						Type:       type10,
+					},
+					{
+						Kind:    extensionsv1alpha1.NetworkResource,
+						Type:    type2,
+						Primary: ptr.To(false),
+					},
+				},
+			},
+		}
+		controllerRegistration2 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr2",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Resources: []gardencorev1beta1.ControllerResource{
+					{
+						Kind: extensionsv1alpha1.NetworkResource,
+						Type: type2,
+					},
+					{
+						Kind: extensionsv1alpha1.ContainerRuntimeResource,
+						Type: type12,
+					},
+				},
+				Deployment: &gardencorev1beta1.ControllerRegistrationDeployment{
+					Policy: &onDemandPolicy,
+					DeploymentRefs: []gardencorev1beta1.DeploymentRef{
+						{Name: controllerDeployment.Name},
+					},
+				},
+			},
+		}
+		controllerRegistration3 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr3",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Resources: []gardencorev1beta1.ControllerResource{
+					{
+						Kind: extensionsv1alpha1.ControlPlaneResource,
+						Type: type3,
+					},
+					{
+						Kind: extensionsv1alpha1.InfrastructureResource,
+						Type: type3,
+					},
+					{
+						Kind: extensionsv1alpha1.WorkerResource,
+						Type: type3,
+					},
+				},
+				Deployment: &gardencorev1beta1.ControllerRegistrationDeployment{
+					Policy: &onDemandPolicy,
+				},
+			},
+		}
+		controllerRegistration4 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr4",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Deployment: &gardencorev1beta1.ControllerRegistrationDeployment{
+					Policy: &alwaysPolicy,
+				},
+			},
+		}
+		controllerRegistration5 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr5",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Deployment: &gardencorev1beta1.ControllerRegistrationDeployment{
+					Policy: &alwaysPolicy,
+					SeedSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"bar": "foo",
+						},
+					},
+				},
+			},
+		}
+		controllerRegistration6 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr6",
+			},
+		}
+		controllerRegistration7 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr7",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Deployment: &gardencorev1beta1.ControllerRegistrationDeployment{
+					Policy: &onDemandPolicy,
+				},
+			},
+		}
+		controllerRegistration8 = &gardencorev1beta1.ControllerRegistration{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cr8",
+			},
+			Spec: gardencorev1beta1.ControllerRegistrationSpec{
+				Deployment: &gardencorev1beta1.ControllerRegistrationDeployment{
+					Policy: &alwaysIfShootsPolicy,
+				},
+			},
+		}
+		controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+			Items: []gardencorev1beta1.ControllerRegistration{
+				*controllerRegistration1,
+				*controllerRegistration2,
+				*controllerRegistration3,
+				*controllerRegistration4,
+				*controllerRegistration5,
+				*controllerRegistration6,
+				*controllerRegistration7,
+				*controllerRegistration8,
+			},
+		}
+		controllerRegistrations = map[string]controllerRegistration{
+			controllerRegistration1.Name: {obj: controllerRegistration1},
+			controllerRegistration2.Name: {obj: controllerRegistration2},
+			controllerRegistration3.Name: {obj: controllerRegistration3},
+			controllerRegistration4.Name: {obj: controllerRegistration4, deployAlways: true},
+			controllerRegistration5.Name: {obj: controllerRegistration5, deployAlways: true},
+			controllerRegistration6.Name: {obj: controllerRegistration6},
+			controllerRegistration7.Name: {obj: controllerRegistration7},
+			controllerRegistration8.Name: {obj: controllerRegistration8, deployAlwaysExceptNoShoots: true},
+		}
+
+		controllerInstallation1 = &gardencorev1beta1.ControllerInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ci1",
+			},
+			Spec: gardencorev1beta1.ControllerInstallationSpec{
+				SeedRef: &corev1.ObjectReference{
+					Name: "another-seed",
+				},
+				RegistrationRef: corev1.ObjectReference{
+					Name: controllerRegistration1.Name,
+				},
+			},
+		}
+		controllerInstallation2 = &gardencorev1beta1.ControllerInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ci2",
+			},
+			Spec: gardencorev1beta1.ControllerInstallationSpec{
+				SeedRef: &corev1.ObjectReference{
+					Name: seedName,
+				},
+				DeploymentRef: &corev1.ObjectReference{
+					Name: controllerDeployment.Name,
+				},
+				RegistrationRef: corev1.ObjectReference{
+					Name: controllerRegistration2.Name,
+				},
+			},
+		}
+		controllerInstallation3 = &gardencorev1beta1.ControllerInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ci3",
+			},
+			Spec: gardencorev1beta1.ControllerInstallationSpec{
+				SeedRef: &corev1.ObjectReference{
+					Name: seedName,
+				},
+				RegistrationRef: corev1.ObjectReference{
+					Name: controllerRegistration3.Name,
+				},
+			},
+		}
+		controllerInstallation4 = &gardencorev1beta1.ControllerInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ci4",
+			},
+			Spec: gardencorev1beta1.ControllerInstallationSpec{
+				SeedRef: &corev1.ObjectReference{
+					Name: seedName,
+				},
+				RegistrationRef: corev1.ObjectReference{
+					Name: controllerRegistration4.Name,
+				},
+			},
+		}
+		controllerInstallation7 = &gardencorev1beta1.ControllerInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ci7",
+			},
+			Spec: gardencorev1beta1.ControllerInstallationSpec{
+				SeedRef: &corev1.ObjectReference{
+					Name: seedName,
+				},
+				RegistrationRef: corev1.ObjectReference{
+					Name: controllerRegistration7.Name,
+				},
+			},
+			Status: gardencorev1beta1.ControllerInstallationStatus{
+				Conditions: []gardencorev1beta1.Condition{
+					{
+						Type:   gardencorev1beta1.ControllerInstallationRequired,
+						Status: gardencorev1beta1.ConditionTrue,
+					},
+				},
+			},
+		}
+		controllerInstallationList = &gardencorev1beta1.ControllerInstallationList{
+			Items: []gardencorev1beta1.ControllerInstallation{
+				*controllerInstallation1,
+				*controllerInstallation2,
+				*controllerInstallation3,
+				*controllerInstallation4,
+				*controllerInstallation7,
+			},
+		}
+	)
+
+	BeforeEach(func() {
+		fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
+
+		Expect(fakeClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: seed.Spec.DNS.Internal.CredentialsRef.Name, Namespace: seed.Spec.DNS.Internal.CredentialsRef.Namespace}})).To(Succeed())
+	})
+
+	Describe("#computeKindTypesForBackupBuckets", func() {
+		It("should return empty results for empty input", func() {
+			kindTypes := computeKindTypesForBackupBuckets(map[string]*gardencorev1beta1.BackupBucket{}, seed, SeedKind)
+
+			Expect(kindTypes.Len()).To(BeZero())
+		})
+
+		It("should correctly compute the result for seeds", func() {
+			kindTypes := computeKindTypesForBackupBuckets(backupBucketsMap, seed, SeedKind)
+
+			Expect(kindTypes).To(Equal(sets.New(
+				extensionsv1alpha1.BackupBucketResource+"/"+backupBucket1.Spec.Provider.Type,
+				extensionsv1alpha1.BackupBucketResource+"/"+backupBucket2.Spec.Provider.Type,
+			)))
+		})
+
+		It("should correctly compute the result for shoots", func() {
+			backupBucketsMap := map[string]*gardencorev1beta1.BackupBucket{
+				"1": {Spec: gardencorev1beta1.BackupBucketSpec{Provider: gardencorev1beta1.BackupBucketProvider{Type: "bbtype1"}, ShootRef: &corev1.ObjectReference{Name: shoot1.Name, Namespace: shoot1.Namespace}}},
+				"2": {Spec: gardencorev1beta1.BackupBucketSpec{Provider: gardencorev1beta1.BackupBucketProvider{Type: "bbtype2"}, ShootRef: &corev1.ObjectReference{Name: shoot1.Name, Namespace: shoot1.Namespace}}},
+			}
+
+			kindTypes := computeKindTypesForBackupBuckets(backupBucketsMap, shoot1, ShootKind)
+
+			Expect(kindTypes).To(Equal(sets.New(
+				extensionsv1alpha1.BackupBucketResource+"/bbtype1",
+				extensionsv1alpha1.BackupBucketResource+"/bbtype2",
+			)))
+		})
+	})
+
+	Describe("#computeKindTypesForBackupEntries", func() {
+		It("should return empty results for empty input", func() {
+			kindTypes := computeKindTypesForBackupEntries(log, &gardencorev1beta1.BackupEntryList{}, nil)
+
+			Expect(kindTypes.Len()).To(BeZero())
+		})
+
+		It("should correctly compute the result", func() {
+			kindTypes := computeKindTypesForBackupEntries(log, backupEntryList, backupBucketsMap)
+
+			Expect(kindTypes).To(Equal(sets.New(
+				extensionsv1alpha1.BackupEntryResource+"/"+backupBucket1.Spec.Provider.Type,
+				extensionsv1alpha1.BackupEntryResource+"/"+sourceBackupBucket.Spec.Provider.Type,
+			)))
+		})
+	})
+
+	Describe("#computeKindTypesForShoots", func() {
+		var ignoreCurrent goleak.Option
+
+		BeforeEach(func() {
+			ignoreCurrent = goleak.IgnoreCurrent()
+		})
+
+		AfterEach(func() {
+			goleak.VerifyNone(GinkgoT(), ignoreCurrent)
+		})
+
+		It("should correctly compute the result for a shoot", func() {
+			Expect(computeKindTypesForShoots(ctx, log, fakeClient, seed, SeedKind, controllerRegistrationList, shootList)).To(Equal(sets.New(
+				// seed types
+				extensionsv1alpha1.BackupBucketResource+"/"+type8,
+				extensionsv1alpha1.BackupEntryResource+"/"+type8,
+				extensionsv1alpha1.ControlPlaneResource+"/"+type11,
+
+				// shoot2 types
+				extensionsv1alpha1.ControlPlaneResource+"/"+type2,
+				extensionsv1alpha1.InfrastructureResource+"/"+type2,
+				extensionsv1alpha1.WorkerResource+"/"+type2,
+				extensionsv1alpha1.OperatingSystemConfigResource+"/"+type5,
+				extensionsv1alpha1.NetworkResource+"/"+type3,
+				extensionsv1alpha1.ExtensionResource+"/"+type4,
+
+				// shoot3 types
+				extensionsv1alpha1.ControlPlaneResource+"/"+type6,
+				extensionsv1alpha1.InfrastructureResource+"/"+type6,
+				extensionsv1alpha1.WorkerResource+"/"+type6,
+				extensionsv1alpha1.ContainerRuntimeResource+"/"+type12,
+
+				// internal domain + automatically enabled extensions
+				extensionsv1alpha1.ExtensionResource+"/"+type10,
+				extensionsv1alpha1.DNSRecordResource+"/"+type9,
+			)))
+		})
+
+		It("should correctly compute types for shoot that has the Seed's name as status not spec", func() {
+			shootList = []gardencorev1beta1.Shoot{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "s4",
+					},
+					Spec: gardencorev1beta1.ShootSpec{
+						SeedName: ptr.To("anotherSeed"),
+						Provider: gardencorev1beta1.Provider{
+							Type: type2,
+							Workers: []gardencorev1beta1.Worker{
+								{
+									Machine: gardencorev1beta1.Machine{
+										Image: &gardencorev1beta1.ShootMachineImage{
+											Name: type5,
+										},
+									},
+								},
+							},
+						},
+						Networking: &gardencorev1beta1.Networking{
+							Type: ptr.To(type3),
+						},
+						Extensions: []gardencorev1beta1.Extension{
+							{Type: type4},
+						},
+					},
+					Status: gardencorev1beta1.ShootStatus{
+						SeedName: &seedName,
+					},
+				},
+			}
+
+			Expect(computeKindTypesForShoots(ctx, log, fakeClient, seed, SeedKind, controllerRegistrationList, shootList)).To(Equal(sets.New(
+				// seed types
+				extensionsv1alpha1.BackupBucketResource+"/"+type8,
+				extensionsv1alpha1.BackupEntryResource+"/"+type8,
+				extensionsv1alpha1.ControlPlaneResource+"/"+type11,
+
+				// shoot4 types
+				extensionsv1alpha1.ControlPlaneResource+"/"+type2,
+				extensionsv1alpha1.InfrastructureResource+"/"+type2,
+				extensionsv1alpha1.WorkerResource+"/"+type2,
+				extensionsv1alpha1.OperatingSystemConfigResource+"/"+type5,
+				extensionsv1alpha1.NetworkResource+"/"+type3,
+				extensionsv1alpha1.ExtensionResource+"/"+type4,
+
+				// internal domain + automatically enabled extensions
+				extensionsv1alpha1.ExtensionResource+"/"+type10,
+				extensionsv1alpha1.DNSRecordResource+"/"+type9,
+			)))
+		})
+
+		Context("for self-hosted shoots", func() {
+			It("should correctly compute the result", func() {
+				Expect(computeKindTypesForShoots(ctx, log, fakeClient, shoot3, ShootKind, controllerRegistrationList, shootList)).To(Equal(sets.New(
+					extensionsv1alpha1.ControlPlaneResource+"/"+type6,
+					extensionsv1alpha1.InfrastructureResource+"/"+type6,
+					extensionsv1alpha1.WorkerResource+"/"+type6,
+					extensionsv1alpha1.ContainerRuntimeResource+"/"+type12,
+					extensionsv1alpha1.NetworkResource+"/"+type3,
+
+					// automatically enabled extensions
+					extensionsv1alpha1.ExtensionResource+"/"+type10,
+				)))
+			})
+
+			It("should correctly compute the result", func() {
+				shootWithDeletionTimestamp := &gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{}}}
+				Expect(computeKindTypesForShoots(ctx, log, fakeClient, shootWithDeletionTimestamp, ShootKind, controllerRegistrationList, shootList)).To(BeEmpty())
+			})
+		})
+	})
+
+	Describe("#computeKindTypesForSeed", func() {
+		var providerType = "fake-provider-type"
+
+		It("should add the DNSRecord extension", func() {
+			seed := &gardencorev1beta1.Seed{
+				Spec: gardencorev1beta1.SeedSpec{
+					Provider: gardencorev1beta1.SeedProvider{
+						Type: type1,
+					},
+					DNS: gardencorev1beta1.SeedDNS{
+						Provider: &gardencorev1beta1.SeedDNSProvider{
+							Type: providerType,
+						},
+					},
+				},
+			}
+
+			expected := sets.New(
+				extensionsv1alpha1.DNSRecordResource+"/fake-provider-type",
+				extensionsv1alpha1.ControlPlaneResource+"/type1",
+				extensionsv1alpha1.InfrastructureResource+"/type1",
+				extensionsv1alpha1.WorkerResource+"/type1",
+			)
+			actual := computeKindTypesForSeed(seed, &gardencorev1beta1.ControllerRegistrationList{})
+			Expect(actual).To(Equal(expected))
+		})
+
+		It("should not add an extension if Seed has a deletion timestamp", func() {
+			deletionTimestamp := metav1.Now()
+			seed := &gardencorev1beta1.Seed{
+				ObjectMeta: metav1.ObjectMeta{
+					DeletionTimestamp: &deletionTimestamp,
+				},
+				Spec: gardencorev1beta1.SeedSpec{
+					DNS: gardencorev1beta1.SeedDNS{
+						Provider: &gardencorev1beta1.SeedDNSProvider{
+							Type: providerType,
+						},
+					},
+				},
+			}
+
+			expected := sets.New[string]()
+			actual := computeKindTypesForSeed(seed, &gardencorev1beta1.ControllerRegistrationList{})
+			Expect(actual).To(Equal(expected))
+		})
+
+		It("should only add seed provider type extensions", func() {
+			seed := &gardencorev1beta1.Seed{
+				Spec: gardencorev1beta1.SeedSpec{
+					Provider: gardencorev1beta1.SeedProvider{
+						Type: type1,
+					},
+				},
+			}
+
+			expected := sets.New(
+				extensionsv1alpha1.ControlPlaneResource+"/type1",
+				extensionsv1alpha1.InfrastructureResource+"/type1",
+				extensionsv1alpha1.WorkerResource+"/type1",
+			)
+			actual := computeKindTypesForSeed(seed, &gardencorev1beta1.ControllerRegistrationList{})
+			Expect(actual).To(Equal(expected))
+		})
+	})
+
+	Describe("#computeControllerRegistrationMaps", func() {
+		It("should correctly compute the result", func() {
+			registrations := computeControllerRegistrationMaps(controllerRegistrationList)
+
+			Expect(registrations).To(Equal(controllerRegistrations))
+		})
+	})
+
+	Describe("#computeWantedControllerRegistrationNames", func() {
+		It("should correctly compute the result w/o error", func() {
+			wantedKindTypeCombinations := sets.New(
+				extensionsv1alpha1.NetworkResource+"/"+type2,
+				extensionsv1alpha1.ControlPlaneResource+"/"+type3,
+			)
+
+			names, err := computeWantedControllerRegistrationNames(wantedKindTypeCombinations, controllerInstallationList, controllerRegistrations, len(shootList), seed, SeedKind, nil)
+
+			Expect(names).To(Equal(sets.New(controllerRegistration1.Name, controllerRegistration2.Name, controllerRegistration3.Name, controllerRegistration4.Name, controllerRegistration7.Name, controllerRegistration8.Name)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should not consider 'always-deploy-if-shoots' registrations when seed has no shoots", func() {
+			wantedKindTypeCombinations := sets.New[string]()
+
+			names, err := computeWantedControllerRegistrationNames(wantedKindTypeCombinations, controllerInstallationList, controllerRegistrations, 0, seed, SeedKind, nil)
+
+			Expect(names).To(Equal(sets.New(controllerRegistration4.Name, controllerRegistration7.Name)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should consider 'always-deploy' registrations when seed has no shoots but no deletion timestamp", func() {
+			wantedKindTypeCombinations := sets.New[string]()
+
+			names, err := computeWantedControllerRegistrationNames(wantedKindTypeCombinations, controllerInstallationList, controllerRegistrations, 0, seed, SeedKind, nil)
+
+			Expect(names).To(Equal(sets.New(controllerRegistration4.Name, controllerRegistration7.Name)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should not consider 'always-deploy' registrations when seed has no shoots and deletion timestamp", func() {
+			seedCopy := seed.DeepCopy()
+			time := metav1.Time{}
+			seedCopy.DeletionTimestamp = &time
+			wantedKindTypeCombinations := sets.New[string]()
+
+			names, err := computeWantedControllerRegistrationNames(wantedKindTypeCombinations, controllerInstallationList, controllerRegistrations, 0, seedCopy, SeedKind, nil)
+
+			Expect(names).To(Equal(sets.New(controllerRegistration7.Name)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should not include Always/AlwaysExceptNoShoots registrations or installedAndRequired when seed is a self-hosted shoot", func() {
+			// When selfHostedShoot is non-nil, the shoot reconciler handles Always/AlwaysExceptNoShoots registrations
+			// and owns all ControllerInstallations — the seed reconciler must not add any of them.
+			// controllerRegistration4 has deployAlways=true, controllerRegistration7 would normally be kept alive via
+			// installedAndRequired (controllerInstallation7 is Required=true with seedRef=seedName) — both must be
+			// excluded so the shoot reconciler remains the sole owner.
+			selfHostedShoot := &gardencorev1beta1.Shoot{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      seedName,
+					Namespace: "garden",
+				},
+			}
+			wantedKindTypeCombinations := sets.New[string]()
+
+			names, err := computeWantedControllerRegistrationNames(wantedKindTypeCombinations, controllerInstallationList, controllerRegistrations, 0, seed, SeedKind, selfHostedShoot)
+
+			Expect(names).To(BeEmpty())
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("#computeRegistrationNameToInstallationNameMap", func() {
+		It("should correctly compute the result w/o error", func() {
+			regNameToInstallationName, err := computeRegistrationNameToInstallationMap(controllerInstallationList, controllerRegistrations, seed, SeedKind, nil)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(regNameToInstallationName).To(Equal(map[string]*gardencorev1beta1.ControllerInstallation{
+				controllerRegistration2.Name: controllerInstallation2,
+				controllerRegistration3.Name: controllerInstallation3,
+				controllerRegistration4.Name: controllerInstallation4,
+				controllerRegistration7.Name: controllerInstallation7,
+			}))
+		})
+
+		It("should fail to compute the result and return error", func() {
+			regNameToInstallationName, err := computeRegistrationNameToInstallationMap(controllerInstallationList, map[string]controllerRegistration{}, seed, SeedKind, nil)
+
+			Expect(err).To(HaveOccurred())
+			Expect(regNameToInstallationName).To(BeNil())
+		})
+	})
+
+	Context("deployment and deletion", func() {
+		var (
+			k8sClient client.Client
+		)
+
+		BeforeEach(func() {
+			k8sClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
+
+			Expect(k8sClient.Create(ctx, controllerDeployment.DeepCopy())).To(Succeed())
+		})
+
+		Describe("#deployNeededInstallations", func() {
+			It("should return an error when it cannot get controller installation", func() {
+				var (
+					wantedControllerRegistrations  = sets.New(controllerRegistration2.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						controllerRegistration2.Name: controllerInstallation2,
+						controllerRegistration3.Name: controllerInstallation3,
+					}
+					fakeErr = errors.New("err")
+				)
+
+				k8sClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).
+					WithInterceptorFuncs(interceptor.Funcs{
+						Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							if _, ok := obj.(*gardencorev1beta1.ControllerInstallation); ok && key.Name == controllerInstallation2.Name {
+								return fakeErr
+							}
+							return c.Get(ctx, key, obj, opts...)
+						},
+					}).Build()
+				Expect(k8sClient.Create(ctx, controllerDeployment.DeepCopy())).To(Succeed())
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, controllerRegistrations, registrationNameToInstallation)
+
+				Expect(err).To(Equal(fakeErr))
+			})
+
+			It("should return an error when needed controller installation is being deleted", func() {
+				installation2 := controllerInstallation2.DeepCopy()
+				installation2.DeletionTimestamp = &now
+				var (
+					wantedControllerRegistrations  = sets.New(controllerRegistration2.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						controllerRegistration2.Name: installation2,
+					}
+				)
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, controllerRegistrations, registrationNameToInstallation)
+
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should correctly deploy needed controller installations for seeds", func() {
+				var (
+					wantedControllerRegistrations  = sets.New(controllerRegistration2.Name, controllerRegistration3.Name, controllerRegistration4.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						controllerRegistration2.Name: controllerInstallation2,
+						controllerRegistration3.Name: controllerInstallation3,
+						controllerRegistration4.Name: nil,
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, controllerInstallation2.DeepCopy())).To(Succeed())
+				Expect(k8sClient.Create(ctx, controllerInstallation3.DeepCopy())).To(Succeed())
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, controllerRegistrations, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				ciList := &gardencorev1beta1.ControllerInstallationList{}
+				Expect(k8sClient.List(ctx, ciList)).To(Succeed())
+				Expect(ciList.Items).To(ConsistOf(
+					MatchFields(IgnoreExtras, Fields{
+						"ObjectMeta": MatchFields(IgnoreExtras, Fields{
+							"Name": Equal(controllerInstallation2.Name),
+							"Labels": And(
+								HaveKeyWithValue(ControllerDeploymentHash, "deb30f197b882cd1"),
+								HaveKeyWithValue(RegistrationSpecHash, "61ca93a1782c5fa3"),
+								HaveKeyWithValue(SeedSpecHash, "9cebb557b37cc60b"),
+							),
+						}),
+					}),
+					MatchFields(IgnoreExtras, Fields{
+						"ObjectMeta": MatchFields(IgnoreExtras, Fields{
+							"Name": Equal(controllerInstallation3.Name),
+							"Labels": And(
+								Not(HaveKey(ControllerDeploymentHash)),
+								HaveKeyWithValue(RegistrationSpecHash, "61ca93a1782c5fa3"),
+								HaveKeyWithValue(SeedSpecHash, "9cebb557b37cc60b"),
+							),
+						}),
+					}),
+					MatchFields(IgnoreExtras, Fields{
+						"ObjectMeta": MatchFields(IgnoreExtras, Fields{
+							"Name": HavePrefix(controllerRegistration4.Name),
+							"Labels": And(
+								Not(HaveKey(ControllerDeploymentHash)),
+								HaveKeyWithValue(RegistrationSpecHash, "9c7dbe8f62b60dfb"), // spellchecker:disable-line
+								HaveKeyWithValue(SeedSpecHash, "9cebb557b37cc60b"),
+							),
+						}),
+					}),
+				))
+			})
+
+			It("should correctly deploy needed controller installations for shoots", func() {
+				var (
+					wantedControllerRegistrations  = sets.New(controllerRegistration2.Name, controllerRegistration3.Name, controllerRegistration4.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						controllerRegistration2.Name: controllerInstallation2,
+						controllerRegistration3.Name: controllerInstallation3,
+						controllerRegistration4.Name: nil,
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, controllerInstallation2.DeepCopy())).To(Succeed())
+				Expect(k8sClient.Create(ctx, controllerInstallation3.DeepCopy())).To(Succeed())
+
+				Expect(deployNeededInstallations(ctx, log, k8sClient, shoot3, ShootKind, nil, wantedControllerRegistrations, controllerRegistrations, registrationNameToInstallation)).To(Succeed())
+
+				ciList := &gardencorev1beta1.ControllerInstallationList{}
+				Expect(k8sClient.List(ctx, ciList)).To(Succeed())
+				Expect(ciList.Items).To(ConsistOf(
+					MatchFields(IgnoreExtras, Fields{
+						"ObjectMeta": MatchFields(IgnoreExtras, Fields{
+							"Name": Equal(controllerInstallation2.Name),
+							"Labels": And(
+								HaveKeyWithValue(ControllerDeploymentHash, "deb30f197b882cd1"),
+								HaveKeyWithValue(RegistrationSpecHash, "61ca93a1782c5fa3"),
+								HaveKeyWithValue(ShootSpecHash, "a1fbf32b9ada7b98"),
+							),
+						}),
+					}),
+					MatchFields(IgnoreExtras, Fields{
+						"ObjectMeta": MatchFields(IgnoreExtras, Fields{
+							"Name": Equal(controllerInstallation3.Name),
+							"Labels": And(
+								Not(HaveKey(ControllerDeploymentHash)),
+								HaveKeyWithValue(RegistrationSpecHash, "61ca93a1782c5fa3"),
+								HaveKeyWithValue(ShootSpecHash, "a1fbf32b9ada7b98"),
+							),
+						}),
+					}),
+					MatchFields(IgnoreExtras, Fields{
+						"ObjectMeta": MatchFields(IgnoreExtras, Fields{
+							"Name": HavePrefix(controllerRegistration4.Name),
+							"Labels": And(
+								Not(HaveKey(ControllerDeploymentHash)),
+								HaveKeyWithValue(RegistrationSpecHash, "9c7dbe8f62b60dfb"), // spellchecker:disable-line
+								HaveKeyWithValue(ShootSpecHash, "a1fbf32b9ada7b98"),
+							),
+						}),
+					}),
+				))
+			})
+
+			It("should not skip the controller registration that is after one in deletion", func() {
+				registration1 := controllerRegistration1.DeepCopy()
+				registration1.DeletionTimestamp = &now
+				var (
+					wantedControllerRegistrations  = sets.New(registration1.Name, controllerRegistration2.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						registration1.Name:           controllerInstallation1,
+						controllerRegistration2.Name: controllerInstallation2,
+					}
+					registrations = map[string]controllerRegistration{
+						registration1.Name:           {obj: registration1, deployAlways: false},
+						controllerRegistration2.Name: {obj: controllerRegistration2, deployAlways: false},
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, controllerInstallation2.DeepCopy())).To(Succeed())
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, registrations, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				patchedInstallation2 := &gardencorev1beta1.ControllerInstallation{}
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), patchedInstallation2)).To(Succeed())
+				Expect(patchedInstallation2.Labels).To(And(
+					HaveKeyWithValue(ControllerDeploymentHash, "deb30f197b882cd1"),
+					HaveKeyWithValue(RegistrationSpecHash, "61ca93a1782c5fa3"),
+					HaveKeyWithValue(SeedSpecHash, "9cebb557b37cc60b"),
+				))
+			})
+
+			It("should not create or update controller installation for controller registration in deletion", func() {
+				registration1 := controllerRegistration1.DeepCopy()
+				registration1.DeletionTimestamp = &now
+				registration2 := controllerRegistration2.DeepCopy()
+				registration2.DeletionTimestamp = &now
+				var (
+					wantedControllerRegistrations  = sets.New(registration1.Name, registration2.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						registration1.Name: controllerInstallation1,
+						registration2.Name: nil,
+					}
+					registrations = map[string]controllerRegistration{
+						registration1.Name: {obj: registration1, deployAlways: false},
+						registration2.Name: {obj: registration2, deployAlways: false},
+					}
+				)
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, registrations, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should deploy controller installation with correct security.gardener.cloud/pod-security-enforce annotation", func() {
+				registration2 := controllerRegistration2.DeepCopy()
+				registration2.Annotations = map[string]string{
+					v1beta1constants.AnnotationPodSecurityEnforce: "baseline",
+				}
+				var (
+					wantedControllerRegistrations  = sets.New(registration2.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						registration2.Name:           controllerInstallation2,
+					}
+					registrations = map[string]controllerRegistration{
+						controllerRegistration1.Name: {obj: controllerRegistration1, deployAlways: false},
+						registration2.Name:           {obj: registration2, deployAlways: false},
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, controllerInstallation2.DeepCopy())).To(Succeed())
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, registrations, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				patchedInstallation2 := &gardencorev1beta1.ControllerInstallation{}
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), patchedInstallation2)).To(Succeed())
+				Expect(patchedInstallation2.Annotations).To(HaveKeyWithValue(v1beta1constants.AnnotationPodSecurityEnforce, "baseline"))
+			})
+
+			It("should deploy controller installation without security.gardener.cloud/pod-security-enforce annotation when removed from controller registration", func() {
+				registration2 := controllerRegistration2.DeepCopy()
+				registration2.Annotations = map[string]string{
+					v1beta1constants.AnnotationPodSecurityEnforce: "baseline",
+				}
+				var (
+					wantedControllerRegistrations  = sets.New(registration2.Name)
+					registrationNameToInstallation = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						registration2.Name:           controllerInstallation2,
+					}
+					registrations = map[string]controllerRegistration{
+						controllerRegistration1.Name: {obj: controllerRegistration1, deployAlways: false},
+						registration2.Name:           {obj: registration2, deployAlways: false},
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, controllerInstallation2.DeepCopy())).To(Succeed())
+
+				err := deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, registrations, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				patchedInstallation2 := &gardencorev1beta1.ControllerInstallation{}
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), patchedInstallation2)).To(Succeed())
+				Expect(patchedInstallation2.Annotations).To(HaveKeyWithValue(v1beta1constants.AnnotationPodSecurityEnforce, "baseline"))
+
+				// Now remove the annotation from registration and re-deploy
+				delete(registration2.Annotations, v1beta1constants.AnnotationPodSecurityEnforce)
+				registrations[registration2.Name] = controllerRegistration{obj: registration2, deployAlways: false}
+
+				err = deployNeededInstallations(ctx, log, k8sClient, seed, SeedKind, nil, wantedControllerRegistrations, registrations, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), patchedInstallation2)).To(Succeed())
+				Expect(patchedInstallation2.Annotations).NotTo(HaveKey(v1beta1constants.AnnotationPodSecurityEnforce))
+			})
+		})
+
+		Describe("#deleteUnneededInstallations", func() {
+			It("should return an error", func() {
+				var (
+					wantedControllerRegistrationNames = sets.New[string]()
+					registrationNameToInstallation    = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+					}
+					fakeErr = errors.New("err")
+				)
+
+				k8sClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).
+					WithInterceptorFuncs(interceptor.Funcs{
+						Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+							return fakeErr
+						},
+					}).Build()
+
+				err := deleteUnneededInstallations(ctx, log, k8sClient, SeedKind, wantedControllerRegistrationNames, registrationNameToInstallation)
+
+				Expect(err).To(Equal(fakeErr))
+			})
+
+			It("should correctly delete unneeded controller installations", func() {
+				var (
+					wantedControllerRegistrationNames = sets.New(controllerRegistration2.Name)
+					registrationNameToInstallation    = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration1.Name: controllerInstallation1,
+						controllerRegistration2.Name: controllerInstallation2,
+						controllerRegistration3.Name: controllerInstallation3,
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, controllerInstallation1.DeepCopy())).To(Succeed())
+				Expect(k8sClient.Create(ctx, controllerInstallation2.DeepCopy())).To(Succeed())
+				Expect(k8sClient.Create(ctx, controllerInstallation3.DeepCopy())).To(Succeed())
+
+				err := deleteUnneededInstallations(ctx, log, k8sClient, SeedKind, wantedControllerRegistrationNames, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify ci1 and ci3 are deleted, ci2 remains
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation1), &gardencorev1beta1.ControllerInstallation{})).To(BeNotFoundError())
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), &gardencorev1beta1.ControllerInstallation{})).To(Succeed())
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation3), &gardencorev1beta1.ControllerInstallation{})).To(BeNotFoundError())
+			})
+
+			It("should remove the seed ownership label instead of deleting when the ControllerInstallation has the seed-ref-name label", func() {
+				installation := controllerInstallation2.DeepCopy()
+				metav1.SetMetaDataLabel(&installation.ObjectMeta, SeedRefName, seedName)
+
+				var (
+					wantedControllerRegistrationNames = sets.New[string]()
+					registrationNameToInstallation    = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration2.Name: installation,
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, installation.DeepCopy())).To(Succeed())
+
+				err := deleteUnneededInstallations(ctx, log, k8sClient, SeedKind, wantedControllerRegistrationNames, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify the installation still exists but without the SeedRefName label
+				patchedInstallation := &gardencorev1beta1.ControllerInstallation{}
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), patchedInstallation)).To(Succeed())
+				Expect(patchedInstallation.Labels).NotTo(HaveKey(SeedRefName))
+			})
+
+			It("should skip seed-owned ControllerInstallations when the shoot reconciler calls", func() {
+				installation := controllerInstallation2.DeepCopy()
+				metav1.SetMetaDataLabel(&installation.ObjectMeta, SeedRefName, seedName)
+
+				var (
+					wantedControllerRegistrationNames = sets.New[string]()
+					registrationNameToInstallation    = map[string]*gardencorev1beta1.ControllerInstallation{
+						controllerRegistration2.Name: installation,
+					}
+				)
+
+				Expect(k8sClient.Create(ctx, installation.DeepCopy())).To(Succeed())
+
+				err := deleteUnneededInstallations(ctx, log, k8sClient, ShootKind, wantedControllerRegistrationNames, registrationNameToInstallation)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify the installation still exists with the SeedRefName label (not touched)
+				patchedInstallation := &gardencorev1beta1.ControllerInstallation{}
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(controllerInstallation2), patchedInstallation)).To(Succeed())
+				Expect(patchedInstallation.Labels).To(HaveKey(SeedRefName))
+			})
+		})
+	})
+})

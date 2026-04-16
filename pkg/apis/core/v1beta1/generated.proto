@@ -203,7 +203,7 @@ message BackupBucketSpec {
   // +optional
   optional .k8s.io.apimachinery.pkg.runtime.RawExtension providerConfig = 2;
 
-  // SeedName holds the name of the seed allocated to BackupBucket for running controller.
+  // SeedName is the name of the Seed this BackupBucket is associated with. Mutually exclusive with ShootRef.
   // This field is immutable.
   // +optional
   optional string seedName = 4;
@@ -214,6 +214,11 @@ message BackupBucketSpec {
   // security.gardener.cloud/v1alpha1.WorkloadIdentity
   // +optional
   optional .k8s.io.api.core.v1.ObjectReference credentialsRef = 5;
+
+  // ShootRef is the reference of the Shoot this BackupBucket is associated with. Mutually exclusive with SeedName.
+  // This field is immutable.
+  // +optional
+  optional .k8s.io.api.core.v1.ObjectReference shootRef = 6;
 }
 
 // BackupBucketStatus holds the most recently observed status of the Backup Bucket.
@@ -270,9 +275,14 @@ message BackupEntrySpec {
   // BucketName is the name of backup bucket for this Backup Entry.
   optional string bucketName = 1;
 
-  // SeedName holds the name of the seed to which this BackupEntry is scheduled
+  // SeedName is the name of the Seed this BackupEntry is associated with. Mutually exclusive with ShootRef.
   // +optional
   optional string seedName = 2;
+
+  // ShootRef is the reference of the Shoot this BackupBucket is associated with. Mutually exclusive with SeedName.
+  // This field is immutable.
+  // +optional
+  optional .k8s.io.api.core.v1.ObjectReference shootRef = 3;
 }
 
 // BackupEntryStatus holds the most recently observed status of the Backup Entry.
@@ -393,6 +403,9 @@ message CloudProfile {
   // Spec defines the provider environment properties.
   // +optional
   optional CloudProfileSpec spec = 2;
+
+  // Status contains the current status of the cloud profile.
+  optional CloudProfileStatus status = 3;
 }
 
 // CloudProfileList is a collection of CloudProfiles.
@@ -403,6 +416,13 @@ message CloudProfileList {
 
   // Items is the list of CloudProfiles.
   repeated CloudProfile items = 2;
+}
+
+// CloudProfileMachineControllerManagerSettings contains a subset of the MachineControllerManagerSettings which can be defaulted for a machine type in a CloudProfile.
+message CloudProfileMachineControllerManagerSettings {
+  // MachineCreationTimeout is the period after which creation of a machine of this machine type is declared failed.
+  // +optional
+  optional .k8s.io.apimachinery.pkg.apis.meta.v1.Duration machineCreationTimeout = 1;
 }
 
 // CloudProfileReference holds the information about a CloudProfile or a NamespacedCloudProfile.
@@ -477,6 +497,17 @@ message CloudProfileSpec {
   repeated CapabilityDefinition machineCapabilities = 12;
 }
 
+// CloudProfileStatus contains the status of the cloud profile.
+message CloudProfileStatus {
+  // Kubernetes contains the status information for kubernetes.
+  // +optional
+  optional KubernetesStatus kubernetes = 1;
+
+  // MachineImages contains the statuses of the machine image versions.
+  // +optional
+  repeated MachineImageStatus machineImages = 2;
+}
+
 // ClusterAutoscaler contains the configuration flags for the Kubernetes cluster autoscaler.
 message ClusterAutoscaler {
   // ScaleDownDelayAfterAdd defines how long after scale up that scale down evaluation resumes (default: 1 hour).
@@ -517,7 +548,8 @@ message ClusterAutoscaler {
   optional int32 maxGracefulTerminationSeconds = 9;
 
   // IgnoreTaints specifies a list of taint keys to ignore in node templates when considering to scale a node group.
-  // Deprecated: Ignore taints are deprecated as of K8S 1.29 and treated as startup taints
+  //
+  // Deprecated: Ignore taints are deprecated and treated as startup taints
   // +optional
   repeated string ignoreTaints = 10;
 
@@ -705,7 +737,12 @@ message ControllerInstallationSpec {
   optional .k8s.io.api.core.v1.ObjectReference registrationRef = 1;
 
   // SeedRef is used to reference a Seed resource. The name field of the SeedRef is immutable.
+  // +optional
   optional .k8s.io.api.core.v1.ObjectReference seedRef = 2;
+
+  // ShootRef is used to reference a Shoot resource. The name and namespace fields of the ShootRef are immutable.
+  // +optional
+  optional .k8s.io.api.core.v1.ObjectReference shootRef = 4;
 
   // DeploymentRef is used to reference a ControllerDeployment resource.
   // +optional
@@ -871,10 +908,13 @@ message DNS {
   //
   // Deprecated: Configuring multiple DNS providers is deprecated and will be forbidden in a future release.
   // Please use the DNS extension provider config (e.g. shoot-dns-service) for additional providers.
-  // +patchMergeKey=type
-  // +patchStrategy=merge
   // +optional
   repeated DNSProvider providers = 2;
+}
+
+// DNSExposure specifies that this shoot will be exposed by DNS.
+// There is no specific configuration currently, for future extendability.
+message DNSExposure {
 }
 
 // DNSIncludeExclude contains information about which domains shall be included/excluded.
@@ -908,6 +948,9 @@ message DNSProvider {
   // provider. When not specified, the Gardener will use the cloud provider credentials referenced
   // by the Shoot and try to find respective credentials there (primary provider only). Specifying this field may override
   // this behavior, i.e. forcing the Gardener to only look into the given secret.
+  //
+  // Deprecated: This field is deprecated and will be forbidden starting from Kubernetes 1.35. Please use `CredentialsRef` instead.
+  // Until removed, this field is synced with the `CredentialsRef` field when it refers to a secret.
   // +optional
   optional string secretName = 3;
 
@@ -921,6 +964,11 @@ message DNSProvider {
   // Please use the DNS extension provider config (e.g. shoot-dns-service) for additional configuration.
   // +optional
   optional DNSIncludeExclude zones = 5;
+
+  // CredentialsRef is a reference to a resource providing credentials for the DNS provider.
+  // Supported resources are Secret and WorkloadIdentity.
+  // +optional
+  optional .k8s.io.api.autoscaling.v1.CrossVersionObjectReference credentialsRef = 6;
 }
 
 // DataVolume contains information about a data volume.
@@ -1020,6 +1068,9 @@ message EncryptionAtRest {
   // See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
   // +optional
   repeated string resources = 1;
+
+  // Provider contains information about Shoot encryption provider.
+  optional EncryptionProviderStatus provider = 2;
 }
 
 // EncryptionConfig contains customizable encryption configuration of the API server.
@@ -1028,22 +1079,74 @@ message EncryptionConfig {
   // Each item is a Kubernetes resource name in plural (resource or resource.group) that should be encrypted.
   // Wildcards are not supported for now.
   // See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
+  // +optional
   repeated string resources = 1;
+
+  // Provider contains information about the encryption provider.
+  optional EncryptionProvider provider = 2;
 }
 
-// ExpirableVersion contains a version and an expiration date.
+// EncryptionProvider contains information about the encryption provider.
+message EncryptionProvider {
+  // Type contains the type of the encryption provider.
+  //
+  // Supported types:
+  //   - "aescbc"
+  // Defaults to aescbc.
+  // +optional
+  optional string type = 1;
+}
+
+// EncryptionProviderStatus contains information about Shoot encryption provider.
+message EncryptionProviderStatus {
+  // Type is the used encryption provider type.
+  optional string type = 1;
+}
+
+// ExpirableVersion contains a version with associated lifecycle information.
 message ExpirableVersion {
   // Version is the version identifier.
   optional string version = 1;
 
   // ExpirationDate defines the time at which this version expires.
+  //
+  // Deprecated: Is replaced by Lifecycle; mutually exclusive with it.
   // +optional
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.Time expirationDate = 2;
 
   // Classification defines the state of a version (preview, supported, deprecated).
-  // To get the currently valid classification, use CurrentLifecycleClassification().
+  //
+  // Deprecated: Is replaced by Lifecycle. mutually exclusive with it.
   // +optional
   optional string classification = 3;
+
+  // Lifecycle defines the lifecycle stages for this version.
+  // Mutually exclusive with Classification and ExpirationDate.
+  // This can only be used when the VersionClassificationLifecycle feature gate is enabled.
+  // +optional
+  repeated LifecycleStage lifecycle = 4;
+}
+
+// ExpirableVersionStatus defines the current status of an expirable version.
+message ExpirableVersionStatus {
+  // Version is the version identifier.
+  optional string version = 1;
+
+  // Classification reflects the current state in the classification lifecycle.
+  optional string classification = 2;
+}
+
+// Exposure holds the exposure configuration for the shoot (either `extension` or `dns` or omitted/empty).
+message Exposure {
+  // Extension holds the type and provider config of the exposure extension.
+  // Mutually exclusive with DNS.
+  // +optional
+  optional ExtensionExposure extension = 1;
+
+  // DNS specifies that this shoot will be exposed by DNS.
+  // Mutually exclusive with Extension.
+  // +optional
+  optional DNSExposure dns = 2;
 }
 
 // ExposureClass represents a control plane endpoint exposure strategy.
@@ -1097,6 +1200,18 @@ message Extension {
   // Disabled allows to disable extensions that were marked as 'automatically enabled' by Gardener administrators.
   // +optional
   optional bool disabled = 3;
+}
+
+// ExtensionExposure holds the type and provider config of the exposure extension.
+message ExtensionExposure {
+  // Type defines the type of the extension exposure.
+  // Defaults to `.spec.provider.type`
+  // +optional
+  optional string type = 1;
+
+  // ProviderConfig holds the extension specific configuration.
+  // +optional
+  optional .k8s.io.apimachinery.pkg.runtime.RawExtension providerConfig = 2;
 }
 
 // ExtensionResourceState contains the kind of the extension custom resource and its last observed state in the Shoot's
@@ -1379,10 +1494,9 @@ message KubeAPIServerConfig {
   // of the API server should be allowed (flag `--anonymous-auth`).
   // See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
   //
-  // Deprecated: This field is deprecated and will be removed in a future release.
+  // Deprecated: This field is deprecated and will be removed after support for Kubernetes v1.34 is dropped.
+  // This field is forbidden for clusters with Kubernetes version >= 1.35.
   // Please use anonymous authentication configuration instead.
-  // For more information see: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration
-  // TODO(marc1404): Forbid this field when the feature gate AnonymousAuthConfigurableEndpoints has graduated.
   // +optional
   optional bool enableAnonymousAuthentication = 11;
 
@@ -1414,12 +1528,10 @@ message KubeAPIServerConfig {
   optional EncryptionConfig encryptionConfig = 16;
 
   // StructuredAuthentication contains configuration settings for structured authentication for the kube-apiserver.
-  // This field is only available for Kubernetes v1.30 or later.
   // +optional
   optional StructuredAuthentication structuredAuthentication = 17;
 
   // StructuredAuthorization contains configuration settings for structured authorization for the kube-apiserver.
-  // This field is only available for Kubernetes v1.30 or later.
   // +optional
   optional StructuredAuthorization structuredAuthorization = 18;
 
@@ -1456,6 +1568,10 @@ message KubeControllerManagerConfig {
   // NodeMonitorGracePeriod defines the grace period before an unresponsive node is marked unhealthy.
   // +optional
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.Duration nodeMonitorGracePeriod = 5;
+
+  // NodeCIDRMaskSizeIPv6 defines the mask size for node cidr in cluster (default is 64). This field is immutable.
+  // +optional
+  optional int32 nodeCIDRMaskSizeIPv6 = 6;
 }
 
 // KubeProxyConfig contains configuration settings for the kube-proxy.
@@ -1478,10 +1594,11 @@ message KubeProxyConfig {
 message KubeSchedulerConfig {
   optional KubernetesConfig kubernetesConfig = 1;
 
-  // KubeMaxPDVols allows to configure the `KUBE_MAX_PD_VOLS` environment variable for the kube-scheduler.
-  // Please find more information here: https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits
-  // Note that using this field is considered alpha-/experimental-level and is on your own risk. You should be aware
-  // of all the side-effects and consequences when changing it.
+  // KubeMaxPDVols is not respected anymore by kube-scheduler.
+  // The maximum number of attached volumes is configured by the CSI driver.
+  // More information can be found at https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits.
+  //
+  // Deprecated: This field is deprecated. Using this field will be forbidden starting from Kubernetes 1.35.
   // +optional
   optional string kubeMaxPDVols = 2;
 
@@ -1566,15 +1683,6 @@ message KubeletConfig {
   // +optional
   // Default: cpu=80m,memory=1Gi,pid=20k
   optional KubeletConfigReserved kubeReserved = 14;
-
-  // SystemReserved is the configuration for resources reserved for system processes not managed by kubernetes (e.g. journald).
-  // When updating these values, be aware that cgroup resizes may not succeed on active worker nodes. Look for the NodeAllocatableEnforced event to determine if the configuration was applied.
-  //
-  // Deprecated: Separately configuring resource reservations for system processes is deprecated in Gardener and will be forbidden starting from Kubernetes 1.31.
-  // Please merge existing resource reservations into the kubeReserved field.
-  // TODO(MichaelEischer): Drop this field after support for Kubernetes 1.30 is dropped.
-  // +optional
-  optional KubeletConfigReserved systemReserved = 15;
 
   // ImageGCHighThresholdPercent describes the percent of the disk usage which triggers image garbage collection.
   // +optional
@@ -1807,6 +1915,13 @@ message KubernetesSettings {
   repeated ExpirableVersion versions = 1;
 }
 
+// KubernetesStatus contains the status information for kubernetes.
+message KubernetesStatus {
+  // Versions contains the statuses of the kubernetes versions.
+  // +optional
+  repeated ExpirableVersionStatus versions = 1;
+}
+
 // LastError indicates the last occurred error for an operation on a resource.
 message LastError {
   // A human readable message indicating details about the last error.
@@ -1858,6 +1973,19 @@ message LastOperation {
 
   // Type of the last operation, one of Create, Reconcile, Delete, Migrate, Restore.
   optional string type = 5;
+}
+
+// LifecycleStage describes a stage in the versions lifecycle.
+// Each stage defines the classification of the version (e.g. unavailable, preview, supported, deprecated, expired)
+// and the time at which this classification becomes effective.
+message LifecycleStage {
+  // Classification is the category of this lifecycle stage (unavailable, preview, supported, deprecated, expired).
+  optional string classification = 1;
+
+  // StartTime defines when this lifecycle stage becomes active.
+  // StartTime can be omitted for the first lifecycle stage, implying a start time in the past.
+  // +optional
+  optional .k8s.io.apimachinery.pkg.apis.meta.v1.Time startTime = 2;
 }
 
 // Limits configures operational limits for Shoot clusters using this CloudProfile.
@@ -1949,6 +2077,16 @@ message MachineImageFlavor {
   map<string, CapabilityValues> capabilities = 1;
 }
 
+// MachineImageStatus contains the status of a machine image and its version classifications.
+message MachineImageStatus {
+  // Name matches the name of the MachineImage the status is represented of.
+  optional string name = 1;
+
+  // Versions contains the statuses of the machine image versions.
+  // +optional
+  repeated ExpirableVersionStatus versions = 2;
+}
+
 // MachineImageVersion is an expirable version with list of supported container runtimes and interfaces
 message MachineImageVersion {
   optional ExpirableVersion expirableVersion = 1;
@@ -2008,6 +2146,10 @@ message MachineType {
   // Capabilities contains the machine type capabilities.
   // +optional
   map<string, CapabilityValues> capabilities = 8;
+
+  // MachineControllerManagerSettings contains a subset of the MachineControllerManagerSettings which can be defaulted for a machine type in a CloudProfile.
+  // +optional
+  optional CloudProfileMachineControllerManagerSettings machineControllerManager = 9;
 }
 
 // MachineTypeStorage is the amount of storage associated with the root volume of this machine type.
@@ -2044,6 +2186,17 @@ message Maintenance {
   // an immediate roll out which is changes to the Spec.Hibernation.Enabled field.
   // +optional
   optional bool confineSpecUpdateRollout = 3;
+
+  // AutoRotation contains information about which rotations should be automatically performed.
+  // +optional
+  optional MaintenanceAutoRotation autoRotation = 4;
+}
+
+// MaintenanceAutoRotation contains information about which rotations should be automatically performed.
+message MaintenanceAutoRotation {
+  // Credentials contains information about which credentials should be automatically rotated.
+  // +optional
+  optional MaintenanceCredentialsAutoRotation credentials = 1;
 }
 
 // MaintenanceAutoUpdate contains information about which constraints should be automatically updated.
@@ -2054,6 +2207,29 @@ message MaintenanceAutoUpdate {
   // MachineImageVersion indicates whether the machine image version may be automatically updated (default: true).
   // +optional
   optional bool machineImageVersion = 2;
+}
+
+// MaintenanceCredentialsAutoRotation contains information about which credentials should be automatically rotated.
+message MaintenanceCredentialsAutoRotation {
+  // Observability configures the automatic rotation for the observability credentials.
+  // +optional
+  optional MaintenanceRotationConfig observability = 1;
+
+  // SSHKeypair configures the automatic rotation for the ssh keypair for worker nodes.
+  // +optional
+  optional MaintenanceRotationConfig sshKeypair = 2;
+
+  // ETCDEncryptionKey configures the automatic rotation for the etcd encryption key.
+  // +optional
+  optional MaintenanceRotationConfig etcdEncryptionKey = 3;
+}
+
+// MaintenanceRotationConfig contains configuration for automatic rotation.
+message MaintenanceRotationConfig {
+  // RotationPeriod is the period between a completed rotation and the start of a new rotation (default: 7d).
+  // The allowed rotation period is between 30m and 90d. When set to 0, rotation is disabled.
+  // +optional
+  optional .k8s.io.apimachinery.pkg.apis.meta.v1.Duration rotationPeriod = 1;
 }
 
 // MaintenanceTimeWindow contains information about the time window for maintenance operations.
@@ -2081,7 +2257,7 @@ message ManualWorkerPoolRollout {
 // MemorySwapConfiguration contains kubelet swap configuration
 // For more information, please see KEP: 2400-node-swap
 message MemorySwapConfiguration {
-  // SwapBehavior configures swap memory available to container workloads. May be one of {"LimitedSwap", "UnlimitedSwap"}
+  // SwapBehavior configures swap memory available to container workloads. May be one of {"NoSwap", "LimitedSwap"}
   // defaults to: LimitedSwap
   // +optional
   optional string swapBehavior = 1;
@@ -2290,6 +2466,14 @@ message OCIRepository {
   // The secret must be of type `kubernetes.io/dockerconfigjson` and must be located in the `garden` namespace.
   // +optional
   optional .k8s.io.api.core.v1.LocalObjectReference pullSecretRef = 5;
+
+  // CABundleSecretRef is a reference to a secret containing a PEM-encoded certificate authority bundle.
+  // The CA bundle is used to verify the TLS certificate of the OCI registry.
+  // The secret must have a data key `bundle.crt` and must be located in the `garden` namespace.
+  // For usage in the gardenlet, the secret must have the label `gardener.cloud/role=oci-ca-bundle`.
+  // If not provided, the system's default certificate pool is used.
+  // +optional
+  optional .k8s.io.api.core.v1.LocalObjectReference caBundleSecretRef = 6;
 }
 
 // OIDCConfig contains configuration settings for the OIDC provider.
@@ -2298,14 +2482,6 @@ message OIDCConfig {
   // If set, the OpenID server's certificate will be verified by one of the authorities in the oidc-ca-file, otherwise the host's root CA set will be used.
   // +optional
   optional string caBundle = 1;
-
-  // ClientAuthentication can optionally contain client configuration used for kubeconfig generation.
-  //
-  // Deprecated: This field has no implemented use and will be forbidden starting from Kubernetes 1.31.
-  // It's use was planned for generating OIDC kubeconfig https://github.com/gardener/gardener/issues/1433
-  // TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dropped.
-  // +optional
-  optional OpenIDConnectClientAuthentication clientAuthentication = 2;
 
   // The client ID for the OpenID Connect client, must be set.
   // +optional
@@ -2494,6 +2670,12 @@ message ProjectStatus {
   // LastActivityTimestamp contains the timestamp from the last activity performed in this project.
   // +optional
   optional .k8s.io.apimachinery.pkg.apis.meta.v1.Time lastActivityTimestamp = 5;
+
+  // Conditions represents the latest available observations of a Project's current state.
+  // +patchMergeKey=type
+  // +patchStrategy=merge
+  // +optional
+  repeated Condition conditions = 6;
 }
 
 // ProjectTolerations contains the tolerations for taints on seed clusters.
@@ -2704,8 +2886,12 @@ message SeedDNSProvider {
   // Type describes the type of the dns-provider, for example `aws-route53`
   optional string type = 1;
 
-  // SecretRef is a reference to a Secret object containing cloud provider credentials used for registering external domains.
-  optional .k8s.io.api.core.v1.SecretReference secretRef = 2;
+  // CredentialsRef is a reference to a resource holding the credentials used for
+  // authentication with the DNS provider.
+  // Supported referenced resources are v1.Secrets and
+  // security.gardener.cloud/v1alpha1.WorkloadIdentity
+  // +optional
+  optional .k8s.io.api.core.v1.ObjectReference credentialsRef = 5;
 }
 
 // SeedDNSProviderConfig configures a DNS provider.
@@ -2722,7 +2908,8 @@ message SeedDNSProviderConfig {
 
   // CredentialsRef is a reference to a resource holding the credentials used for
   // authentication with the DNS provider.
-  // As of now, only v1.Secrets are supported.
+  // Supported referenced resources are v1.Secrets and
+  // security.gardener.cloud/v1alpha1.WorkloadIdentity
   optional .k8s.io.api.core.v1.ObjectReference credentialsRef = 4;
 }
 
@@ -2946,6 +3133,16 @@ message SeedSettingVerticalPodAutoscaler {
   map<string, .k8s.io.apimachinery.pkg.api.resource.Quantity> maxAllowed = 3;
 }
 
+// SeedSettingZoneSelection controls whether shoot control plane zone placement is derived
+// from the shoot's worker pool zones rather than randomly selected from seed zones.
+message SeedSettingZoneSelection {
+  // Mode controls the zone selection behavior.
+  // "Prefer" tries to match worker pool zones to seed zones, falling back to random selection on mismatch.
+  // "Enforce" requires worker pool zones to be present in the seed's zone list; scheduling fails otherwise.
+  // +kubebuilder:validation:Enum=Prefer;Enforce
+  optional string mode = 1;
+}
+
 // SeedSettings contains certain settings for this seed cluster.
 message SeedSettings {
   // ExcessCapacityReservation controls the excess capacity reservation for shoot control planes in the seed.
@@ -2972,6 +3169,12 @@ message SeedSettings {
   // See https://github.com/gardener/gardener/blob/master/docs/operations/topology_aware_routing.md.
   // +optional
   optional SeedSettingTopologyAwareRouting topologyAwareRouting = 8;
+
+  // ZoneSelection controls whether shoot control plane zone placement is derived from the shoot's worker pool zones
+  // rather than randomly selected from seed zones.
+  // See https://github.com/gardener/gardener/blob/master/docs/operations/seed_settings.md#zone-selection.
+  // +optional
+  optional SeedSettingZoneSelection zoneSelection = 9;
 }
 
 // SeedSpec is the specification of a Seed.
@@ -3189,6 +3392,10 @@ message ShootAdvertisedAddress {
 
   // The URL of the API Server. e.g. https://api.foo.bar or https://1.2.3.4
   optional string url = 2;
+
+  // Application is the name of the application this address belongs to. Used by UI clients.
+  // +optional
+  optional string application = 3;
 }
 
 // ShootCredentials contains information about the shoot credentials.
@@ -3287,10 +3494,13 @@ message ShootSSHKeypairRotation {
 // ShootSpec is the specification of a Shoot.
 message ShootSpec {
   // Addons contains information about enabled/disabled addons and their configuration.
+  //
+  // Deprecated: This field is deprecated. Enabling addons will be forbidden starting from Kubernetes 1.35.
   // +optional
   optional Addons addons = 1;
 
   // CloudProfileName is a name of a CloudProfile object.
+  //
   // Deprecated: This field will be removed in a future version of Gardener. Use `CloudProfile` instead.
   // Until Kubernetes v1.33, this field is synced with the `CloudProfile` field.
   // Starting with Kubernetes v1.34, this field is set to empty string and must not be provided anymore.
@@ -3349,6 +3559,7 @@ message ShootSpec {
   optional string seedName = 14;
 
   // SeedSelector is an optional selector which must match a seed's labels for the shoot to be scheduled on that seed.
+  // Once the shoot is assigned to a seed, the selector can only be changed later if the new one still matches the assigned seed.
   // +optional
   optional SeedSelector seedSelector = 15;
 
@@ -3363,7 +3574,6 @@ message ShootSpec {
   repeated Toleration tolerations = 17;
 
   // ExposureClassName is the optional name of an exposure class to apply a control plane endpoint exposure strategy.
-  // This field is immutable.
   // +optional
   optional string exposureClassName = 18;
 
@@ -3512,15 +3722,6 @@ message ShootStatus {
   // LastMaintenance holds information about the last maintenance operations on the Shoot.
   // +optional
   optional LastMaintenance lastMaintenance = 17;
-
-  // EncryptedResources is the list of resources in the Shoot which are currently encrypted.
-  // Secrets are encrypted by default and are not part of the list.
-  // See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
-  //
-  // Deprecated: This field is deprecated and will be removed with release v1.138.
-  // This field will be removed in favor of `status.credentials.encryptionAtRest.resources`.
-  // +optional
-  repeated string encryptedResources = 18;
 
   // Networking contains information about cluster networking such as CIDRs.
   // +optional
@@ -3686,6 +3887,11 @@ message VerticalPodAutoscaler {
   // Defaults to nil (no maximum).
   // +optional
   map<string, .k8s.io.apimachinery.pkg.api.resource.Quantity> maxAllowed = 20;
+
+  // RecommenderUpdateWorkerCount is the number of workers used in the vpa-recommender for updating VPAs and VPACheckpoints in parallel.
+  // (default: 10)
+  // +optional
+  optional int64 recommenderUpdateWorkerCount = 21;
 }
 
 // Volume contains information about the volume type, size, and encryption.
@@ -3725,9 +3931,10 @@ message VolumeType {
 
 // WatchCacheSizes contains configuration of the API server's watch cache sizes.
 message WatchCacheSizes {
-  // Default configures the default watch cache size of the kube-apiserver
-  // (flag `--default-watch-cache-size`, defaults to 100).
-  // See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+  // Default is not respected anymore by kube-apiserver.
+  // The cache is sized automatically.
+  //
+  // Deprecated: This field is deprecated. Setting the default cache size will be forbidden starting from Kubernetes 1.35.
   // +optional
   optional int32 default = 1;
 
@@ -3850,6 +4057,10 @@ message WorkerControlPlane {
   // If it is not specified, then there won't be any backups taken.
   // +optional
   optional Backup backup = 1;
+
+  // Exposure holds the exposure configuration for the shoot (either `extension` or `dns` or omitted/empty).
+  // +optional
+  optional Exposure exposure = 2;
 }
 
 // WorkerKubernetes contains configuration for Kubernetes components related to this worker pool.

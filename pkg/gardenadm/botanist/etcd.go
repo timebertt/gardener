@@ -14,19 +14,19 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	bootstrapetcd "github.com/gardener/gardener/pkg/component/etcd/bootstrap"
 	corebackupbucket "github.com/gardener/gardener/pkg/component/garden/backupbucket"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	backupbucketcontroller "github.com/gardener/gardener/pkg/gardenlet/controller/backupbucket"
 	backupentrycontroller "github.com/gardener/gardener/pkg/gardenlet/controller/backupentry"
 	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
@@ -47,10 +47,11 @@ func (b *GardenadmBotanist) DeployEtcdDruid(ctx context.Context) error {
 
 	gardenletConfig := &gardenletconfigv1alpha1.GardenletConfiguration{}
 	gardenletconfigv1alpha1.SetObjectDefaults_GardenletConfiguration(gardenletConfig)
+	gardenletConfig.ETCDConfig.FeatureGates = map[string]bool{"UpgradeEtcdVersion": true}
 
 	deployer, err := sharedcomponent.NewEtcdDruid(
 		b.SeedClientSet.Client(),
-		b.Shoot.ControlPlaneNamespace,
+		v1beta1constants.GardenNamespace,
 		b.Shoot.KubernetesVersion,
 		componentImageVectors,
 		gardenletConfig.ETCDConfig,
@@ -77,7 +78,7 @@ func (b *GardenadmBotanist) ReconcileBackupBucket(ctx context.Context) error {
 		GardenClient:    b.GardenClient,
 		SeedClient:      b.SeedClientSet.Client(),
 		Clock:           b.Clock,
-		Recorder:        &record.FakeRecorder{},
+		Recorder:        &events.FakeRecorder{},
 		GardenNamespace: b.Shoot.ControlPlaneNamespace,
 	}
 
@@ -96,6 +97,7 @@ func (b *GardenadmBotanist) reconcileCoreBackupBucketResource(ctx context.Contex
 		Config:        v1beta1helper.GetBackupConfigForShoot(b.Shoot.GetInfo(), nil),
 		DefaultRegion: b.Shoot.GetInfo().Spec.Region,
 		Clock:         b.Clock,
+		Shoot:         b.Shoot.GetInfo(),
 	}, corebackupbucket.DefaultInterval, corebackupbucket.DefaultTimeout)
 
 	if err := component.Deploy(ctx); err != nil {
@@ -116,7 +118,7 @@ func (b *GardenadmBotanist) ReconcileBackupEntry(ctx context.Context) error {
 		GardenClient:    b.GardenClient,
 		SeedClient:      b.SeedClientSet.Client(),
 		Clock:           b.Clock,
-		Recorder:        &record.FakeRecorder{},
+		Recorder:        &events.FakeRecorder{},
 		GardenNamespace: b.Shoot.ControlPlaneNamespace,
 	}
 

@@ -8,14 +8,11 @@ This document describes the steps needed to perform in order to confidently add 
 - Ensure Gardener and extensions are updated to support the new Kubernetes version ([example](https://github.com/gardener/gardener/issues/11020))
 - Bump Golang dependencies for `k8s.io/*` and `sigs.k8s.io/controller-runtime` ([example](https://github.com/gardener/gardener/issues/11186)) [[ref](#bump-golang-dependencies-for-k8sio-and-sigsk8siocontroller-runtime)]
 - Prepare a short (~30-60 min) session for a special edition of Gardener's Review Meeting on new key features and changes in the release
-- Drop support for all but the greatest/latest 5 Kubernetes minor versions (the newly added plus four prior). Drop all lower/older versions and adapt accordingly ([example](https://github.com/gardener/gardener/pull/10664))
+- Drop support for all but the greatest/latest 4 Kubernetes minor versions (the newly added plus three prior). Drop all lower/older versions and adapt accordingly ([example](https://github.com/gardener/gardener/pull/10664))
+  - Removing support is only possible if the Kubernetes version to be dropped has been supported for at least 14 months. See [Supported Kubernetes Versions](../usage/shoot-operations/supported_k8s_versions.md) for details.
 
 Version | Expected Release Date | Release Responsibles                                                                         |
 --------|-----------------------|----------------------------------------------------------------------------------------------|
-v1.32   | December 11, 2024     | [@marc1404](https://github.com/marc1404), [@LucaBernstein](https://github.com/LucaBernstein) |
-v1.33   | April 23, 2025        | [@Kostov6](https://github.com/Kostov6), [@plkokanov](https://github.com/plkokanov)           |
-v1.34   | August 27, 2025       | [@tobschli](https://github.com/tobschli), [@ScheererJ](https://github.com/ScheererJ)         |
-v1.35   | December ?, 2025      | [@timuthy](https://github.com/timuthy), [@rfranzke](https://github.com/rfranzke)             |
 v1.36   | April ?, 2026         | [@oliver-goetz](https://github.com/oliver-goetz), [@ary1992](https://github.com/ary1992)     |
 v1.37   | August ?, 2026        | [@acumino](https://github.com/acumino), [@shafeeqes](https://github.com/shafeeqes)           |
 v1.38   | December ?, 2026      | [@ialidzhikov](https://github.com/ialidzhikov), TBD                                          |
@@ -39,6 +36,10 @@ v1.38   | December ?, 2026      | [@ialidzhikov](https://github.com/ialidzhikov)
   v1.29   | December 13, 2023     | [@acumino](https://github.com/acumino)                                                       |
   v1.30   | April 17, 2024        | [@shafeeqes](https://github.com/shafeeqes)                                                   |
   v1.31   | August 13, 2024       | [@ialidzhikov](https://github.com/ialidzhikov)                                               |
+  v1.32   | December 11, 2024     | [@marc1404](https://github.com/marc1404), [@LucaBernstein](https://github.com/LucaBernstein) |
+  v1.33   | April 23, 2025        | [@Kostov6](https://github.com/Kostov6), [@plkokanov](https://github.com/plkokanov)           |
+  v1.34   | August 27, 2025       | [@tobschli](https://github.com/tobschli), [@ScheererJ](https://github.com/ScheererJ)         |
+  v1.35   | December 17, 2025     | [@timuthy](https://github.com/timuthy), [@rfranzke](https://github.com/rfranzke)             |
 </details>
 
 ## Introduction
@@ -122,7 +123,7 @@ There is a CI/CD job that runs periodically and releases a new `hyperkube` image
 - Maintain the Kubernetes `kube-apiserver` API groups used for validation of `Shoot` resources:
   - The API groups are maintained in [this](../../pkg/utils/validation/apigroups/apigroups.go) file.
   - See [this](https://github.com/gardener/gardener/pull/11197/commits/73b655475ac2565a9fdf098f10bab9cfdbed961a) example commit.
-  - To maintain this list for new Kubernetes versions, run `hack/compare-k8s-api-groups.sh <old-version> <new-version>` (e.g. `hack/compare-k8s-api-groups.sh 1.26 1.27`).
+  - To maintain this list for new Kubernetes versions, run `hack/compare-k8s-api-groups.sh <old-version> <new-version>` (e.g. `hack/compare-k8s-api-groups.sh 1.34 1.35`).
   - It will present 2 lists of API GroupVersions and 2 lists of API GroupVersionResources: those added and those removed in `<new-version>` compared to `<old-version>`.
   - Add all added group versions to the `apiGroupVersionRanges` map and group version resources to the `apiGVRVersionRanges` map with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`.
   - For any removed APIs, add `<new-version>` as `RemovedInVersion` to the already existing API in the corresponding map.
@@ -130,7 +131,7 @@ There is a CI/CD job that runs periodically and releases a new `hyperkube` image
 - Maintain the Kubernetes `kube-controller-manager` controllers for each API group used in deploying required KCM controllers based on active APIs:
   - The API groups are maintained in [this](../../pkg/utils/kubernetes/controllers.go) file.
   - See [this](https://github.com/gardener/gardener/pull/11197/commits/15f8ad3486edc629ecaaa5e30f10619737d01316) example commit.
-  - To maintain this list for new Kubernetes versions, run `hack/compute-k8s-controllers.sh <old-version> <new-version>` (e.g. `hack/compute-k8s-controllers.sh 1.28 1.29`).
+  - To maintain this list for new Kubernetes versions, run `hack/compute-k8s-controllers.sh <old-version> <new-version>` (e.g. `hack/compute-k8s-controllers.sh 1.34 1.35`).
   - If it complains that the path for the controller is not present in the map, check the release branch of the new Kubernetes version and find the correct path for the missing/wrong controller. You can do so by checking the file `cmd/kube-controller-manager/app/controllermanager.go` and where the controller is initialized from. As of now, there is no straight-forward way to map each controller to its file. If this has improved, please enhance the script.
   - If the paths are correct, it will present 2 lists of controllers: those added and those removed for each API group in `<new-version>` compared to `<old-version>`.
   - Add all added controllers to the `APIGroupControllerMap` map and under the corresponding API group with `<new-version>` as `AddedInVersion` and no `RemovedInVersion`.
@@ -203,6 +204,9 @@ Typically, the following validations should be performed:
 
 If everything looks good, then go ahead and file the PR ([example PR](https://github.com/gardener/gardener-extension-provider-aws/pull/480)).
 Generally, it is again great if you add the PRs also to the umbrella issue so that they can be tracked more easily.
+
+Once the release is published that adds support for the new Kubernetes version, update the [Supported Kubernetes Versions](../usage/shoot-operations/supported_k8s_versions.md) table and the [`supported-kubernetes-versions.yaml`](../../supported-kubernetes-versions.yaml) file accordingly.
+We consider a new Kubernetes version supported by Gardener with the release of `gardener/gardener` and keep support for at least 14 months after the publish date of the release.
 
 ### Bump Golang dependencies for `k8s.io/*` and `sigs.k8s.io/controller-runtime`
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -17,9 +18,9 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 )
 
 // Reconciler reconciles ControllerInstallations. It checks whether they are still required by using the
@@ -30,14 +31,26 @@ type Reconciler struct {
 	Config       gardenletconfigv1alpha1.ControllerInstallationRequiredControllerConfiguration
 	Clock        clock.Clock
 	SeedName     string
+	// SelfHostedShootMeta is set when running in self-hosted shoot mode. It is used to filter
+	// ControllerInstallations by their .spec.shootRef instead of .spec.seedRef.
+	SelfHostedShootMeta *types.NamespacedName
 
 	Lock                *sync.RWMutex
 	KindToRequiredTypes map[string]sets.Set[string]
+
+	deferredEventHandlerRegistrations []*eventHandlerRegistration
 }
 
 // Reconcile performs the main reconciliation logic.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := logf.FromContext(ctx)
+
+	// Some event handlers are too expensive to be registered during the manager startup. Register them once during the first reconciliation.
+	for _, handler := range r.deferredEventHandlerRegistrations {
+		if err := handler.registerOnce(); err != nil {
+			return reconcile.Result{}, fmt.Errorf("error registering event handler: %w", err)
+		}
+	}
 
 	controllerInstallation := &gardencorev1beta1.ControllerInstallation{}
 	if err := r.GardenClient.Get(ctx, request.NamespacedName, controllerInstallation); err != nil {

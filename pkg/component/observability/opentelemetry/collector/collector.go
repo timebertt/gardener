@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	otelv1beta1 "github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -21,9 +20,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
+	kubeapiserverconstants "github.com/gardener/gardener/pkg/component/kubernetes/apiserver/constants"
 	valiconstants "github.com/gardener/gardener/pkg/component/observability/logging/vali/constants"
+	victorialogsconstants "github.com/gardener/gardener/pkg/component/observability/logging/victorialogs/constants"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/garden"
+	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/seed"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	collectorconstants "github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector/constants"
@@ -32,20 +36,17 @@ import (
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	otelv1beta1 "github.com/gardener/gardener/third_party/open-telemetry/opentelemetry-operator/apis/v1beta1"
 )
 
 const (
 	managedResourceNameTarget  = "logging-target"
 	managedResourceName        = "opentelemetry-collector"
-	scrapeJobName              = "opentelemetry-collector"
 	serviceMonitorName         = "opentelemetry-collector"
-	valitailName               = "gardener-valitail"
 	openTelemetryCollectorName = "gardener-opentelemetry-collector"
 
-	otelCollectorConfigName = "opentelemetry-collector-config"
-	kubeRBACProxyName       = "rbac-proxy"
+	kubeRBACProxyName = "rbac-proxy"
 
-	metricsEndpointName            = "metrics"
 	metricsPort                    = 8888
 	timeoutWaitForManagedResources = 2 * time.Minute
 )
@@ -66,6 +67,18 @@ type Values struct {
 	ShootNodeLoggingEnabled bool
 	// IngressHost is the name for the ingress to access the OpenTelemetry Collector.
 	IngressHost string
+	// SecretNameServerCA is the name of the server CA secret.
+	SecretNameServerCA string
+	// PriorityClassName is the priority class name for the OpenTelemetry Collector pods.
+	PriorityClassName string
+	// ValiHost is the name for the ingress to access the Vali instance.
+	ValiHost string
+	// ClusterType is the type of the cluster where the collector is deployed.
+	ClusterType component.ClusterType
+	// IsGardenCluster specifies if the Collector is being deployed in a cluster registered as a Garden.
+	IsGardenCluster bool
+	// VictoriaLogsBackend indicates whether VictoriaLogs should be deployed and used in the pipeline.
+	VictoriaLogsBackend bool
 }
 
 type otelCollector struct {
@@ -124,11 +137,11 @@ func (o *otelCollector) Deploy(ctx context.Context) error {
 			Name:                        "logging-tls",
 			CommonName:                  o.values.IngressHost,
 			Organization:                []string{"gardener.cloud:monitoring:ingress"},
-			DNSNames:                    []string{o.values.IngressHost},
+			DNSNames:                    []string{o.values.IngressHost, o.values.ValiHost},
 			CertType:                    secrets.ServerCert,
 			Validity:                    ptr.To(v1beta1constants.IngressTLSCertificateValidity),
 			SkipPublishingCACertificate: true,
-		}, secretsmanager.SignedByCA(v1beta1constants.SecretNameCACluster))
+		}, secretsmanager.SignedByCA(o.values.SecretNameServerCA))
 		if err != nil {
 			return err
 		}
@@ -284,7 +297,7 @@ func (o *otelCollector) serviceMonitor() *monitoringv1.ServiceMonitor {
 	}
 
 	return &monitoringv1.ServiceMonitor{
-		ObjectMeta: monitoringutils.ConfigObjectMeta(serviceMonitorName, o.namespace, shoot.Label),
+		ObjectMeta: monitoringutils.ConfigObjectMeta(serviceMonitorName, o.namespace, o.getPrometheusLabel()),
 		Spec: monitoringv1.ServiceMonitorSpec{
 			Selector: metav1.LabelSelector{MatchLabels: getLabels()},
 			Endpoints: []monitoringv1.Endpoint{{
@@ -316,20 +329,19 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 			Name:      collectorconstants.OpenTelemetryCollectorResourceName,
 			Namespace: namespace,
 			Labels:    getLabels(),
-			// We want this annotation to be passed down to the service that will be created by the OpenTelemetry Operator.
-			// Currently, there is no other way to define the annotations on the service other than adding them to the OpenTelemetryCollector resource.
-			// All annotations that exist here will be passed down to every resource that gets created by the OpenTelemetry Operator.
-			Annotations: map[string]string{
-				"networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports": fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, metricsPort),
-			},
 		},
 		Spec: otelv1beta1.OpenTelemetryCollectorSpec{
 			Mode:            "deployment",
 			UpgradeStrategy: "none",
+			Observability: otelv1beta1.ObservabilitySpec{
+				Metrics: otelv1beta1.MetricsConfigSpec{
+					DisablePrometheusAnnotations: true,
+				},
+			},
 			OpenTelemetryCommonFields: otelv1beta1.OpenTelemetryCommonFields{
 				Image:             o.values.Image,
 				Replicas:          ptr.To(o.values.Replicas),
-				PriorityClassName: v1beta1constants.PriorityClassNameShootControlPlane100,
+				PriorityClassName: o.values.PriorityClassName,
 				Resources: corev1.ResourceRequirements{
 					Requests: corev1.ResourceList{
 						corev1.ResourceCPU:    resource.MustParse("10m"),
@@ -341,13 +353,14 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 				},
 				ServiceAccount: collectorconstants.ServiceAccountName,
 			},
+			// TODO(rrhubenov): Remove `Vali` references and switch to only using VictoriaLogs components when the `VictoriaLogsBackend` feature gate is promoted to GA.
 			Config: otelv1beta1.Config{
 				Receivers: otelv1beta1.AnyConfig{
 					Object: map[string]any{
 						"otlp": map[string]any{
 							"protocols": map[string]any{
 								"grpc": map[string]any{
-									"endpoint": "127.0.0.1:" + strconv.Itoa(collectorconstants.PushPort),
+									"endpoint": "[::]:" + strconv.Itoa(collectorconstants.PushPort),
 								},
 							},
 						},
@@ -356,7 +369,14 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 				Processors: &otelv1beta1.AnyConfig{
 					Object: map[string]any{
 						"batch": map[string]any{
-							"timeout": "10s",
+							"send_batch_size":     2000,
+							"send_batch_max_size": 4000,
+							"timeout":             "10s",
+						},
+						"memory_limiter": map[string]any{
+							"check_interval":  "1s",
+							"limit_mib":       3000,
+							"spike_limit_mib": 600,
 						},
 						"resource/vali": map[string]any{
 							"attributes": []any{
@@ -376,13 +396,52 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 									"action":         "insert",
 								},
 								map[string]any{
+									"key":            "namespace_name",
+									"from_attribute": "k8s.namespace.name",
+									"action":         "insert",
+								},
+								map[string]any{
 									"key":    "loki.resource.labels",
 									"value":  "job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
 									"action": "insert",
 								},
 								map[string]any{
 									"key":    "loki.format",
-									"value":  "logfmt",
+									"value":  "raw",
+									"action": "insert",
+								},
+							},
+						},
+						"attributes/vali": map[string]any{
+							"actions": []any{
+								map[string]any{
+									"key":            "nodename",
+									"from_attribute": "k8s.node.name",
+									"action":         "insert",
+								},
+								map[string]any{
+									"key":            "pod_name",
+									"from_attribute": "k8s.pod.name",
+									"action":         "insert",
+								},
+								map[string]any{
+									"key":            "container_name",
+									"from_attribute": "k8s.container.name",
+									"action":         "insert",
+								},
+								map[string]any{
+									"key":            "namespace_name",
+									"from_attribute": "k8s.namespace.name",
+									"action":         "insert",
+								},
+								map[string]any{
+									"key":    "loki.attribute.labels",
+									"value":  "priority, level, process.command, process.pid, host.name, host.id, service.name, service.namespace, job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
+									"action": "upsert",
+								},
+								map[string]any{
+									"key":    "loki.format",
+									"value":  "raw",
 									"action": "insert",
 								},
 							},
@@ -393,6 +452,28 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 					Object: map[string]any{
 						"loki": map[string]any{
 							"endpoint": lokiEndpoint,
+							"default_labels_enabled": map[string]any{
+								"exporter": false,
+								"job":      false,
+							},
+							"sending_queue": map[string]any{
+								"queue_size": 16777216,
+								"sizer":      "bytes",
+								"batch": map[string]any{
+									"flush_timeout": "1s",
+									"max_size":      4194304,
+									"sizer":         "bytes",
+								},
+							},
+						},
+						"debug/logs": map[string]any{
+							"verbosity": "basic",
+						},
+						"otlphttp/victorialogs": map[string]any{
+							"logs_endpoint": "http://" + victorialogsconstants.ServiceName + ":" + strconv.Itoa(victorialogsconstants.VictoriaLogsPort) + victorialogsconstants.PushEndpoint,
+							"headers": map[string]any{
+								"VL-Stream-Fields": "host.name,k8s.node.name,k8s.namespace.name,k8s.pod.name,k8s.container.name,k8s.deployment.name,k8s.daemonset.name,k8s.statefulset.name,severity,unit,origin",
+							},
 						},
 					},
 				},
@@ -406,7 +487,7 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 										"pull": map[string]any{
 											"exporter": map[string]any{
 												"prometheus": map[string]any{
-													"host": "0.0.0.0",
+													"host": "[::]",
 													"port": metricsPort,
 												},
 											},
@@ -423,13 +504,15 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 					Pipelines: map[string]*otelv1beta1.Pipeline{
 						"logs/vali": {
 							Exporters: []string{
-								"loki",
+								"loki", "debug/logs",
 							},
 							Receivers: []string{
 								"otlp",
 							},
 							Processors: []string{
+								"memory_limiter",
 								"resource/vali",
+								"attributes/vali",
 								"batch",
 							},
 						},
@@ -439,19 +522,65 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 		},
 	}
 
+	// TODO(rrhubenov): Remove when the `VictoriaLogsBackend` feature gate is promoted to GA and switch to only using VictoriaLogs components.
+	if o.values.VictoriaLogsBackend {
+		obj.Spec.Config.Service.Pipelines["logs/victorialogs"] = &otelv1beta1.Pipeline{
+			Exporters: []string{
+				"otlphttp/victorialogs",
+			},
+			Receivers: []string{
+				"otlp",
+			},
+			Processors: []string{
+				"batch",
+			},
+		}
+	}
+
 	if o.values.WithRBACProxy {
 		obj.Spec.Ports = append(obj.Spec.Ports, otelv1beta1.PortsSpec{
 			ServicePort: corev1.ServicePort{
-				Name: kubeRBACProxyName,
-				Port: collectorconstants.KubeRBACProxyPort,
+				Name: kubeRBACProxyName + "-vali",
+				Port: collectorconstants.KubeRBACProxyValiPort,
+			},
+		})
+		obj.Spec.Ports = append(obj.Spec.Ports, otelv1beta1.PortsSpec{
+			ServicePort: corev1.ServicePort{
+				Name: kubeRBACProxyName + "-otlp",
+				Port: collectorconstants.KubeRBACProxyOTLPReceiverPort,
 			},
 		})
 		obj.Spec.AdditionalContainers = []corev1.Container{
+			// TODO(rrhubenov): Remove the rbac-proxy-vali container when the `OpenTelemetryCollector` feature gate is promoted to GA.
 			{
-				Name:  kubeRBACProxyName,
+				Name:  kubeRBACProxyName + "-vali",
 				Image: o.values.KubeRBACProxyImage,
 				Args: []string{
-					fmt.Sprintf("--insecure-listen-address=0.0.0.0:%d", collectorconstants.KubeRBACProxyPort),
+					fmt.Sprintf("--insecure-listen-address=[::]:%d", collectorconstants.KubeRBACProxyValiPort),
+					fmt.Sprintf("--upstream=http://logging:%d/", valiconstants.ValiPort),
+					"--kubeconfig=" + gardenerutils.VolumeMountPathGenericKubeconfig + "/kubeconfig",
+					"--logtostderr=true",
+					"--v=6",
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("5m"),
+						corev1.ResourceMemory: resource.MustParse("30Mi"),
+					},
+				},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr.To(false),
+					RunAsUser:                ptr.To[int64](65532),
+					RunAsGroup:               ptr.To[int64](65534),
+					RunAsNonRoot:             ptr.To(true),
+					ReadOnlyRootFilesystem:   ptr.To(true),
+				},
+			},
+			{
+				Name:  kubeRBACProxyName + "-otlp",
+				Image: o.values.KubeRBACProxyImage,
+				Args: []string{
+					fmt.Sprintf("--insecure-listen-address=[::]:%d", collectorconstants.KubeRBACProxyOTLPReceiverPort),
 					fmt.Sprintf("--upstream=http://127.0.0.1:%d/", collectorconstants.PushPort),
 					"--kubeconfig=" + gardenerutils.VolumeMountPathGenericKubeconfig + "/kubeconfig",
 					"--logtostderr=true",
@@ -478,8 +607,26 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 			},
 		}
 
+		metav1.SetMetaDataLabel(&obj.ObjectMeta, gardenerutils.NetworkPolicyLabel(v1beta1constants.DeploymentNameKubeAPIServer, kubeapiserverconstants.Port), v1beta1constants.LabelNetworkPolicyAllowed)
 		obj.Spec.Volumes = []corev1.Volume{gardenerutils.GenerateGenericKubeconfigVolume(genericTokenKubeconfigSecretName, "shoot-access-"+kubeRBACProxyName, "kubeconfig")}
 		obj.Spec.AdditionalContainers[0].VolumeMounts = []corev1.VolumeMount{gardenerutils.GenerateGenericKubeconfigVolumeMount("kubeconfig", gardenerutils.VolumeMountPathGenericKubeconfig)}
+		obj.Spec.AdditionalContainers[1].VolumeMounts = []corev1.VolumeMount{gardenerutils.GenerateGenericKubeconfigVolumeMount("kubeconfig", gardenerutils.VolumeMountPathGenericKubeconfig)}
+	}
+
+	// We want these annotations to be passed down to the service that will be created by the OpenTelemetry Operator.
+	// Currently, there is no other way to define the annotations on the service other than adding them to the OpenTelemetryCollector resource.
+	// All annotations that exist here will be passed down to every resource that gets created by the OpenTelemetry Operator.
+	switch o.values.ClusterType {
+	case component.ClusterTypeSeed:
+		if o.values.IsGardenCluster {
+			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix+v1beta1constants.LabelNetworkPolicyGardenScrapeTargets+resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix, fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, metricsPort))
+		} else {
+			metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix+v1beta1constants.LabelNetworkPolicySeedScrapeTargets+resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix, fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, metricsPort))
+		}
+	case component.ClusterTypeShoot:
+		metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix+v1beta1constants.LabelNetworkPolicyScrapeTargets+resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix, fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, metricsPort))
+		metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias, v1beta1constants.LabelNetworkPolicyShootNamespaceAlias)
+		metav1.SetMetaDataAnnotation(&obj.ObjectMeta, resourcesv1alpha1.NetworkingNamespaceSelectors, `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`)
 	}
 
 	return obj
@@ -495,8 +642,9 @@ func (o *otelCollector) newLoggingAgentShootAccessSecret() *gardenerutils.Access
 func (o *otelCollector) getIngress(secretName string) *networkingv1.Ingress {
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "logging",
-			Namespace:   o.namespace,
+			Name:      "logging",
+			Namespace: o.namespace,
+			// TODO(rrrhubenov): Research whether this annotation is required before promoting the `OpenTelemetryCollector` feature gate to GA.
 			Annotations: map[string]string{"nginx.ingress.kubernetes.io/backend-protocol": "GRPC"},
 			Labels:      getLabels(),
 		},
@@ -504,25 +652,45 @@ func (o *otelCollector) getIngress(secretName string) *networkingv1.Ingress {
 			IngressClassName: ptr.To(v1beta1constants.SeedNginxIngressClass),
 			TLS: []networkingv1.IngressTLS{{
 				SecretName: secretName,
-				Hosts:      []string{o.values.IngressHost},
+				Hosts:      []string{o.values.IngressHost, o.values.ValiHost},
 			}},
-			Rules: []networkingv1.IngressRule{{
-				Host: o.values.IngressHost,
-				IngressRuleValue: networkingv1.IngressRuleValue{
-					HTTP: &networkingv1.HTTPIngressRuleValue{
-						Paths: []networkingv1.HTTPIngressPath{{
-							Backend: networkingv1.IngressBackend{
-								Service: &networkingv1.IngressServiceBackend{
-									Name: collectorconstants.ServiceName,
-									Port: networkingv1.ServiceBackendPort{Number: collectorconstants.KubeRBACProxyPort},
+			Rules: []networkingv1.IngressRule{
+				{
+					Host: o.values.IngressHost,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{{
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: collectorconstants.ServiceName,
+										Port: networkingv1.ServiceBackendPort{Number: collectorconstants.KubeRBACProxyOTLPReceiverPort},
+									},
 								},
-							},
-							Path:     collectorconstants.PushEndpoint,
-							PathType: ptr.To(networkingv1.PathTypePrefix),
-						}},
+								Path:     collectorconstants.PushEndpoint,
+								PathType: ptr.To(networkingv1.PathTypePrefix),
+							}},
+						},
 					},
 				},
-			}},
+				// TODO(rrhubenov): Clean up the vali Ingress rule when the `OpenTelemetryCollector` feature gate is promoted to GA.
+				{
+					Host: o.values.ValiHost,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{{
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: collectorconstants.ServiceName,
+										Port: networkingv1.ServiceBackendPort{Number: collectorconstants.KubeRBACProxyValiPort},
+									},
+								},
+								Path:     valiconstants.PushEndpoint,
+								PathType: ptr.To(networkingv1.PathTypePrefix),
+							}},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -577,13 +745,23 @@ func (o *otelCollector) getLoggingAgentClusterRoleBinding(serviceAccountName, cl
 	}
 }
 
+func (o *otelCollector) getPrometheusLabel() string {
+	if o.values.ClusterType == component.ClusterTypeSeed {
+		if o.values.IsGardenCluster {
+			return garden.Label
+		}
+		return seed.Label
+	}
+	return shoot.Label
+}
+
 func getLabels() map[string]string {
 	return map[string]string{
 		v1beta1constants.LabelRole:  v1beta1constants.LabelObservability,
 		v1beta1constants.GardenRole: v1beta1constants.GardenRoleObservability,
-		gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort): v1beta1constants.LabelNetworkPolicyAllowed,
-		v1beta1constants.LabelNetworkPolicyToDNS:                                            v1beta1constants.LabelNetworkPolicyAllowed,
-		v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer:                               v1beta1constants.LabelNetworkPolicyAllowed,
-		v1beta1constants.LabelObservabilityApplication:                                      "opentelemetry-collector",
+		gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort):                         v1beta1constants.LabelNetworkPolicyAllowed,
+		gardenerutils.NetworkPolicyLabel(victorialogsconstants.ServiceName, victorialogsconstants.VictoriaLogsPort): v1beta1constants.LabelNetworkPolicyAllowed,
+		v1beta1constants.LabelNetworkPolicyToDNS:                                                                    v1beta1constants.LabelNetworkPolicyAllowed,
+		v1beta1constants.LabelObservabilityApplication:                                                              "opentelemetry-collector",
 	}
 }

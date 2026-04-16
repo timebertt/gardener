@@ -21,14 +21,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	"github.com/gardener/gardener/pkg/component/networking/nginxingress"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
+	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	retryutils "github.com/gardener/gardener/pkg/utils/retry"
@@ -52,7 +53,7 @@ func runtimeGardenerResourceManagerDefaultValues() resourcemanager.Values {
 		VPAInPlaceUpdatesEnabled:            false,
 		Replicas:                            ptr.To[int32](2),
 		ResourceClass:                       ptr.To(v1beta1constants.SeedResourceManagerClass),
-		ResponsibilityMode:                  resourcemanager.ForSource,
+		ResponsibilityMode:                  resourcemanager.ForRuntime,
 	}
 }
 
@@ -88,7 +89,7 @@ func targetGardenerResourceManagerDefaultValues(namespaceName *string) resourcem
 		MaxConcurrentCSRApproverWorkers:    ptr.To(5),
 		MaxConcurrentHealthWorkers:         ptr.To(10),
 		MaxConcurrentTokenRequestorWorkers: ptr.To(5),
-		ResponsibilityMode:                 resourcemanager.ForTarget,
+		ResponsibilityMode:                 resourcemanager.ForShootOrVirtualGarden,
 		WatchedNamespace:                   namespaceName,
 	}
 }
@@ -112,50 +113,6 @@ func NewTargetGardenerResourceManager(
 
 	defaultValues := targetGardenerResourceManagerDefaultValues(&namespaceName)
 	defaultValues.Image = image.String()
-
-	applyDefaults(&values, defaultValues)
-	return resourcemanager.New(c, namespaceName, secretsManager, values), nil
-}
-
-func combinedGardenerResourceManagerDefaultValues() resourcemanager.Values {
-	var (
-		values        = resourcemanager.Values{}
-		runtimeValues = runtimeGardenerResourceManagerDefaultValues()
-		targetValues  = targetGardenerResourceManagerDefaultValues(nil)
-	)
-
-	applyDefaults(&values, runtimeValues)
-	applyDefaults(&values, targetValues)
-
-	values.ResourceClass = ptr.To(resourcemanagerconfigv1alpha1.AllResourceClass)
-	values.ResponsibilityMode = resourcemanager.ForSourceAndTarget
-
-	return values
-}
-
-// NewCombinedGardenerResourceManager instantiates a new `gardener-resource-manager` component configured to reconcile
-// objects in a self-hosted shoot cluster.
-func NewCombinedGardenerResourceManager(c client.Client,
-	namespaceName string,
-	secretsManager secretsmanager.Interface,
-	values resourcemanager.Values,
-) (
-	resourcemanager.Interface,
-	error,
-) {
-	image, err := imagevector.Containers().FindImage(imagevector.ContainerImageNameGardenerResourceManager)
-	if err != nil {
-		return nil, err
-	}
-	image.WithOptionalTag(version.Get().GitVersion)
-
-	defaultValues := combinedGardenerResourceManagerDefaultValues()
-	defaultValues.Image = image.String()
-
-	values.Replicas = ptr.To[int32](2)
-	if values.BootstrapControlPlaneNode {
-		values.Replicas = ptr.To[int32](1)
-	}
 
 	applyDefaults(&values, defaultValues)
 	return resourcemanager.New(c, namespaceName, secretsManager, values), nil
@@ -219,10 +176,6 @@ func DeployGardenerResourceManager(
 		defer cancel()
 
 		if err := waitUntilGardenerResourceManagerBootstrapped(timeoutCtx, c, namespace); err != nil {
-			return err
-		}
-
-		if err := c.Delete(ctx, bootstrapKubeconfigSecret); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}
@@ -303,7 +256,10 @@ func reconcileGardenerResourceManagerBootstrapKubeconfigSecret(ctx context.Conte
 			APIServerHost: getAPIServerAddress(),
 			CAData:        caBundleSecret.Data[secretsutils.DataKeyCertificateBundle],
 		}},
-	}, secretsmanager.SignedByCA(v1beta1constants.SecretNameCAClient))
+	},
+		secretsmanager.SignedByCA(v1beta1constants.SecretNameCAClient),
+		secretsmanager.WithLabels(map[string]string{references.LabelKeyGarbageCollectable: references.LabelValueGarbageCollectable}),
+	)
 }
 
 func waitUntilGardenerResourceManagerBootstrapped(ctx context.Context, c client.Client, namespace string) error {

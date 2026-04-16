@@ -14,8 +14,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
@@ -187,7 +187,7 @@ func createControllerInstallation(ctx context.Context, cl client.Client, control
 		RegistrationRef: corev1.ObjectReference{
 			Name: extensionName,
 		},
-		SeedRef: corev1.ObjectReference{
+		SeedRef: &corev1.ObjectReference{
 			Name: "local",
 		},
 	}

@@ -24,6 +24,7 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	securityfake "github.com/gardener/gardener/pkg/client/security/clientset/versioned/fake"
@@ -100,12 +101,15 @@ var _ = Describe("Reconciler", func() {
 				GardenSecurityClient: securityClient,
 				Clock:                fakeClock,
 				JitterFunc:           fakeJitter,
+				Config: &gardenletconfigv1alpha1.TokenRequestorWorkloadIdentityControllerConfiguration{
+					TokenExpirationDuration: &metav1.Duration{Duration: 6 * time.Hour},
+				},
 			}
 
 			secretName = "cloudsecret"
 			workloadIdentityName = "foo-cloud"
 			workloadIdentityNamespace = "garden-foo"
-			expectedRenewDuration = 6 * time.Hour * 80 / 100
+			expectedRenewDuration = 6 * time.Hour * 50 / 100
 			token = "foo"
 
 			secret = &corev1.Secret{
@@ -146,7 +150,7 @@ var _ = Describe("Reconciler", func() {
 
 			result, err := ctrl.Reconcile(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{Requeue: true, RequeueAfter: expectedRenewDuration}))
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: expectedRenewDuration}))
 
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
 			Expect(secret.Data).To(HaveKeyWithValue("token", []byte(token)))
@@ -161,7 +165,7 @@ var _ = Describe("Reconciler", func() {
 
 			result, err := ctrl.Reconcile(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{Requeue: true, RequeueAfter: expectedRenewDuration}))
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: expectedRenewDuration}))
 
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
 			Expect(secret.Data).To(HaveKeyWithValue("token", []byte(token)))
@@ -178,7 +182,7 @@ var _ = Describe("Reconciler", func() {
 
 			result, err := ctrl.Reconcile(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{Requeue: true, RequeueAfter: delay}))
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: delay}))
 		})
 
 		It("should issue a new token since the renew timestamp is in the past", func() {
@@ -193,7 +197,7 @@ var _ = Describe("Reconciler", func() {
 
 			result, err := ctrl.Reconcile(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{Requeue: true, RequeueAfter: expectedRenewDuration}))
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: expectedRenewDuration}))
 
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
 			Expect(secret.Data).To(HaveKeyWithValue("token", []byte(token)))
@@ -215,7 +219,7 @@ var _ = Describe("Reconciler", func() {
 		})
 
 		It("should always renew the token after 24h", func() {
-			expectedRenewDuration = 24 * time.Hour * 80 / 100
+			expectedRenewDuration = 24 * time.Hour * 50 / 100
 			fakeCreateWorkloadIdentityToken(ptr.To[int64](3600 * 100))
 
 			Expect(seedClient.Create(ctx, secret)).To(Succeed())
@@ -223,7 +227,7 @@ var _ = Describe("Reconciler", func() {
 
 			result, err := ctrl.Reconcile(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{Requeue: true, RequeueAfter: expectedRenewDuration}))
+			Expect(result).To(Equal(reconcile.Result{RequeueAfter: expectedRenewDuration}))
 		})
 
 		Context("error", func() {

@@ -57,8 +57,7 @@ var _ = Describe("KubeScheduler", func() {
 			KubernetesConfig: gardencorev1beta1.KubernetesConfig{
 				FeatureGates: map[string]bool{"Foo": true, "Bar": false, "Baz": false},
 			},
-			KubeMaxPDVols: ptr.To("23"),
-			Profile:       &profileBinPacking,
+			Profile: &profileBinPacking,
 		}
 		consistOf func(...client.Object) types.GomegaMatcher
 
@@ -73,6 +72,7 @@ var _ = Describe("KubeScheduler", func() {
 		serviceName                      = "kube-scheduler"
 		secretName                       = "shoot-access-kube-scheduler"
 		deploymentName                   = "kube-scheduler"
+		containerName                    = "kube-scheduler"
 		managedResourceName              = "shoot-core-kube-scheduler"
 		managedResourceSecretName        = "managedresource-shoot-core-kube-scheduler"
 
@@ -144,10 +144,15 @@ var _ = Describe("KubeScheduler", func() {
 					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-						ContainerName:    vpaautoscalingv1.DefaultContainerResourcePolicy,
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-					}},
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName:    containerName,
+							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff)},
+					},
 				},
 			},
 		}
@@ -180,14 +185,6 @@ var _ = Describe("KubeScheduler", func() {
 			},
 		}
 		deploymentFor = func(config *gardencorev1beta1.KubeSchedulerConfig, componentConfigFilePath string) *appsv1.Deployment {
-			var env []corev1.EnvVar
-			if config != nil && config.KubeMaxPDVols != nil {
-				env = append(env, corev1.EnvVar{
-					Name:  "KUBE_MAX_PD_VOLS",
-					Value: *config.KubeMaxPDVols,
-				})
-			}
-
 			configMap := configMapFor(componentConfigFilePath)
 
 			deploy := &appsv1.Deployment{
@@ -233,7 +230,7 @@ var _ = Describe("KubeScheduler", func() {
 							},
 							Containers: []corev1.Container{
 								{
-									Name:            "kube-scheduler",
+									Name:            containerName,
 									Image:           image,
 									ImagePullPolicy: corev1.PullIfNotPresent,
 									Command:         commandForKubernetesVersion(10259, featureGateFlags(config)...),
@@ -258,7 +255,6 @@ var _ = Describe("KubeScheduler", func() {
 											Protocol:      corev1.ProtocolTCP,
 										},
 									},
-									Env: env,
 									Resources: corev1.ResourceRequirements{
 										Requests: corev1.ResourceList{
 											corev1.ResourceCPU:    resource.MustParse("10m"),
@@ -425,13 +421,19 @@ var _ = Describe("KubeScheduler", func() {
 					"role": "scheduler",
 				}},
 				Endpoints: []monitoringv1.Endpoint{{
-					Port:      "metrics",
-					Scheme:    "https",
-					TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-					Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
-						Key:                  "token",
-					}},
+					Port:   "metrics",
+					Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+					HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+						HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+							TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+							HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+								Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
+									Key:                  "token",
+								}},
+							},
+						},
+					},
 					RelabelConfigs: []monitoringv1.RelabelConfig{{
 						Action: "labelmap",
 						Regex:  `__meta_kubernetes_service_label_(.+)`,

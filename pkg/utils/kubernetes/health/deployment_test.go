@@ -210,7 +210,7 @@ var _ = Describe("Deployment", func() {
 
 			Expect(fakeClient.Create(ctx, deployment)).To(Succeed())
 
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				Expect(fakeClient.Create(ctx, &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      fmt.Sprintf("pod%d", i),
@@ -304,7 +304,7 @@ var _ = Describe("Deployment", func() {
 		})
 
 		It("should not consider the deployment as updated since there are still terminating pods", func() {
-			for i := 0; i < 2; i++ {
+			for range 2 {
 				p := pod.DeepCopy()
 				Expect(fakeClient.Create(ctx, p)).To(Succeed())
 			}
@@ -330,6 +330,19 @@ var _ = Describe("Deployment", func() {
 		It("should consider the deployment as updated even though there are still completed pods", func() {
 			p1 := pod.DeepCopy()
 			p1.Status.Conditions = []corev1.PodCondition{{Type: "Ready", Status: "False", Reason: "PodCompleted"}}
+			Expect(fakeClient.Create(ctx, p1)).To(Succeed())
+
+			p2 := pod.DeepCopy()
+			Expect(fakeClient.Create(ctx, p2)).To(Succeed())
+
+			ok, err := health.DeploymentHasExactNumberOfPods(ctx, fakeClient, deployment)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+		})
+
+		It("should consider the deployment as updated even though there are still disrupted pods", func() {
+			p1 := pod.DeepCopy()
+			p1.Status.Conditions = []corev1.PodCondition{{Type: "DisruptionTarget", Status: "True", Reason: "TerminationByKubelet"}}
 			Expect(fakeClient.Create(ctx, p1)).To(Succeed())
 
 			p2 := pod.DeepCopy()

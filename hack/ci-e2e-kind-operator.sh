@@ -12,17 +12,16 @@ source $(dirname "${0}")/ci-common.sh
 
 clamp_mss_to_pmtu
 
-ensure_glgc_resolves_to_localhost
-
 # test setup
 make kind-multi-zone-up
 
 # export all container logs and events after test execution
 trap "
-  ( export KUBECONFIG=$PWD/example/gardener-local/kind/multi-zone/kubeconfig; export_artifacts 'gardener-operator-local'; export_resource_yamls_for garden)
+  ( export_artifacts_host_services; export_artifacts_infra )
+  ( export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig; export_artifacts 'gardener-operator-local'; export_resource_yamls_for garden )
+  ( make operator-down )
   ( make kind-multi-zone-down )
 " EXIT
 
 make operator-up
 make test-e2e-local-operator
-make operator-down

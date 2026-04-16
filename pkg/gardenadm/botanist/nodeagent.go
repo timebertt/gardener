@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 	"time"
@@ -23,10 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
 	"github.com/gardener/gardener/pkg/nodeagent"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -105,8 +106,12 @@ func (b *GardenadmBotanist) ActivateGardenerNodeAgent(ctx context.Context) error
 		return nil
 	}
 
-	if err := b.FS.WriteFile(nodeagentconfigv1alpha1.MachineNameFilePath, []byte(b.HostName), 0600); err != nil {
-		return fmt.Errorf("failed writing machine name file: %w", err)
+	// Write machine name file only if it does not exist yet. It might be given by the OSC/machine-controller-manager in
+	// the case of a shoot with managed infrastructure.
+	if _, err := b.FS.Stat(nodeagentconfigv1alpha1.MachineNameFilePath); errors.Is(err, fs.ErrNotExist) {
+		if err := b.FS.WriteFile(nodeagentconfigv1alpha1.MachineNameFilePath, []byte(b.HostName), 0600); err != nil {
+			return fmt.Errorf("failed writing machine name file: %w", err)
+		}
 	}
 
 	if err := b.WriteBootstrapToken(ctx); err != nil {

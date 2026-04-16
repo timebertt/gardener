@@ -13,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,18 +22,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/charts"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	"github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
 // Reconciler reconciles the ManagedSeed.
@@ -43,7 +41,7 @@ type Reconciler struct {
 	SeedClient            client.Client
 	Config                gardenletconfigv1alpha1.GardenletConfiguration
 	Clock                 clock.Clock
-	Recorder              record.EventRecorder
+	Recorder              events.EventRecorder
 	ShootClientMap        clientmap.ClientMap
 	GardenNamespaceGarden string
 	GardenNamespaceSeed   string
@@ -114,55 +112,29 @@ func (r *Reconciler) newActuator(ctx context.Context, shoot *gardencorev1beta1.S
 			}
 			return true, nil
 		},
-		GetInfrastructureSecret: func(ctx context.Context) (*corev1.Secret, error) {
-			if shoot.Spec.SecretBindingName == nil && shoot.Spec.CredentialsBindingName == nil {
-				return nil, fmt.Errorf("both secretBindingName and credentialsBindingName are nil for the Shoot: %s/%s", shoot.Namespace, shoot.Name)
-			}
-
-			if shoot.Spec.SecretBindingName != nil {
-				shootSecretBinding := &gardencorev1beta1.SecretBinding{}
-				if err := r.GardenClient.Get(ctx, client.ObjectKey{Namespace: shoot.Namespace, Name: *shoot.Spec.SecretBindingName}, shootSecretBinding); err != nil {
-					return nil, err
-				}
-				return kubernetesutils.GetSecretByReference(ctx, r.GardenClient, &shootSecretBinding.SecretRef)
-			}
-
-			shootCredentialsBinding := &securityv1alpha1.CredentialsBinding{}
-			if err := r.GardenClient.Get(ctx, client.ObjectKey{Namespace: shoot.Namespace, Name: *shoot.Spec.CredentialsBindingName}, shootCredentialsBinding); err != nil {
-				return nil, err
-			}
-
-			// TODO(dimityrmirchev): only handle credentials of kind secret as this function will be eventually removed
-			if shootCredentialsBinding.CredentialsRef.APIVersion == corev1.SchemeGroupVersion.String() &&
-				shootCredentialsBinding.CredentialsRef.Kind == "Secret" {
-				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      shootCredentialsBinding.CredentialsRef.Name,
-						Namespace: shootCredentialsBinding.CredentialsRef.Namespace,
-					},
-				}
-
-				return secret, r.GardenClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)
-			}
-
-			return nil, nil
-		},
 		GetTargetDomain: func() string {
 			if shoot.Spec.DNS == nil {
 				return ""
 			}
 			return ptr.Deref(shoot.Spec.DNS.Domain, "")
 		},
-		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]interface{}) error {
+		ApplyGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]any) error {
+			if r.GardenNamespaceSeed == metav1.NamespaceSystem {
+				values["isolateClusterResources"] = true
+			}
 			return targetChartApplier.ApplyFromEmbeddedFS(ctx, charts.ChartGardenlet, charts.ChartPathGardenlet, r.GardenNamespaceShoot, "gardenlet", kubernetes.Values(values))
 		},
-		DeleteGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]interface{}) error {
+		DeleteGardenletChart: func(ctx context.Context, targetChartApplier kubernetes.ChartApplier, values map[string]any) error {
+			if r.GardenNamespaceSeed == metav1.NamespaceSystem {
+				values["isolateClusterResources"] = true
+			}
 			return targetChartApplier.DeleteFromEmbeddedFS(ctx, charts.ChartGardenlet, charts.ChartPathGardenlet, r.GardenNamespaceShoot, "gardenlet", kubernetes.Values(values))
 		},
 		Clock:                    r.Clock,
 		ValuesHelper:             gardenletdeployer.NewValuesHelper(&r.Config),
 		Recorder:                 r.Recorder,
 		GardenletNamespaceTarget: r.GardenNamespaceShoot,
+		SeedIsSelfHostedShoot:    r.GardenNamespaceSeed == metav1.NamespaceSystem,
 	}, nil
 }
 
@@ -193,7 +165,7 @@ func (r *Reconciler) reconcile(
 		log.Info("Waiting for shoot to be reconciled")
 
 		msg := fmt.Sprintf("Waiting for shoot %q to be reconciled", client.ObjectKeyFromObject(shoot).String())
-		r.Recorder.Event(ms, corev1.EventTypeNormal, gardencorev1beta1.EventReconciling, msg)
+		r.Recorder.Eventf(ms, nil, corev1.EventTypeNormal, gardencorev1beta1.EventReconciling, gardencorev1beta1.EventActionReconcile, msg)
 		updateCondition(r.Clock, status, seedmanagementv1alpha1.ManagedSeedShootReconciled, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconciling, msg)
 
 		return reconcile.Result{RequeueAfter: r.Config.Controllers.ManagedSeed.WaitSyncPeriod.Duration}, r.updateStatus(ctx, ms, status)

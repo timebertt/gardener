@@ -15,19 +15,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	. "github.com/gardener/gardener/pkg/gardenlet/controller/backupentry"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 )
@@ -134,7 +134,7 @@ var _ = Describe("Controller", func() {
 		reconciler = &Reconciler{
 			GardenClient: gardenClient,
 			SeedClient:   seedClient,
-			Recorder:     &record.FakeRecorder{},
+			Recorder:     &events.FakeRecorder{},
 			Config: gardenletconfigv1alpha1.BackupEntryControllerConfiguration{
 				ConcurrentSyncs:                  ptr.To(5),
 				DeletionGracePeriodHours:         ptr.To(deletionGracePeriodHours),
@@ -365,7 +365,6 @@ var _ = Describe("Controller", func() {
 			Expect(seedClient.Get(ctx, client.ObjectKeyFromObject(extensionSecret), extensionSecret)).To(Succeed())
 			Expect(extensionSecret.Annotations).To(Equal(map[string]string{v1beta1constants.GardenerTimestamp: fakeClock.Now().UTC().Format(time.RFC3339Nano)}))
 			Expect(extensionSecret.Labels).To(BeEmpty())
-
 		})
 	})
 

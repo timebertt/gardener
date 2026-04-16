@@ -14,13 +14,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
+	"github.com/gardener/gardener/pkg/nodeagent/containerd"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/certificate"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/healthcheck"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/hostnamecheck"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/lease"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/node"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/operatingsystemconfig"
+	"github.com/gardener/gardener/pkg/nodeagent/controller/systemdunitcheck"
 	"github.com/gardener/gardener/pkg/nodeagent/controller/token"
 )
 
@@ -43,6 +45,11 @@ func AddToManager(ctx context.Context, cancel context.CancelFunc, mgr manager.Ma
 		return fmt.Errorf("failed adding node controller: %w", err)
 	}
 
+	containerdClient, err := containerd.NewClient()
+	if err != nil {
+		return fmt.Errorf("failed obtaining containerd client: %w", err)
+	}
+
 	var channel = make(chan event.TypedGenericEvent[*corev1.Secret])
 
 	if err := (&operatingsystemconfig.Reconciler{
@@ -54,6 +61,7 @@ func AddToManager(ctx context.Context, cancel context.CancelFunc, mgr manager.Ma
 		NodeName:               nodeName,
 		MachineName:            machineName,
 		CancelContext:          cancel,
+		ContainerdClient:       containerdClient,
 	}).AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed adding operating system config controller: %w", err)
 	}
@@ -74,6 +82,12 @@ func AddToManager(ctx context.Context, cancel context.CancelFunc, mgr manager.Ma
 
 	if err := (&healthcheck.Reconciler{}).AddToManager(mgr, nodePredicate); err != nil {
 		return fmt.Errorf("failed adding health-check controller: %w", err)
+	}
+
+	if err := (&systemdunitcheck.Reconciler{
+		Config: cfg.Controllers.SystemdUnitCheck,
+	}).AddToManager(mgr, nodePredicate); err != nil {
+		return fmt.Errorf("failed adding systemd-unit-check controller: %w", err)
 	}
 
 	if err := (&hostnamecheck.Reconciler{

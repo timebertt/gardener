@@ -12,6 +12,7 @@ import (
 
 	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -27,18 +28,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
+	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	apiextensions "github.com/gardener/gardener/pkg/api/extensions"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	"github.com/gardener/gardener/pkg/extensions"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenlethelper "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1/helper"
+	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/botanist"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/gardenlet/operation/shoot"
@@ -109,7 +112,12 @@ func NewHealth(
 		gardenletConfiguration: gardenletConfig,
 		controllerRegistrationToLastHeartbeatTime: map[string]*metav1.MicroTime{},
 		conditionThresholds:                       conditionThresholds,
-		healthChecker:                             healthchecker.NewHealthChecker(seedClientSet.Client(), clock, conditionThresholds, shoot.GetInfo().Status.LastOperation),
+		healthChecker: healthchecker.NewHealthChecker(
+			log,
+			seedClientSet.Client(),
+			clock,
+			healthchecker.WithConditionThresholds(conditionThresholds),
+			healthchecker.WithLastOperation(shoot.GetInfo().Status.LastOperation)),
 	}
 }
 
@@ -147,11 +155,26 @@ func (h *Health) Check(
 			newControlPlane, err := h.checkControlPlane(ctx, conditions.controlPlaneHealthy, extensionConditionsControlPlaneHealthy, managedResourceList.Items, healthCheckOutdatedThreshold)
 			conditions.controlPlaneHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.controlPlaneHealthy, newControlPlane, err)
 			return nil
-		}, func(ctx context.Context) error {
-			newObservabilityComponents, err := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, extensionConditionsObservabilityComponentsHealthy, managedResourceList.Items, healthCheckOutdatedThreshold)
+		},
+	}
+
+	if h.shoot.IsSelfHosted() {
+		taskFns = append(taskFns, func(ctx context.Context) error {
+			newBackupBucketsReady, err := h.checkBackupBucketsReady(ctx, *conditions.backupBucketsReady)
+			*conditions.backupBucketsReady = v1beta1helper.NewConditionOrError(h.clock, *conditions.backupBucketsReady, newBackupBucketsReady, err)
+			return nil
+		})
+	}
+
+	prometheusList := &monitoringv1.PrometheusList{}
+	if err := h.seedClient.Client().List(ctx, prometheusList, client.InNamespace(h.shoot.ControlPlaneNamespace)); err != nil {
+		conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, nil, err)
+	} else {
+		taskFns = append(taskFns, func(ctx context.Context) error {
+			newObservabilityComponents, err := h.checkObservabilityComponents(ctx, conditions.observabilityComponentsHealthy, extensionConditionsObservabilityComponentsHealthy, managedResourceList.Items, prometheusList, healthCheckOutdatedThreshold)
 			conditions.observabilityComponentsHealthy = v1beta1helper.NewConditionOrError(h.clock, conditions.observabilityComponentsHealthy, newObservabilityComponents, err)
 			return nil
-		},
+		})
 	}
 
 	// Health checks with dependencies to the Kube-Apiserver.
@@ -207,7 +230,13 @@ func (h *Health) getAllExtensionConditions(ctx context.Context) ([]healthchecker
 	}
 
 	controllerInstallations := &gardencorev1beta1.ControllerInstallationList{}
-	if err := h.gardenClient.List(ctx, controllerInstallations, client.MatchingFields{core.SeedRefName: h.gardenletConfiguration.SeedConfig.Name}); err != nil {
+	var listOpts []client.ListOption
+	if h.gardenletConfiguration.SeedConfig != nil {
+		listOpts = append(listOpts, client.MatchingFields{core.SeedRefName: h.gardenletConfiguration.SeedConfig.Name})
+	} else if v1beta1helper.IsShootSelfHosted(h.shoot.GetInfo().Spec.Provider.Workers) {
+		listOpts = append(listOpts, client.MatchingFields{core.ShootRefName: h.shoot.GetInfo().Name, core.ShootRefNamespace: h.shoot.GetInfo().Namespace})
+	}
+	if err := h.gardenClient.List(ctx, controllerInstallations, listOpts...); err != nil {
 		return nil, nil, nil, nil, err
 	}
 
@@ -433,6 +462,31 @@ func (h *Health) checkControlPlane(
 	return &c, nil
 }
 
+// checkBackupBucketsReady checks the health of the BackupBucket associated with the shoot's BackupEntry.
+// Used for self-hosted shoots.
+func (h *Health) checkBackupBucketsReady(ctx context.Context, condition gardencorev1beta1.Condition) (*gardencorev1beta1.Condition, error) {
+	backupEntry := &gardencorev1beta1.BackupEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: h.shoot.BackupEntryName, Namespace: h.shoot.GetInfo().Namespace},
+	}
+	if err := h.gardenClient.Get(ctx, client.ObjectKeyFromObject(backupEntry), backupEntry); err != nil {
+		if apierrors.IsNotFound(err) {
+			c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "NoBackupEntry", "No BackupEntry found.")
+			return &c, nil
+		}
+		return nil, fmt.Errorf("failed getting BackupEntry %s: %w", h.shoot.BackupEntryName, err)
+	}
+
+	backupBucket := &gardencorev1beta1.BackupBucket{
+		ObjectMeta: metav1.ObjectMeta{Name: backupEntry.Spec.BucketName},
+	}
+	if err := h.gardenClient.Get(ctx, client.ObjectKeyFromObject(backupBucket), backupBucket); err != nil {
+		return nil, fmt.Errorf("failed getting BackupBucket %s: %w", backupEntry.Spec.BucketName, err)
+	}
+
+	c := gardenerutils.ComputeBackupBucketsCondition(h.clock, condition, []gardencorev1beta1.BackupBucket{*backupBucket})
+	return &c, nil
+}
+
 // CheckIfDependencyWatchdogProberScaledDownControllers checks if controllers have been scaled down by dependency-watchdog-prober.
 func CheckIfDependencyWatchdogProberScaledDownControllers(ctx context.Context, seedClient client.Client, shootNamespace string) ([]string, error) {
 	var scaledDownDeploymentNames []string
@@ -473,6 +527,7 @@ func (h *Health) checkObservabilityComponents(
 	condition gardencorev1beta1.Condition,
 	extensionConditions []healthchecker.ExtensionCondition,
 	managedResources []resourcesv1alpha1.ManagedResource,
+	prometheuses *monitoringv1.PrometheusList,
 	healthCheckOutdatedThreshold *metav1.Duration,
 ) (
 	*gardencorev1beta1.Condition,
@@ -509,6 +564,12 @@ func (h *Health) checkObservabilityComponents(
 		return managedResource.Labels[v1beta1constants.LabelCareConditionType] == string(gardencorev1beta1.ShootObservabilityComponentsHealthy)
 	}, gardenlethelper.GetManagedResourceProgressingThreshold(h.gardenletConfiguration)); exitCondition != nil {
 		return exitCondition, nil
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.PrometheusHealthChecks) {
+		if exitCondition := h.healthChecker.CheckPrometheuses(ctx, condition, prometheuses, nil); exitCondition != nil {
+			return exitCondition, nil
+		}
 	}
 
 	c := v1beta1helper.UpdatedConditionWithClock(h.clock, condition, gardencorev1beta1.ConditionTrue, "ObservabilityComponentsRunning", "All observability components are healthy.")
@@ -667,8 +728,13 @@ func (h *Health) CheckClusterNodes(
 		return nil, err
 	}
 
-	if err := CheckNodeAgentLeases(nodeList, leaseList, h.clock); err != nil {
+	if err := CheckNodeAgentLeases(nodesManagedByMCM, leaseList, h.clock); err != nil {
 		c := v1beta1helper.FailedCondition(h.clock, h.shoot.GetInfo().Status.LastOperation, h.conditionThresholds, condition, "NodeAgentUnhealthy", err.Error())
+		return &c, nil
+	}
+
+	if err := CheckSystemdUnitsReady(nodesManagedByMCM); err != nil {
+		c := v1beta1helper.FailedCondition(h.clock, h.shoot.GetInfo().Status.LastOperation, h.conditionThresholds, condition, "SystemdUnitsNotReady", err.Error())
 		return &c, nil
 	}
 
@@ -687,7 +753,7 @@ func (h *Health) CheckClusterNodes(
 }
 
 // CheckNodeAgentLeases checks if all nodes in the shoot cluster have a corresponding Lease object maintained by gardener-node-agent
-func CheckNodeAgentLeases(nodeList *corev1.NodeList, leaseList *coordinationv1.LeaseList, clock clock.Clock) error {
+func CheckNodeAgentLeases(nodeList []*corev1.Node, leaseList *coordinationv1.LeaseList, clock clock.Clock) error {
 	nodeNameToLease := make(map[string]coordinationv1.Lease, len(leaseList.Items))
 	for _, lease := range leaseList.Items {
 		if strings.HasPrefix(lease.Name, gardenerutils.NodeLeasePrefix) {
@@ -696,7 +762,7 @@ func CheckNodeAgentLeases(nodeList *corev1.NodeList, leaseList *coordinationv1.L
 		}
 	}
 
-	for _, node := range nodeList.Items {
+	for _, node := range nodeList {
 		lease, ok := nodeNameToLease[node.Name]
 		if !ok {
 			return fmt.Errorf("gardener-node-agent is not running on node %q", node.Name)
@@ -705,6 +771,27 @@ func CheckNodeAgentLeases(nodeList *corev1.NodeList, leaseList *coordinationv1.L
 		if lease.Spec.RenewTime.Add(time.Second * time.Duration(*lease.Spec.LeaseDurationSeconds)).Before(clock.Now()) {
 			return fmt.Errorf("gardener-node-agent stopped running on node %q", node.Name)
 		}
+	}
+
+	return nil
+}
+
+// CheckSystemdUnitsReady checks if all nodes report healthy systemd units.
+// TODO(rfranzke): Make the condition mandatory after Gardener v1.143 has been released.
+// Nodes without the SystemdUnitsReady condition are skipped for backward compatibility.
+func CheckSystemdUnitsReady(nodes []*corev1.Node) error {
+	var unhealthyNodes []string
+
+	for _, node := range nodes {
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == nodeagentconfigv1alpha1.ConditionTypeSystemdUnitsReady && condition.Status != corev1.ConditionTrue {
+				unhealthyNodes = append(unhealthyNodes, fmt.Sprintf("node %q: %s", node.Name, condition.Message))
+			}
+		}
+	}
+
+	if len(unhealthyNodes) > 0 {
+		return fmt.Errorf("systemd units are not healthy on %s", strings.Join(unhealthyNodes, "; "))
 	}
 
 	return nil
@@ -918,12 +1005,7 @@ func ComputeRequiredControlPlaneDeployments(shoot *gardencorev1beta1.Shoot) (set
 		requiredControlPlaneDeployments.Insert(v1beta1constants.DeploymentNameKubeScheduler)
 		requiredControlPlaneDeployments.Insert(v1beta1constants.DeploymentNameMachineControllerManager)
 
-		shootWantsClusterAutoscaler, err := v1beta1helper.ShootWantsClusterAutoscaler(shoot)
-		if err != nil {
-			return nil, err
-		}
-
-		if shootWantsClusterAutoscaler {
+		if v1beta1helper.ShootWantsClusterAutoscaler(shoot) {
 			requiredControlPlaneDeployments.Insert(v1beta1constants.DeploymentNameClusterAutoscaler)
 		}
 
@@ -993,6 +1075,7 @@ type ShootConditions struct {
 	observabilityComponentsHealthy gardencorev1beta1.Condition
 	systemComponentsHealthy        gardencorev1beta1.Condition
 	everyNodeReady                 *gardencorev1beta1.Condition
+	backupBucketsReady             *gardencorev1beta1.Condition
 }
 
 // ConvertToSlice returns the shoot conditions as a slice.
@@ -1007,7 +1090,13 @@ func (s ShootConditions) ConvertToSlice() []gardencorev1beta1.Condition {
 		conditions = append(conditions, *s.everyNodeReady)
 	}
 
-	return append(conditions, s.systemComponentsHealthy)
+	conditions = append(conditions, s.systemComponentsHealthy)
+
+	if s.backupBucketsReady != nil {
+		conditions = append(conditions, *s.backupBucketsReady)
+	}
+
+	return conditions
 }
 
 // ConditionTypes returns all shoot condition types.
@@ -1022,7 +1111,13 @@ func (s ShootConditions) ConditionTypes() []gardencorev1beta1.ConditionType {
 		types = append(types, gardencorev1beta1.ShootEveryNodeReady)
 	}
 
-	return append(types, s.systemComponentsHealthy.Type)
+	types = append(types, s.systemComponentsHealthy.Type)
+
+	if s.backupBucketsReady != nil {
+		types = append(types, gardencorev1beta1.SeedBackupBucketsReady)
+	}
+
+	return types
 }
 
 // NewShootConditions returns a new instance of ShootConditions.
@@ -1038,6 +1133,11 @@ func NewShootConditions(clock clock.Clock, shoot *gardencorev1beta1.Shoot) Shoot
 	if !v1beta1helper.IsWorkerless(shoot) {
 		nodeCondition := v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.ShootEveryNodeReady)
 		shootConditions.everyNodeReady = &nodeCondition
+	}
+
+	if v1beta1helper.IsShootSelfHosted(shoot.Spec.Provider.Workers) {
+		backupBucketsCondition := v1beta1helper.GetOrInitConditionWithClock(clock, shoot.Status.Conditions, gardencorev1beta1.SeedBackupBucketsReady)
+		shootConditions.backupBucketsReady = &backupBucketsCondition
 	}
 
 	return shootConditions

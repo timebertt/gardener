@@ -12,21 +12,24 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	istioapinetworkingv1beta1 "istio.io/api/networking/v1beta1"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -38,9 +41,10 @@ var fromPolicyRegexp = regexp.MustCompile(resourcesv1alpha1.NetworkPolicyFromPol
 type Reconciler struct {
 	TargetClient client.Client
 	Config       resourcemanagerconfigv1alpha1.NetworkPolicyControllerConfig
-	Recorder     record.EventRecorder
+	Recorder     events.EventRecorder
 
-	selectors []labels.Selector
+	selectors      []labels.Selector
+	istioCRDsFound bool
 }
 
 // Reconcile performs the main reconciliation logic.
@@ -155,6 +159,18 @@ func (r *Reconciler) fetchRelevantNamespaceNames(ctx context.Context, service *c
 }
 
 func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logger, service *corev1.Service, namespaceNames sets.Set[string]) ([]flow.TaskFn, []string, error) {
+	// If the namespace of the Service is terminating, we don't want to create or maintain any policies. The Service
+	// itself is expected to disappear soon (namespace controller cleans up all resources on namespace deletion), so
+	// whatever we would do here will become obsolete very soon.
+	if !namespaceNames.Has(service.Namespace) {
+		return nil, nil, nil
+	}
+
+	podLabelKeysByNamespace, err := r.podNetworkPolicyLabelKeysByNamespace(ctx, namespaceNames)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var (
 		taskFns               []flow.TaskFn
 		desiredObjectMetaKeys []string
@@ -174,12 +190,11 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 				{objectMetaFunc: ingressObjectMetaFunc, reconcileFunc: r.reconcileIngressPolicy},
 				{objectMetaFunc: egressObjectMetaFunc, reconcileFunc: r.reconcileEgressPolicy},
 			} {
-				reconcileFn := fns.reconcileFunc
 				objectMeta := fns.objectMetaFunc(policyID, service.Namespace, namespaceName)
 				desiredObjectMetaKeys = append(desiredObjectMetaKeys, key(objectMeta))
 
 				taskFns = append(taskFns, func(ctx context.Context) error {
-					return reconcileFn(ctx, log, service, port, objectMeta, namespaceName, podLabelSelector)
+					return fns.reconcileFunc(ctx, log, service, port, objectMeta, namespaceName, podLabelSelector)
 				})
 			}
 		}
@@ -193,23 +208,32 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 				podLabelSelector = customPodLabelSelector
 			}
 
-			for _, n := range namespaceNames.UnsortedList() {
-				namespaceName := n
+			for _, namespaceName := range namespaceNames.UnsortedList() {
 				matchLabels := matchLabelsForServiceAndNamespace(podLabelSelector, service, namespaceName)
+				effectiveLabels, _ := shortenPodSelectorKeysIfTooLong(metav1.LabelSelector{MatchLabels: matchLabels})
+
+				// Check whether any pod in this namespace carries the effective label key — using the
+				// pre-fetched per-namespace label key set instead of listing pods again for every
+				// (namespace, port) combination.
+				labelKeys := podLabelKeysByNamespace[namespaceName]
+				hasPods := false
+				for k := range effectiveLabels.MatchLabels {
+					if labelKeys.Has(k) {
+						hasPods = true
+						break
+					}
+				}
+
+				if !hasPods {
+					continue
+				}
+
 				addTasksForPort(port, policyID, namespaceName, metav1.LabelSelector{MatchLabels: matchLabels}, ingressPolicyObjectMetaFor, egressPolicyObjectMetaFor)
 			}
 		}
 	)
 
-	// If the namespace of the Service is terminating, we don't want to create or maintain any policies. The Service
-	// itself is expected to disappear soon (namespace controller cleans up all resources on namespace deletion), so
-	// whatever we would do here will become obsolete very soon.
-	if !namespaceNames.Has(service.Namespace) {
-		return nil, nil, nil
-	}
-
-	for _, p := range service.Spec.Ports {
-		port := p
+	for _, port := range service.Spec.Ports {
 		addTasksForRelevantNamespacesAndPort(networkingv1.NetworkPolicyPort{Protocol: &port.Protocol, Port: &port.TargetPort}, "")
 	}
 
@@ -246,10 +270,19 @@ func (r *Reconciler) reconcileDesiredPolicies(ctx context.Context, log logr.Logg
 		return nil, nil, err
 	}
 
-	for _, p := range portsExposedViaIngresses {
-		port := p
+	for _, port := range portsExposedViaIngresses {
 		policyID := policyIDFor(service.Name, port)
 		addTasksForPort(port, policyID, r.Config.IngressControllerSelector.Namespace, r.Config.IngressControllerSelector.PodSelector, ingressPolicyObjectMetaWhenExposedViaIngressFor, egressPolicyObjectMetaWhenExposedViaIngressFor)
+	}
+
+	portsExposedViaVirtualServices, err := r.portsExposedByVirtualServiceResources(ctx, service)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, port := range portsExposedViaVirtualServices {
+		policyID := policyIDFor(service.Name, port.networkPolicyPort)
+		addTasksForPort(port.networkPolicyPort, policyID, port.namespace, port.podSelector, ingressPolicyObjectMetaWhenExposedViaVirtualServiceFor, egressPolicyObjectMetaWhenExposedViaVirtualServiceFor)
 	}
 
 	return taskFns, desiredObjectMetaKeys, nil
@@ -259,9 +292,7 @@ func (r *Reconciler) deleteStalePolicies(networkPolicyList *metav1.PartialObject
 	objectMetaKeysForDesiredPolicies := sets.New(desiredObjectMetaKeys...)
 	var taskFns []flow.TaskFn
 
-	for _, n := range networkPolicyList.Items {
-		networkPolicy := n
-
+	for _, networkPolicy := range networkPolicyList.Items {
 		if !objectMetaKeysForDesiredPolicies.Has(key(networkPolicy.ObjectMeta)) {
 			taskFns = append(taskFns, func(ctx context.Context) error {
 				return kubernetesutils.DeleteObject(ctx, r.TargetClient, &networkPolicy)
@@ -348,7 +379,7 @@ func (r *Reconciler) reconcilePolicy(
 
 	if mutated {
 		log.V(1).Info("Usual pod label selector contained at least one key exceeding 63 characters - it had to be mutated", "usualPodLabelSelector", podLabelSelector, "mutatedPodLabelSelector", effectivePodLabelSelector)
-		r.Recorder.Eventf(service, corev1.EventTypeWarning, "PodLabelSelectorKey(s)TooLong", "Usual pod label selector has at least one key exceeding 63 characters and had to be mutated - consider shortening the namespace name or the service name (%+v was mutated to %+v)", podLabelSelector, effectivePodLabelSelector)
+		r.Recorder.Eventf(service, nil, corev1.EventTypeWarning, "PodLabelSelectorKey(s)TooLong", gardencorev1beta1.EventActionReconcile, "Usual pod label selector has at least one key exceeding 63 characters and had to be mutated - consider shortening the namespace name or the service name (%+v was mutated to %+v)", podLabelSelector, effectivePodLabelSelector)
 	}
 
 	return err
@@ -442,6 +473,144 @@ func serviceBackendPortsToNetworkPolicyPorts(service *corev1.Service, serviceBac
 	return
 }
 
+type istioResources struct {
+	networkPolicyPort networkingv1.NetworkPolicyPort
+	namespace         string
+	podSelector       metav1.LabelSelector
+}
+
+func (r *Reconciler) portsExposedByVirtualServiceResources(ctx context.Context, service *corev1.Service) ([]istioResources, error) {
+	if !r.istioCRDsFound {
+		return nil, nil
+	}
+
+	virtualServiceList := &istionetworkingv1beta1.VirtualServiceList{}
+	if err := r.TargetClient.List(ctx, virtualServiceList, client.InNamespace(service.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed listing virtual services in namespace %q: %w", service.Namespace, err)
+	}
+
+	var resources []istioResources
+
+	for _, virtualService := range virtualServiceList.Items {
+		var gateways []*istionetworkingv1beta1.Gateway
+		for _, gatewayName := range virtualService.Spec.Gateways {
+			namespace := virtualService.Namespace
+			// The gateway name can be in the format "namespace/name", but it defaults to the virtual service's namespace.
+			if parts := strings.SplitN(gatewayName, "/", 2); len(parts) == 2 {
+				namespace = parts[0]
+				gatewayName = parts[1]
+			}
+
+			gateways = append(gateways, &istionetworkingv1beta1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      gatewayName,
+					Namespace: namespace,
+				},
+			})
+		}
+
+		for _, httpRoute := range virtualService.Spec.Http {
+			for _, route := range httpRoute.Route {
+				res, err := r.calculateIstioResources(ctx, service, route.Destination, gateways)
+				if err != nil {
+					return nil, fmt.Errorf("failed calculating istio resources for virtual service %q: %w", virtualService.Name, err)
+				}
+				resources = append(resources, res...)
+			}
+		}
+
+		for _, tlsRoute := range virtualService.Spec.Tls {
+			for _, route := range tlsRoute.Route {
+				res, err := r.calculateIstioResources(ctx, service, route.Destination, gateways)
+				if err != nil {
+					return nil, fmt.Errorf("failed calculating istio resources for virtual service %q: %w", virtualService.Name, err)
+				}
+				resources = append(resources, res...)
+			}
+		}
+
+		for _, tcpRoute := range virtualService.Spec.Tcp {
+			for _, route := range tcpRoute.Route {
+				res, err := r.calculateIstioResources(ctx, service, route.Destination, gateways)
+				if err != nil {
+					return nil, fmt.Errorf("failed calculating istio resources for virtual service %q: %w", virtualService.Name, err)
+				}
+				resources = append(resources, res...)
+			}
+		}
+	}
+
+	return resources, nil
+}
+
+func (r *Reconciler) calculateIstioResources(
+	ctx context.Context,
+	service *corev1.Service,
+	destination *istioapinetworkingv1beta1.Destination,
+	gateways []*istionetworkingv1beta1.Gateway,
+) (
+	[]istioResources,
+	error,
+) {
+	var resources []istioResources
+
+	if destination != nil && destination.Host != "" && destination.Port != nil {
+		if svc, ok := r.extractServiceNameFromDomain(destination.Host); ok {
+			if svc.Name == service.Name && svc.Namespace == service.Namespace {
+				for _, gateway := range gateways {
+					gw := gateway.DeepCopy()
+					if err := r.TargetClient.Get(ctx, client.ObjectKeyFromObject(gw), gw); err != nil {
+						return nil, fmt.Errorf("failed fetching gateway %q in namespace %q: %w", gw.Name, gw.Namespace, err)
+					}
+
+					istioNamespaces, err := r.collectIstioNamespaces(ctx, gw)
+					if err != nil {
+						return nil, fmt.Errorf("failed collecting istio namespaces for gateway %q in namespace %q: %w", gw.Name, gw.Namespace, err)
+					}
+
+					networkPolicyPorts := serviceBackendPortsToNetworkPolicyPorts(service, []networkingv1.ServiceBackendPort{{Number: int32(destination.Port.Number)}}) // #nosec G115 -- Port number is already validated by istio admission webhook to be in range 1-65535, so it cannot cause overflow in int32 conversion.
+
+					if len(networkPolicyPorts) == 0 {
+						continue
+					}
+
+					for _, port := range networkPolicyPorts {
+						for _, namespace := range istioNamespaces {
+							resources = append(resources, istioResources{
+								networkPolicyPort: port,
+								namespace:         namespace,
+								podSelector:       metav1.LabelSelector{MatchLabels: gw.Spec.Selector},
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return resources, nil
+}
+
+func (r *Reconciler) collectIstioNamespaces(ctx context.Context, gateway *istionetworkingv1beta1.Gateway) ([]string, error) {
+	// Istio allows gateways with empty selector, but we do not because in the Gardener context there is always a selector.
+	if len(gateway.Spec.Selector) == 0 {
+		return nil, fmt.Errorf("gateway %q in namespace %q has no selector, which is not supported by the network policy controller", gateway.Name, gateway.Namespace)
+	}
+
+	podList := &metav1.PartialObjectMetadataList{}
+	podList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("PodList"))
+	if err := r.TargetClient.List(ctx, podList, client.MatchingLabels(gateway.Spec.Selector)); err != nil {
+		return nil, fmt.Errorf("failed listing pods to determine gateway namespaces: %w", err)
+	}
+
+	namespaces := sets.New[string]()
+	for _, pod := range podList.Items {
+		namespaces.Insert(pod.Namespace)
+	}
+
+	return namespaces.UnsortedList(), nil
+}
+
 func policyIDFor(serviceName string, port networkingv1.NetworkPolicyPort) string {
 	return fmt.Sprintf("%s-%s-%s", serviceName, strings.ToLower(string(*port.Protocol)), port.Port.String())
 }
@@ -513,6 +682,24 @@ func egressPolicyObjectMetaWhenExposedViaIngressFor(policyID, serviceNamespace, 
 	return metav1.ObjectMeta{Name: name + "-from-ingress-controller", Namespace: ingressControllerNamespace}
 }
 
+func ingressPolicyObjectMetaWhenExposedViaVirtualServiceFor(policyID, serviceNamespace, backendServiceNamespace string) metav1.ObjectMeta {
+	name := "ingress-to-" + policyID + "-from-istio"
+	if serviceNamespace != backendServiceNamespace {
+		name = "ingress-to-" + policyID + "-from-" + backendServiceNamespace
+	}
+
+	return metav1.ObjectMeta{Name: name, Namespace: serviceNamespace}
+}
+
+func egressPolicyObjectMetaWhenExposedViaVirtualServiceFor(policyID, serviceNamespace, backendServiceNamespace string) metav1.ObjectMeta {
+	name := "egress-to-" + policyID
+	if serviceNamespace != backendServiceNamespace {
+		name = "egress-to-" + serviceNamespace + "-" + policyID
+	}
+
+	return metav1.ObjectMeta{Name: name + "-from-istio", Namespace: backendServiceNamespace}
+}
+
 func ingressNamespaceSelectorFor(serviceNamespace, namespaceName string) *metav1.LabelSelector {
 	if serviceNamespace == namespaceName {
 		return nil
@@ -531,4 +718,32 @@ func egressNamespaceSelectorFor(serviceNamespace, namespaceName string) *metav1.
 
 func key(meta metav1.ObjectMeta) string {
 	return meta.Namespace + "/" + meta.Name
+}
+
+// podNetworkPolicyLabelKeysByNamespace lists pods in each namespace once and collects the network policy label keys
+// (prefix "networking.resources.gardener.cloud/to-" with value "allowed") into a set per namespace. This avoids
+// repeated informer scans when checking multiple ports per namespace.
+func (r *Reconciler) podNetworkPolicyLabelKeysByNamespace(ctx context.Context, namespaceNames sets.Set[string]) (map[string]sets.Set[string], error) {
+	result := make(map[string]sets.Set[string], namespaceNames.Len())
+
+	for _, ns := range namespaceNames.UnsortedList() {
+		podList := &metav1.PartialObjectMetadataList{}
+		podList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("PodList"))
+		if err := r.TargetClient.List(ctx, podList, client.InNamespace(ns)); err != nil {
+			return nil, fmt.Errorf("failed listing pods in namespace %s: %w", ns, err)
+		}
+
+		labelKeys := sets.New[string]()
+		for _, pod := range podList.Items {
+			for k, v := range pod.Labels {
+				if v == v1beta1constants.LabelNetworkPolicyAllowed && strings.HasPrefix(k, resourcesv1alpha1.NetworkPolicyLabelKeyPrefix+"to-") {
+					labelKeys.Insert(k)
+				}
+			}
+		}
+
+		result[ns] = labelKeys
+	}
+
+	return result, nil
 }

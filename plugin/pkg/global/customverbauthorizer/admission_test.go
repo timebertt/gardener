@@ -507,7 +507,7 @@ var _ = Describe("customverbauthorizer", func() {
 
 					It("should allow creating a NamespacedCloudProfile with kubernetes section", func() {
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
 						}}
 
 						attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
@@ -516,11 +516,11 @@ var _ = Describe("customverbauthorizer", func() {
 
 					It("should allow updating a NamespacedCloudProfile's kubernetes section", func() {
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
 						}}
 						oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(48 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(48 * time.Hour)})},
 						}}
 
 						attrs = admission.NewAttributesRecord(namespacedCloudProfile, oldNamespacedCloudProfile, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
@@ -529,7 +529,7 @@ var _ = Describe("customverbauthorizer", func() {
 
 					It("should allow removing a NamespacedCloudProfile's kubernetes section", func() {
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
 						}}
 						oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
 						namespacedCloudProfile.Spec.Kubernetes = nil
@@ -546,7 +546,7 @@ var _ = Describe("customverbauthorizer", func() {
 
 					It("should forbid creating a NamespacedCloudProfile with kubernetes section", func() {
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
 						}}
 
 						attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
@@ -555,11 +555,11 @@ var _ = Describe("customverbauthorizer", func() {
 
 					It("should forbid updating a NamespacedCloudProfile's kubernetes section", func() {
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
 						}}
 						oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(48 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(48 * time.Hour)})},
 						}}
 
 						attrs = admission.NewAttributesRecord(namespacedCloudProfile, oldNamespacedCloudProfile, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
@@ -568,7 +568,7 @@ var _ = Describe("customverbauthorizer", func() {
 
 					It("should forbid removing a NamespacedCloudProfile's kubernetes section", func() {
 						namespacedCloudProfile.Spec.Kubernetes = &core.KubernetesSettings{Versions: []core.ExpirableVersion{
-							{Version: "1.29.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
+							{Version: "1.30.0", ExpirationDate: ptr.To(metav1.Time{Time: time.Now().Add(24 * time.Hour)})},
 						}}
 						oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
 						namespacedCloudProfile.Spec.Kubernetes = nil
@@ -738,92 +738,11 @@ var _ = Describe("customverbauthorizer", func() {
 					})
 				})
 			})
+			It("should allow creating a NamespacedCloudProfile with limits above parent CloudProfile limits", func() {
+				namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(15))}
 
-			Context("raise-spec-limits verb", func() {
-				BeforeEach(func() {
-					authorizeAttributes.Verb = CustomVerbNamespacedCloudProfileRaiseLimits
-				})
-
-				It("should always allow creating a NamespacedCloudProfile without limits", func() {
-					attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
-				})
-
-				It("should always allow creating a NamespacedCloudProfile without limits.MaxNodesTotal", func() {
-					namespacedCloudProfile.Spec.Limits = &core.Limits{}
-					attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
-				})
-
-				It("should always allow creating a NamespacedCloudProfile with any limits.MaxNodesTotal if there is no limit in the parent CloudProfile", func() {
-					namespacedCloudProfile.Spec.Limits = &core.Limits{
-						MaxNodesTotal: ptr.To(int32(15)),
-					}
-					attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
-				})
-
-				It("should always allow removing a NamespacedCloudProfile's limits section", func() {
-					namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(15))}
-					oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
-					namespacedCloudProfile.Spec.Limits = nil
-
-					attrs = admission.NewAttributesRecord(namespacedCloudProfile, oldNamespacedCloudProfile, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
-					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
-				})
-
-				It("should always allow decreasing a NamespacedCloudProfile's limits.maxNodesTotal to a lower or equal to value than in CloudProfile's limits", func() {
-					parentCloudProfile.Spec.Limits = &v1beta1.Limits{MaxNodesTotal: ptr.To(int32(10))}
-					Expect(coreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(parentCloudProfile)).To(Succeed())
-
-					namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(15))}
-					oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
-					namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(10))}
-
-					attrs = admission.NewAttributesRecord(namespacedCloudProfile, oldNamespacedCloudProfile, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
-					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
-				})
-
-				When("permission is granted", func() {
-					BeforeEach(func() {
-						auth.EXPECT().Authorize(ctx, authorizeAttributes).Return(authorizer.DecisionAllow, "", nil)
-
-						parentCloudProfile.Spec.Limits = &v1beta1.Limits{MaxNodesTotal: ptr.To(int32(10))}
-						Expect(coreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(parentCloudProfile)).To(Succeed())
-					})
-
-					It("should allow creating a NamespacedCloudProfile with limits above parent CloudProfile limits", func() {
-						namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(15))}
-
-						attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-						Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
-					})
-				})
-
-				When("permission is not granted", func() {
-					BeforeEach(func() {
-						auth.EXPECT().Authorize(ctx, authorizeAttributes).Return(authorizer.DecisionDeny, "", nil)
-
-						parentCloudProfile.Spec.Limits = &v1beta1.Limits{MaxNodesTotal: ptr.To(int32(10))}
-						Expect(coreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(parentCloudProfile)).To(Succeed())
-					})
-
-					It("should forbid creating a NamespacedCloudProfile with a higher limits.maxNodesTotal value", func() {
-						namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(15))}
-
-						attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-						Expect(admissionHandler.Validate(ctx, attrs, nil)).NotTo(Succeed())
-					})
-
-					It("should forbid modification of a NamespacedCloudProfile's limits.maxNodesTotal to a value still too high", func() {
-						namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(15))}
-						oldNamespacedCloudProfile := namespacedCloudProfile.DeepCopy()
-						namespacedCloudProfile.Spec.Limits = &core.Limits{MaxNodesTotal: ptr.To(int32(13))}
-
-						attrs = admission.NewAttributesRecord(namespacedCloudProfile, oldNamespacedCloudProfile, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
-						Expect(admissionHandler.Validate(ctx, attrs, nil)).NotTo(Succeed())
-					})
-				})
+				attrs = admission.NewAttributesRecord(namespacedCloudProfile, nil, core.Kind("NamespacedCloudProfile").WithVersion("version"), namespacedCloudProfile.Namespace, namespacedCloudProfile.Name, core.Resource("namespacedcloudprofiles").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
+				Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
 			})
 		})
 

@@ -15,8 +15,9 @@ import (
 	clientcmdv1 "k8s.io/client-go/tools/clientcmd/api/v1"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	kubeproxy "github.com/gardener/gardener/pkg/component/kubernetes/proxy"
 	imagevectorutils "github.com/gardener/gardener/pkg/utils/imagevector"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -39,7 +40,7 @@ func (b *Botanist) DefaultKubeProxy() (kubeproxy.Interface, error) {
 		b.SeedClientSet.Client(),
 		b.Shoot.ControlPlaneNamespace,
 		kubeproxy.Values{
-			IPVSEnabled:  b.Shoot.IPVSEnabled(),
+			ProxyMode:    core.ProxyMode(b.Shoot.ProxyMode()),
 			FeatureGates: featureGates,
 			ImageAlpine:  imageAlpine.String(),
 			VPAEnabled:   b.Shoot.WantsVerticalPodAutoscaler,
@@ -60,7 +61,7 @@ func (b *Botanist) DeployKubeProxy(ctx context.Context) error {
 			Server:                   b.Shoot.ComputeOutOfClusterAPIServerAddress(true),
 			CertificateAuthorityData: caSecret.Data[secrets.DataKeyCertificateBundle],
 		},
-		clientcmdv1.AuthInfo{TokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token"},
+		clientcmdv1.AuthInfo{TokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token"}, // #nosec: G101 -- This is a standard SA token path, not a credential.
 	))
 	if err != nil {
 		return err

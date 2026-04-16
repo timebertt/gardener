@@ -259,6 +259,7 @@ The `ControllerInstallation` controller in the `gardenlet` reconciles `Controlle
 This reconciler is responsible for `ControllerInstallation`s referencing a `ControllerDeployment` whose `type=helm`.
 
 For each `ControllerInstallation`, it creates a namespace on the seed cluster named `extension-<controller-installation-name>`.
+For [self-hosted shoot clusters](https://github.com/gardener/enhancements/tree/main/geps/0028-self-hosted-shoot-clusters), the namespace is named `extension-<controller-registration-name>` instead (matching the `ManagedResource` name created during bootstrapping).
 Then, it creates a generic garden kubeconfig and garden access secret for the extension for [accessing the garden cluster](../extensions/garden-api-access.md).
 
 After that, it unpacks the Helm chart tarball in the `ControllerDeployment`s `.providerConfig.chart` field and deploys the rendered resources to the seed cluster.
@@ -285,10 +286,19 @@ gardener:
 
 As of today, there are a few more fields in `.gardener.seed`, but it is recommended to use the `.gardener.seed.spec` if the Helm chart needs more information about the seed configuration.
 
+> [!NOTE]
+> For self-hosted shoot clusters that have not yet been promoted to a `Seed`, the `.gardener.seed` section is omitted entirely because no `Seed` object exists.
+> Instead, a `.gardener.shoot` section is populated with `name`, `namespace`, `labels`, `annotations`, `spec`, and (if available) `clusterIdentity`.
+> Extension charts deployed in such clusters must handle the absence of `.gardener.seed` gracefully (e.g., `{{ if .Values.gardener.seed }}`).
+
 The rendered chart will be deployed via a `ManagedResource` created in the `garden` namespace of the seed cluster.
 It is labeled with `controllerinstallation-name=<name>` so that one can easily find the owning `ControllerInstallation` for an existing `ManagedResource`.
 
 The reconciler maintains the `Installed` condition of the `ControllerInstallation` and sets it to `False` if the rendering or deployment fails.
+
+> [!NOTE]
+> When the seed cluster is a self-hosted shoot, the main and required reconcilers are not registered in the seed `gardenlet`.
+> In this case, all `ControllerInstallation`s use `.spec.shootRef` (not `.spec.seedRef`), and the shoot `gardenlet` handles them instead.
 
 #### ["Care" Reconciler](../../pkg/gardenlet/controller/controllerinstallation/care)
 
@@ -446,6 +456,10 @@ It maintains the following conditions:
 - `EveryNodeReady`: The conditions of the worker nodes are checked (e.g., `Ready`, `MemoryPressure`). Also, it's checked whether the Kubernetes version of the installed `kubelet` matches the desired version specified in the `Shoot` resource.
 - `SystemComponentsHealthy`: The conditions of the `ManagedResource`s are checked (e.g., `ResourcesApplied`). Also, it is verified whether the VPN tunnel connection is established (which is required for the `kube-apiserver` to communicate with the worker nodes).
 
+For self-hosted shoot clusters, the reconciler additionally maintains:
+
+- `BackupBucketsReady`: It checks the health of the `BackupBucket` associated with the shoot's `BackupEntry`. If no `BackupEntry` exists yet, the condition is set to `True` with reason `NoBackupEntry`.
+
 Sometimes, `ManagedResource`s can have both `Healthy` and `Progressing` conditions set to `True` (e.g., when a `DaemonSet` rolls out one-by-one on a large cluster with many nodes) while this is not reflected in the `Shoot` status. In order to catch issues where the rollout gets stuck, one can set `.controllers.shootCare.managedResourceProgressingThreshold` in the `gardenlet`'s component configuration. If the `Progressing` condition is still `True` for more than the configured duration, the `SystemComponentsHealthy` condition in the `Shoot` is set to `False`, eventually.
 
 Each condition can optionally also have error `codes` in order to indicate which type of issue was detected (see [Shoot Status](../usage/shoot/shoot_status.md) for more details).
@@ -507,7 +521,7 @@ This reconciler periodically (default: every `6h`) performs backups of the state
 It is only started in case the `gardenlet` is responsible for an unmanaged `Seed`, i.e. a `Seed` which is not backed by a `seedmanagement.gardener.cloud/v1alpha1.ManagedSeed` object.
 Alternatively, it can be disabled by setting the `concurrentSyncs=0` for the controller in the `gardenlet`'s component configuration.
 
-Please refer to [GEP-22: Improved Usage of the `ShootState` API](../proposals/22-improved-usage-of-shootstate-api.md) for all information.
+Please refer to [GEP-0022: Improved Usage of the `ShootState` API](https://github.com/gardener/enhancements/tree/main/geps/0022-improved-shootstate-usage) for all information.
 
 ### ["Status" Reconciler](../../pkg/gardenlet/controller/shoot/status)
 
@@ -531,7 +545,13 @@ After the association is made, the `gardenlet` requests a token for the specific
 The `gardenlet` is responsible to keep this token valid by refreshing it periodically.
 The token is then used by components running in the seed cluster in order to present the said `WorkloadIdentity` before external systems, e.g. by calling cloud provider APIs.
 
-Please refer to [GEP-26: Workload Identity - Trust Based Authentication](../proposals/26-workload-identity.md) for more details.
+> [!NOTE]
+>
+> By default, tokens are valid for 6 hours and are renewed after 50% of their lifetime has passed (approximately 3 hours).
+> However, gardenlets cap token validity at 24 hours for renewal calculation purposes, even if tokens are issued with greater validity.
+> This means that tokens with validity longer than 24 hours will be renewed after 12 hours (50% of the 24-hour cap).
+
+Please refer to [GEP-0026: Workload Identity - Trust Based Authentication](https://github.com/gardener/enhancements/tree/main/geps/0026-workload-identity) for more details.
 
 ### [`VPAEvictionRequirements` Controller](../../pkg/gardenlet/controller/vpaevictionrequirements)
 

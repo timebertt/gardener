@@ -10,16 +10,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/utils/flow"
-	timeutils "github.com/gardener/gardener/pkg/utils/time"
 )
 
 type objectsRemaining []client.Object
@@ -120,16 +121,16 @@ func (f *namespaceFinalizer) HasFinalizers(obj client.Object) (bool, error) {
 }
 
 type cleaner struct {
-	time      timeutils.Ops
+	clock     clock.Clock
 	finalizer Finalizer
 }
 
-// NewCleaner instantiates a new Cleaner with the given timeutils.Ops and finalizer.
-func NewCleaner(time timeutils.Ops, finalizer Finalizer) Cleaner {
-	return &cleaner{time, finalizer}
+// NewCleaner instantiates a new Cleaner with the given clock and finalizer.
+func NewCleaner(clock clock.Clock, finalizer Finalizer) Cleaner {
+	return &cleaner{clock, finalizer}
 }
 
-var defaultCleaner = NewCleaner(timeutils.DefaultOps(), defaultFinalizer)
+var defaultCleaner = NewCleaner(clock.RealClock{}, defaultFinalizer)
 
 // DefaultCleaner is the default Cleaner.
 func DefaultCleaner() Cleaner {
@@ -156,14 +157,15 @@ func (cl *cleaner) doClean(ctx context.Context, c client.Client, obj client.Obje
 		gracePeriod *= time.Duration(*cleanOptions.FinalizeGracePeriodSeconds)
 	}
 
-	if !obj.GetDeletionTimestamp().IsZero() && obj.GetDeletionTimestamp().Time.Add(gracePeriod).Before(cl.time.Now()) {
+	if !obj.GetDeletionTimestamp().IsZero() && obj.GetDeletionTimestamp().Time.Add(gracePeriod).Before(cl.clock.Now()) {
 		hasFinalizers, err := cl.finalizer.HasFinalizers(obj)
 		if err != nil {
 			return err
 		}
 
 		if hasFinalizers {
-			return cl.finalizer.Finalize(ctx, c, obj)
+			// Ignore NotFound errors which might happen if the object or its namespace got deleted in the meantime.
+			return client.IgnoreNotFound(cl.finalizer.Finalize(ctx, c, obj))
 		}
 	}
 
@@ -189,7 +191,7 @@ func (cl *cleaner) doClean(ctx context.Context, c client.Client, obj client.Obje
 var _ Cleaner = (*volumeSnapshotContentCleaner)(nil)
 
 type volumeSnapshotContentCleaner struct {
-	time timeutils.Ops
+	clock clock.Clock
 }
 
 // Clean annotates the VolumeSnapshotContents so that they are cleaned up by the CSI snapshot controller.
@@ -206,7 +208,7 @@ func (v *volumeSnapshotContentCleaner) Clean(ctx context.Context, c client.Clien
 	return fmt.Errorf("type %T does neither implement client.Object nor client.ObjectList", obj)
 }
 
-func gracePeriodIsPassed(obj client.Object, ops *CleanOptions, t timeutils.Ops) bool {
+func gracePeriodIsPassed(obj client.Object, ops *CleanOptions, cl clock.Clock) bool {
 	if obj.GetDeletionTimestamp().IsZero() {
 		return false
 	}
@@ -217,7 +219,7 @@ func gracePeriodIsPassed(obj client.Object, ops *CleanOptions, t timeutils.Ops) 
 	}
 
 	gracePeriod := time.Second * time.Duration(ptr.Deref(deleteOp.GracePeriodSeconds, 0))
-	return obj.GetDeletionTimestamp().Time.Add(gracePeriod).Before(t.Now())
+	return obj.GetDeletionTimestamp().Time.Add(gracePeriod).Before(cl.Now())
 }
 
 const (
@@ -226,7 +228,7 @@ const (
 )
 
 func (v *volumeSnapshotContentCleaner) triggerVolumeSnapshotDeletion(ctx context.Context, c client.Client, obj client.Object, ops *CleanOptions) error {
-	if !gracePeriodIsPassed(obj, ops, v.time) {
+	if !gracePeriodIsPassed(obj, ops, v.clock) {
 		return nil
 	}
 
@@ -254,13 +256,13 @@ func (v *volumeSnapshotContentCleaner) triggerVolumeSnapshotDeletion(ctx context
 
 // NewVolumeSnapshotContentCleaner instantiates a new Cleaner with ability to clean VolumeSnapshotContents
 // **after** they got deleted and the given deletion grace period is passed.
-func NewVolumeSnapshotContentCleaner(time timeutils.Ops) Cleaner {
+func NewVolumeSnapshotContentCleaner(clock clock.Clock) Cleaner {
 	return &volumeSnapshotContentCleaner{
-		time: time,
+		clock: clock,
 	}
 }
 
-var defaultVolumeSnapshotContentCleaner = NewVolumeSnapshotContentCleaner(timeutils.DefaultOps())
+var defaultVolumeSnapshotContentCleaner = NewVolumeSnapshotContentCleaner(clock.RealClock{})
 
 // DefaultVolumeSnapshotContentCleaner is the default cleaner for VolumeSnapshotContents.
 // The VolumeSnapshotCleaner initiates the deletion of VolumeSnapshots **after** they got deleted
@@ -272,8 +274,8 @@ func DefaultVolumeSnapshotContentCleaner() Cleaner {
 var defaultGoneEnsurer = GoneEnsurerFunc(EnsureGone)
 
 // EnsureGone implements GoneEnsurer.
-func (f GoneEnsurerFunc) EnsureGone(ctx context.Context, c client.Client, obj runtime.Object, opts ...client.ListOption) error {
-	return f(ctx, c, obj, opts...)
+func (f GoneEnsurerFunc) EnsureGone(ctx context.Context, log logr.Logger, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	return f(ctx, log, c, obj, opts...)
 }
 
 // DefaultGoneEnsurer is the default GoneEnsurer.
@@ -282,35 +284,63 @@ func DefaultGoneEnsurer() GoneEnsurer {
 }
 
 // EnsureGone ensures that the given object or list is gone.
-func EnsureGone(ctx context.Context, c client.Client, obj runtime.Object, opts ...client.ListOption) error {
+func EnsureGone(ctx context.Context, log logr.Logger, c client.Client, obj runtime.Object, opts ...CleanOption) error {
+	cleanOptions := &CleanOptions{}
+	cleanOptions.ApplyOptions(opts)
+
 	switch o := obj.(type) {
 	case client.ObjectList:
-		return ensureCollectionGone(ctx, c, o, opts...)
+		return ensureCollectionGone(ctx, c, log, o, cleanOptions.ListOptions, cleanOptions.IgnoreLeftovers)
 	case client.Object:
-		return ensureGone(ctx, c, o)
+		return ensureGone(ctx, c, log, o, cleanOptions.IgnoreLeftovers)
 	}
 	return fmt.Errorf("type %T does neither implement client.Object nor client.ObjectList", obj)
 }
 
-func ensureGone(ctx context.Context, c client.Client, obj client.Object) error {
+func ensureGone(ctx context.Context, c client.Client, log logr.Logger, obj client.Object, ignoreFns []IgnoreLeftoverFunc) error {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
+
+	for _, ignore := range ignoreFns {
+		if ignore(log, obj) {
+			return nil
+		}
+	}
+
 	return NewObjectsRemaining(obj)
 }
 
-func ensureCollectionGone(ctx context.Context, c client.Client, list client.ObjectList, opts ...client.ListOption) error {
-	if err := c.List(ctx, list, opts...); err != nil {
+func ensureCollectionGone(ctx context.Context, c client.Client, log logr.Logger, list client.ObjectList, listOpts []client.ListOption, ignoreFns []IgnoreLeftoverFunc) error {
+	if err := c.List(ctx, list, listOpts...); err != nil {
 		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
 
-	if meta.LenList(list) > 0 {
+	objectsInList := meta.LenList(list)
+	if objectsInList == 0 {
+		return nil
+	}
+
+	ignoredObjects := 0
+	if err := meta.EachListItem(list, func(object runtime.Object) error {
+		for _, ignore := range ignoreFns {
+			if ignore(log, object.(client.Object)) {
+				ignoredObjects += 1
+				return nil
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to iterate over list: %w", err)
+	}
+
+	if ignoredObjects < objectsInList {
 		return NewObjectsRemaining(list)
 	}
 	return nil
@@ -370,17 +400,14 @@ type cleanerOps struct {
 
 // CleanAndEnsureGone cleans the target resources. Afterwards, it checks, whether the target resource is still
 // present. If yes, it errors with a NewObjectsRemaining error.
-func (o *cleanerOps) CleanAndEnsureGone(ctx context.Context, c client.Client, obj runtime.Object, opts ...CleanOption) error {
-	cleanOptions := &CleanOptions{}
-	cleanOptions.ApplyOptions(opts)
-
+func (o *cleanerOps) CleanAndEnsureGone(ctx context.Context, log logr.Logger, c client.Client, obj runtime.Object, opts ...CleanOption) error {
 	for _, cle := range o.cleaners {
 		if err := cle.Clean(ctx, c, obj, opts...); err != nil {
 			return err
 		}
 	}
 
-	return o.EnsureGone(ctx, c, obj, cleanOptions.ListOptions...)
+	return o.EnsureGone(ctx, log, c, obj, opts...)
 }
 
 // NewCleanOps instantiates new CleanOps with the given Cleaner and GoneEnsurer.

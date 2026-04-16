@@ -28,8 +28,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component/kubernetes/apiserverexposure"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
@@ -456,7 +456,7 @@ func (h *httpConnectTransport) RoundTrip(req *http.Request) (*http.Response, err
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", h.bearerToken))
 	}
 
-	return h.httpConnectClient.Do(req)
+	return h.httpConnectClient.Do(req) // #nosec: G704 -- Test code with controlled URLs.
 }
 
 type injectHeaderTransport struct {

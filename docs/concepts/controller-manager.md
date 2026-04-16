@@ -32,7 +32,7 @@ The controller also deletes `Bastion`s in case the referenced `Shoot`:
 The deletion of `Bastion`s triggers the `gardenlet` to perform the necessary cleanups in the Seed cluster, so some time can pass between deletion and the `Bastion` actually disappearing.
 Clients like `gardenctl` are advised to not re-use `Bastion`s whose deletion timestamp has been set already.
 
-Refer to [GEP-15](../proposals/15-manage-bastions-and-ssh-key-pair-rotation.md) for more information on the lifecycle of
+Refer to [GEP-0015](https://github.com/gardener/enhancements/tree/main/geps/0015-bastion-management) for more information on the lifecycle of
 `Bastion` resources.
 
 ### [`CertificateSigningRequest` Controller](../../pkg/controllermanager/controller/certificatesigningrequest)
@@ -89,12 +89,12 @@ This controller ensures that `ControllerDeployment` in-use always exists until t
 ### [`ControllerRegistration` Controller](../../pkg/controllermanager/controller/controllerregistration)
 
 The `ControllerRegistration` controller makes sure that the required [Gardener Extensions](../README.md#extensions) specified by the [`ControllerRegistration`](../extensions/registration.md#controllerregistrations) resources are present in the seed clusters.
-It also takes care of the creation and deletion of `ControllerInstallation` objects for a given seed cluster.
-The controller has three reconciliation loops.
+It also takes care of the creation and deletion of `ControllerInstallation` objects for a given seed cluster or self-hosted shoot.
+The controller has four reconciliation loops.
 
-#### ["Main" Reconciler](../../pkg/controllermanager/controller/controllerregistration/seed)
+#### ["Seed" Reconciler](../../pkg/controllermanager/controller/controllerregistration/controllerinstallation/seed)
 
-This reconciliation loop watches the `Seed` objects and determines which `ControllerRegistration`s are required for them and reconciles the corresponding `ControllerInstallation` resources to reach the determined state.
+This reconciliation loop watches `Seed` objects and determines which `ControllerRegistration`s are required for them, reconciling the corresponding `ControllerInstallation` resources to reach the determined state.
 To begin with, it computes the kind/type combinations of extensions required for the seed.
 For this, the controller examines a live list of `ControllerRegistration`s, `ControllerInstallation`s, `BackupBucket`s, `BackupEntry`s, `Shoot`s, and `Secret`s from the garden cluster.
 For example, it examines the shoots running on the seed and deducts the kind/type, like `Infrastructure/gcp`.
@@ -107,16 +107,35 @@ The controller then creates or updates the required `ControllerInstallation` obj
 It also deletes every existing `ControllerInstallation` whose referenced `ControllerRegistration` is not part of the required list.
 For example, if the shoots in the seed are no longer using the DNS provider `aws-route53`, then the controller proceeds to delete the respective `ControllerInstallation` object.
 
+When the `Seed` carries the label `seed.gardener.cloud/self-hosted-shoot-cluster=true`, the seed cluster is also a self-hosted shoot cluster managed by the ["Self-Hosted Shoot" Reconciler](#self-hosted-shoot-reconciler).
+In this case, the seed reconciler subtracts all kind/type combinations already covered by the self-hosted shoot (its own extensions, `BackupBucket`s, and `BackupEntry`s referencing the shoot) from the set of required kind/types, so that only extensions exclusively needed by the seed role remain.
+`ControllerInstallations` created for these seed-exclusive extensions reference the shoot via `.spec.shootRef` (not `.spec.seedRef`), so that extensions are not uninstalled if the seed is later deregistered while the shoot still exists.
+These `ControllerInstallation`s are marked with a `seed-ref-name` label so that the shoot reconciler does not accidentally manage or delete them.
+If an extension previously exclusive to the seed becomes also required by the shoot (e.g., because of a shoot spec change), the seed reconciler removes the `seed-ref-name` label instead of deleting the `ControllerInstallation`, handing ownership to the shoot reconciler.
+`Always` and `AlwaysExceptNoShoots` deployment policies are also suppressed for the seed reconciler in this case — they are handled by the self-hosted shoot reconciler.
+
+#### ["Self-Hosted Shoot" Reconciler](../../pkg/controllermanager/controller/controllerregistration/controllerinstallation/shoot)
+
+This reconciliation loop uses the same shared reconciler logic but watches self-hosted `Shoot` objects (i.e., `Shoot`s whose worker pools are configured for self-hosting the control plane) instead of `Seed` objects.
+It determines which `ControllerRegistration`s are required for a given self-hosted shoot and reconciles the corresponding `ControllerInstallation` resources (referencing the shoot via `.spec.shootRef`) accordingly.
+
+The required kind/type combinations are computed directly from the shoot's own specification (e.g. its provider type, extensions, DNS providers).
+Unlike the seed-based reconciler, the seed provider type and seed DNS provider type are not considered, since there is no `Seed` object involved.
+When the shoot is marked for deletion (`.metadata.deletionTimestamp` is set), the set of required extensions is treated as empty so that all associated `ControllerInstallation`s are cleaned up.
+
+The controller also watches `BackupBucket`s and `BackupEntry`s that reference the shoot via `.spec.shootRef`, as well as `ControllerInstallation`s referencing the shoot via `.spec.shootRef`, and enqueues the shoot for reconciliation when those objects change.
+When a `ControllerRegistration` or `ControllerDeployment` changes, all self-hosted shoots are re-enqueued.
+
 #### ["`ControllerRegistration` Finalizer" Reconciler](../../pkg/controllermanager/controller/controllerregistration/controllerregistrationfinalizer)
 
 This reconciliation loop watches the `ControllerRegistration` resource and adds finalizers to it when they are created.
 In case a deletion request comes in for the resource, i.e., if a `.metadata.deletionTimestamp` is set, it actively scans for a `ControllerInstallation` resource using this `ControllerRegistration`, and decides whether the deletion can be allowed.
 In case no related `ControllerInstallation` is present, it removes the finalizer and marks it for deletion.
 
-#### ["`Seed` Finalizer" Reconciler](../../pkg/controllermanager/controller/controllerregistration/seedfinalizer)
+#### ["Cluster Finalizer" Reconciler](../../pkg/controllermanager/controller/controllerregistration/clusterfinalizer)
 
-This loop also watches the `Seed` object and adds finalizers to it at creation.
-If a `.metadata.deletionTimestamp` is set for the seed, then the controller checks for existing `ControllerInstallation` objects which reference this seed.
+This loop also watches the `Seed` or `Shoot` objects and adds finalizers to them at creation.
+If a `.metadata.deletionTimestamp` is set for the object, then the controller checks for existing `ControllerInstallation` objects which reference this `Seed` or `Shoot`.
 If no such objects exist, then it removes the finalizer and allows the deletion.
 
 #### ["Extension `ClusterRole`" Reconciler](../../pkg/controllermanager/controller/controllerregistration/extensionclusterrole)
@@ -124,22 +143,23 @@ If no such objects exist, then it removes the finalizer and allows the deletion.
 This reconciler watches two resources in the garden cluster:
 
 - `ClusterRole`s labelled with `authorization.gardener.cloud/custom-extensions-permissions=true`
-- `ServiceAccount`s in seed namespaces matching the selector provided via the `authorization.gardener.cloud/extensions-serviceaccount-selector` annotation of such `ClusterRole`s.
+- `ServiceAccount`s in seed namespaces, the `garden` namespace, and project namespaces (`garden-*`) matching the selector provided via the `authorization.gardener.cloud/extensions-serviceaccount-selector` annotation of such `ClusterRole`s.
 
 Its core task is to maintain a `ClusterRoleBinding` resource referencing the respective `ClusterRole`.
-This gets bound to all `ServiceAccount`s in seed namespaces whose labels match the selector provided via the `authorization.gardener.cloud/extensions-serviceaccount-selector` annotation of such `ClusterRole`s.
+This gets bound to all extension `ServiceAccount`s whose labels match the selector provided via the `authorization.gardener.cloud/extensions-serviceaccount-selector` annotation of such `ClusterRole`s.
+`ServiceAccount`s are considered from seed namespaces (all names), the `garden` namespace, and project namespaces (`garden-*`), but only those whose name is prefixed with `extension-shoot--` in the latter two cases (i.e., extension clients of self-hosted shoot clusters).
 
 You can read more about the purpose of this reconciler in [this document](../extensions/garden-api-access.md#additional-permissions).
 
 ### [`CredentialsBinding` Controller](../../pkg/controllermanager/controller/credentialsbinding)
 
-`CredentialsBinding`s reference `Secret`s, `WorkloadIdentity`s and `Quota`s and are themselves referenced by `Shoot`s.
+`CredentialsBinding`s reference `Secret`s, `InternalSecret`s, `WorkloadIdentity`s and `Quota`s and are themselves referenced by `Shoot`s.
 
 The controller adds finalizers to the referenced objects to ensure they don't get deleted while still being referenced.
 Similarly, to ensure that `CredentialsBinding`s in-use are always present in the system until the last referring `Shoot` gets deleted, the controller adds a finalizer which is only released when there is no `Shoot` referencing the `CredentialsBinding` anymore.
 
-Referenced `Secret`s and `WorkloadIdentity`s will also be labeled with `provider.shoot.gardener.cloud/<type>=true`, where `<type>` is the value of the `.provider.type` of the `CredentialsBinding`.
-Also, all referenced `Secret`s and `WorkloadIdentity`s, as well as `Quota`s, will be labeled with `reference.gardener.cloud/credentialsbinding=true` to allow for easily filtering for objects referenced by `CredentialsBinding`s.
+Referenced `Secret`s, `InternalSecret`s and `WorkloadIdentity`s will also be labeled with `provider.shoot.gardener.cloud/<type>=true`, where `<type>` is the value of the `.provider.type` of the `CredentialsBinding`.
+Also, all referenced `Secret`s, `InternalSecret`s and `WorkloadIdentity`s, as well as `Quota`s, will be labeled with `reference.gardener.cloud/credentialsbinding=true` to allow for easily filtering for objects referenced by `CredentialsBinding`s.
 
 ### [`Event` Controller](../../pkg/controllermanager/controller/event)
 
@@ -178,7 +198,7 @@ In case a `Lease` is not renewed for the configured amount in `config.controller
 ### [`ManagedSeedSet` Controller](../../pkg/controllermanager/controller/managedseedset)
 
 `ManagedSeedSet` objects maintain a stable set of replicas of `ManagedSeed`s, i.e. they guarantee the availability of a specified number of identical `ManagedSeed`s on an equal number of identical `Shoot`s.
-The `ManagedSeedSet` controller creates and deletes `ManagedSeed`s and `Shoot`s in response to changes to the replicas and selector fields. For more information, refer to the [`ManagedSeedSet` proposal document](../proposals/13-automated-seed-management.md#managedseedsets).
+The `ManagedSeedSet` controller creates and deletes `ManagedSeed`s and `Shoot`s in response to changes to the replicas and selector fields. For more information, refer to the [`ManagedSeedSet` proposal document](https://github.com/gardener/enhancements/tree/main/geps/0013-automated-seed-management/README.md#managedseedsets).
 
 1. The reconciler first gets all the replicas of the given `ManagedSeedSet` in the `ManagedSeedSet`'s namespace and with the matching selector. Each replica is a struct that contains a `ManagedSeed`, its corresponding `Seed` and `Shoot` objects.
 1. Then the pending replica is retrieved, if it exists.
@@ -268,7 +288,7 @@ This reconciler is enabled by default and works as follows:
 1. Projects are considered as "stale"/not actively used when all of the following conditions apply: The namespace associated with the `Project` does not have any...
     1. `Shoot` resources.
     1. `BackupEntry` resources.
-    1. `Secret` resources that are referenced by a `SecretBinding` or a `CredentialsBinding` that is in use by a `Shoot` (not necessarily in the same namespace).
+    1. `Secret` or `InternalSecret` resources that are referenced by a `SecretBinding` or a `CredentialsBinding` that is in use by a `Shoot` (not necessarily in the same namespace).
     1. `WorkloadIdentity` resources that are referenced by a `CredentialsBinding` that is in use by a `Shoot` (not necessarily in the same namespace).
     1. `Quota` resources that are referenced by a `SecretBinding` or a `CredentialsBinding` that is in use by a `Shoot` (not necessarily in the same namespace).
     1. The time period when the project was used for the last time (`status.lastActivityTimestamp`) is longer than the configured `minimumLifetimeDays`
@@ -290,6 +310,16 @@ The component configuration of the `gardener-controller-manager` offers to confi
 Since the other two reconcilers are unable to actively monitor the relevant objects that are used in a `Project` (`Shoot`, `Secret`, etc.), there could be a situation where the user creates and deletes objects in a short period of time. In that case, the `Stale Project Reconciler` could not see that there was any activity on that project and it will still mark it as a `Stale`, even though it is actively used.
 
 The `Project Activity Reconciler` is implemented to take care of such cases. An event handler will notify the reconciler for any activity and then it will update the `status.lastActivityTimestamp`. This update will also trigger the `Stale Project Reconciler`.
+
+#### [`ResourceQuota` Reconciler](../../pkg/controllermanager/controller/project/resourcequota)
+
+The `ResourceQuota` reconciler only reconciles `ResourceQuota`s in `Project` namespaces and ensures that the specified quotas do not interfere with Gardener's operations.
+
+In the lifecycle of a `Shoot`, Gardener also creates some resources (`Secret`s and `ConfigMap`s) e.g. for certain CAs of the `Shoot`s in the `Project` namespace. This means that the `ResourceQuota` must allow for the creation of these resources, otherwise the `Shoot` reconciliation would fail due to quota violations.
+
+The reconciler ensures this by adding annotations to the `ResourceQuota`s specifying how many resources (`Secret`s, `ConfigMap`s, etc.) Gardener itself will create in the `Project` namespace.
+This might change throughout Gardener versions. When such a change happens, the controller will update the annotations accordingly. 
+On a mismatch between the actual and the expected annotations, the reconciler will also update the `ResourceQuota` to ensure that the required resources can be created by Gardener.
 
 ### [`SecretBinding` Controller](../../pkg/controllermanager/controller/secretbinding)
 
@@ -346,7 +376,7 @@ When an object is not actively referenced anymore because the `Seed` specificati
 
 This reconciler inspects the following references:
 
-- `Secret`s and `ConfigMap`s from `.spec.resources[]`
+- `Secret`s, `ConfigMap`s and `WorkloadIdentity`s from `.spec.resources[]`
 
 The checks naturally grow with the number of references that are added to the `Seed` specification.
 
@@ -393,7 +423,7 @@ This reconciler inspects the following references:
 - Structured authentication `ConfigMap`s (`.spec.kubernetes.kubeAPIServer.structuredAuthentication.configMapName`)
 - Structured authorization `ConfigMap`s (`.spec.kubernetes.kubeAPIServer.structuredAuthorization.configMapName`)
 - Structured authorization kubeconfig `Secret`s (`.spec.kubernetes.kubeAPIServer.structuredAuthorization.kubeconfigs[].secretName`)
-- `Secret`s and `ConfigMap`s from `.spec.resources[]`
+- `Secret`s, `ConfigMap`s and `WorkloadIdentity`s from `.spec.resources[]`
 
 The checks naturally grow with the number of references that are added to the `Shoot` specification.
 

@@ -6,6 +6,26 @@
 
 set -o errexit
 
+export_artifacts_host_services() {
+  mkdir -p "${ARTIFACTS:-}"
+
+  echo "> Exporting logs of host services"
+  cp /var/log/{docker,dnsmasq}.log "${ARTIFACTS:-}/" || true
+}
+
+export_artifacts_infra() {
+  mkdir -p "${ARTIFACTS:-}"
+
+  echo "> Exporting logs of local infrastructure managed via docker compose"
+  mkdir -p "${ARTIFACTS:-}/infra"
+  # In Docker, container logs are not stored in /var/log but in /var/lib/docker/containers.
+  # However, this directory also holds a lot of other files, so we use `docker compose logs` to get only the logs of the
+  # relevant containers to avoid exporting unnecessary files.
+  for service in $(yq '.services | keys() | .[]' ./dev-setup/infra/docker-compose.yaml); do
+    docker compose -f ./dev-setup/infra/docker-compose.yaml logs --no-log-prefix "$service" > "${ARTIFACTS:-}/infra/$service.log" || true
+  done
+}
+
 export_artifacts() {
   cluster_name="${1}"
   echo "> Exporting logs of kind cluster '$cluster_name'"
@@ -13,9 +33,6 @@ export_artifacts() {
 
   echo "> Exporting events of kind cluster '$cluster_name' > '$ARTIFACTS/$cluster_name'"
   export_events_for_cluster "$ARTIFACTS/$cluster_name"
-
-  export_resource_yamls_for seeds shoots bastions.operations.gardener.cloud etcds leases
-  export_events_for_shoots
 
   # dump logs from shoot machine pods (similar to `kind export logs`)
   while IFS= read -r namespace; do
@@ -38,9 +55,6 @@ export_artifacts() {
       kubectl cp "$namespace/$node":/var/log "$node_dir" || true
     done < <(kubectl -n "$namespace" get po -l 'app in (machine,bastion)' -oname | cut -d/ -f2)
   done < <(kubectl get ns -l gardener.cloud/role=shoot -oname | cut -d/ -f2; kubectl get ns -l export-artifacts=true -oname | cut -d/ -f2)
-
-  echo "> Exporting /etc/hosts"
-  cp /etc/hosts $ARTIFACTS/$cluster_name/hosts
 }
 
 export_resource_yamls_for() {
@@ -87,15 +101,5 @@ clamp_mss_to_pmtu() {
   # https://github.com/kubernetes/test-infra/issues/23741
   if [[ "$OSTYPE" != "darwin"* ]]; then
     iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-  fi
-}
-
-# If running in prow, we need to ensure that garden.local.gardener.cloud resolves to localhost
-ensure_glgc_resolves_to_localhost() {
-  if [ -n "${CI:-}" -a -n "${ARTIFACTS:-}" ]; then
-    echo "> Adding garden.local.gardener.cloud to /etc/hosts..."
-    printf "\n127.0.0.1 garden.local.gardener.cloud\n" >> /etc/hosts
-    printf "\n::1 garden.local.gardener.cloud\n" >> /etc/hosts
-    echo "> Content of '/etc/hosts' after adding garden.local.gardener.cloud:\n$(cat /etc/hosts)"
   fi
 }

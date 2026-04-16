@@ -16,11 +16,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/operator/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	operatorconfigv1alpha1 "github.com/gardener/gardener/pkg/operator/apis/config/v1alpha1"
+	healthchecker "github.com/gardener/gardener/pkg/utils/kubernetes/health/checker"
 )
 
 // Reconciler reconciles Extension resources and executes health check operations.
@@ -53,13 +54,20 @@ func (r *Reconciler) Reconcile(reconcileCtx context.Context, request reconcile.R
 	// Initialize conditions based on the current status.
 	extensionConditions := NewExtensionConditions(r.Clock, extension)
 
+	conditionThresholds := r.conditionThresholdsToProgressingMapping()
+
 	updatedConditions := NewHealth(
 		extension,
 		r.RuntimeClient,
 		r.VirtualClient,
 		r.Clock,
-		r.conditionThresholdsToProgressingMapping(),
+		conditionThresholds,
 		r.GardenNamespace,
+		healthchecker.NewHealthChecker(
+			log,
+			r.RuntimeClient,
+			r.Clock,
+			healthchecker.WithConditionThresholds(conditionThresholds)),
 	).Check(
 		ctx,
 		extensionConditions,

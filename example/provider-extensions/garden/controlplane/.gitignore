@@ -1,4 +1,0 @@
-*
-!.gitignore
-!domain-secrets.yaml.tmpl
-!workload-identity-issuer.yaml.tmpl

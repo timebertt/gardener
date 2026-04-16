@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
 	gomegatypes "github.com/onsi/gomega/types"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,9 +43,11 @@ var gardenManagedResourceList = []string{
 	"fluent-operator",
 	"fluent-operator-custom-resources-garden",
 	"vali",
+	"victoria-logs",
 	"plutono",
 	"prometheus-operator",
 	"perses-operator",
+	"victoria-operator",
 	"alertmanager-garden",
 	"prometheus-garden",
 	"prometheus-garden-target",
@@ -58,6 +61,8 @@ var gardenManagedResourceList = []string{
 	"gardener-admission-controller-virtual",
 	"gardener-controller-manager-runtime",
 	"gardener-controller-manager-virtual",
+	"gardener-discovery-server-runtime",
+	"gardener-discovery-server-virtual",
 	"gardener-scheduler-runtime",
 	"gardener-scheduler-virtual",
 	"gardener-dashboard-runtime",
@@ -78,6 +83,8 @@ var gardenManagedResourceList = []string{
 	"extension-registration-networking-cilium",
 	"local-ext-shoot",
 	"opentelemetry-operator",
+	"opentelemetry-collector",
+	"virtual-garden-istio-basic-auth-server",
 }
 
 var istioManagedResourceList = []string{
@@ -352,4 +359,26 @@ func beHealthyManagedResource() gomegatypes.GomegaMatcher {
 			ContainCondition(OfType(resourcesv1alpha1.ResourcesProgressing), WithStatus(gardencorev1beta1.ConditionFalse)),
 		)}),
 	})
+}
+
+// ItShouldCreatePrometheusRuleForGarden creates a PrometheusRule and makes sure it is created.
+func ItShouldCreatePrometheusRuleForGarden(s *GardenContext, rule *monitoringv1.PrometheusRule) {
+	GinkgoHelper()
+
+	It("Create PrometheusRule "+rule.Namespace+"/"+rule.Name, func(ctx SpecContext) {
+		Eventually(ctx, func(g Gomega) {
+			g.Expect(s.GardenClient.Create(ctx, rule)).To(Succeed())
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
+}
+
+// ItShouldDeletePrometheusRuleForGarden deletes a PrometheusRule and makes sure it is deleted.
+func ItShouldDeletePrometheusRuleForGarden(s *GardenContext, rule *monitoringv1.PrometheusRule) {
+	GinkgoHelper()
+
+	It("Delete PrometheusRule "+rule.Namespace+"/"+rule.Name, func(ctx SpecContext) {
+		Eventually(ctx, func(g Gomega) {
+			g.Expect(s.GardenClient.Delete(ctx, rule)).To(Succeed())
+		}).Should(Succeed())
+	}, SpecTimeout(time.Minute))
 }

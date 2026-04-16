@@ -4,7 +4,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: gardener.cloud:system:gardenlet
+  name: gardener.cloud:system:gardenlet{{ if .Values.isolateClusterResources }}:{{ .Release.Namespace }}{{ end }}
   labels:
     app: gardener
     role: gardenlet
@@ -94,6 +94,7 @@ rules:
   - delete
 - apiGroups:
   - ""
+  - events.k8s.io
   resources:
   - events
   verbs:
@@ -134,6 +135,7 @@ rules:
   resourceNames:
   - etcds.druid.gardener.cloud
   - etcdcopybackupstasks.druid.gardener.cloud
+  - etcdopstasks.druid.gardener.cloud
   - destinationrules.networking.istio.io
   - envoyfilters.networking.istio.io
   - gateways.networking.istio.io
@@ -188,15 +190,18 @@ rules:
   - clusters.extensions.gardener.cloud
   - controlplanes.extensions.gardener.cloud
   - networks.extensions.gardener.cloud
+  - selfhostedshootexposures.extensions.gardener.cloud
   - verticalpodautoscalers.autoscaling.k8s.io
   - verticalpodautoscalercheckpoints.autoscaling.k8s.io
   - perses.perses.dev
   - persesdashboards.perses.dev
   - persesdatasources.perses.dev
+  - persesglobaldatasources.perses.dev
   - opentelemetrycollectors.opentelemetry.io
   - targetallocators.opentelemetry.io
   - opampbridges.opentelemetry.io
   - instrumentations.opentelemetry.io
+  - vlsingles.operator.victoriametrics.com
   verbs:
   - delete
 - apiGroups:
@@ -245,6 +250,7 @@ rules:
   resources:
   - etcds
   - etcdcopybackupstasks
+  - etcdopstasks
   verbs:
   - create
   - delete
@@ -267,6 +273,7 @@ rules:
   - infrastructures
   - networks
   - operatingsystemconfigs
+  - selfhostedshootexposures
   - workers
   verbs:
   - create
@@ -288,6 +295,7 @@ rules:
   - infrastructures/status
   - networks/status
   - operatingsystemconfigs/status
+  - selfhostedshootexposures/status
   - workers/status
   verbs:
   - patch
@@ -305,12 +313,6 @@ rules:
   - watch
   - patch
   - update
-- apiGroups:
-  - resources.gardener.cloud
-  resources:
-  - managedresources/status # TODO(vpnachev): Remove patch managedresources/status permissions after v1.133.0 is released.
-  verbs:
-  - patch
 - apiGroups:
   - networking.k8s.io
   resources:
@@ -454,6 +456,7 @@ rules:
   - servicemonitors
   - scrapeconfigs
   - prometheusrules
+  - prometheuses
   verbs:
   - list
   - watch
@@ -462,3 +465,11 @@ rules:
   - patch
   - update
   - delete
+- apiGroups:
+  - operator.victoriametrics.com
+  resources:
+  - vlsingles
+  verbs:
+  - get
+  - list
+  - watch

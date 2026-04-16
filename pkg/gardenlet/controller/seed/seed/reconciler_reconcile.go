@@ -19,12 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
-	podsecurityadmissionapi "k8s.io/pod-security-admission/api"
 	"k8s.io/utils/clock"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
@@ -33,7 +32,6 @@ import (
 	"github.com/gardener/gardener/pkg/component/networking/istio"
 	sharedcomponent "github.com/gardener/gardener/pkg/component/shared"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	seedpkg "github.com/gardener/gardener/pkg/gardenlet/operation/seed"
 	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/flow"
@@ -42,7 +40,6 @@ import (
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	"github.com/gardener/gardener/pkg/utils/retry"
-	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
@@ -53,6 +50,7 @@ func (r *Reconciler) reconcile(
 	seedObj *seedpkg.Seed,
 	seedIsGarden bool,
 	seedIsShoot bool,
+	seedIsSelfHostedShoot bool,
 ) error {
 	seed := seedObj.GetInfo()
 
@@ -68,11 +66,11 @@ func (r *Reconciler) reconcile(
 		return err
 	}
 
-	return r.runReconcileSeedFlow(ctx, log, seedObj, seedIsGarden, seedIsShoot)
+	return r.runReconcileSeedFlow(ctx, log, seedObj, seedIsGarden, seedIsShoot, seedIsSelfHostedShoot)
 }
 
 func (r *Reconciler) checkMinimumK8SVersion(version string) error {
-	const minKubernetesVersion = "1.29"
+	const minKubernetesVersion = "1.31"
 
 	seedVersionOK, err := versionutils.CompareVersions(version, ">=", minKubernetesVersion)
 	if err != nil {
@@ -91,6 +89,7 @@ func (r *Reconciler) runReconcileSeedFlow(
 	seed *seedpkg.Seed,
 	seedIsGarden bool,
 	seedIsShoot bool,
+	seedIsSelfHostedShoot bool,
 ) error {
 	// VPA is a prerequisite. If it's enabled then we deploy the CRD (and later also the related components) as part of
 	// the flow. However, when it's disabled then we check whether it is indeed available (and fail, otherwise).
@@ -101,20 +100,11 @@ func (r *Reconciler) runReconcileSeedFlow(
 	}
 
 	// create + label garden namespace
-	gardenNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: r.GardenNamespace}}
-	log.Info("Labeling and annotating namespace", "namespaceName", gardenNamespace.Name)
-	if _, err := controllerutils.CreateOrGetAndMergePatch(ctx, r.SeedClientSet.Client(), gardenNamespace, func() error {
-		metav1.SetMetaDataLabel(&gardenNamespace.ObjectMeta, v1beta1constants.LabelRole, v1beta1constants.GardenNamespace)
-
-		// When the seed is the garden cluster then this information is managed by gardener-operator.
-		if !seedIsGarden {
-			metav1.SetMetaDataLabel(&gardenNamespace.ObjectMeta, podsecurityadmissionapi.EnforceLevelLabel, string(podsecurityadmissionapi.LevelPrivileged))
-			metav1.SetMetaDataLabel(&gardenNamespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigConsider, "true")
-			metav1.SetMetaDataAnnotation(&gardenNamespace.ObjectMeta, resourcesv1alpha1.HighAvailabilityConfigZones, strings.Join(seed.GetInfo().Spec.Provider.Zones, ","))
-		}
-		return nil
+	log.Info("Labeling and annotating namespace", "namespaceName", r.GardenNamespace)
+	if err := gardenerutils.ReconcileGardenNamespace(ctx, r.SeedClientSet.Client(), r.GardenNamespace, seed.GetInfo().Spec.Provider.Zones, !seedIsGarden, func(namespace *corev1.Namespace) {
+		metav1.SetMetaDataLabel(&namespace.ObjectMeta, v1beta1constants.LabelRole, v1beta1constants.GardenNamespace)
 	}); err != nil {
-		return err
+		return fmt.Errorf("failed to reconcile garden namespace %q: %w", r.GardenNamespace, err)
 	}
 
 	// label kube-system namespace
@@ -131,9 +121,9 @@ func (r *Reconciler) runReconcileSeedFlow(
 		log.WithName("secretsmanager"),
 		clock.RealClock{},
 		r.SeedClientSet.Client(),
-		r.GardenNamespace,
 		v1beta1constants.SecretManagerIdentityGardenlet,
-		secretsmanager.Config{CASecretAutoRotation: true},
+		secretsmanager.WithCASecretAutoRotation(),
+		secretsmanager.WithNamespaces(r.GardenNamespace),
 	)
 	if err != nil {
 		return err
@@ -142,13 +132,10 @@ func (r *Reconciler) runReconcileSeedFlow(
 	// Deploy dedicated CA certificate for seed cluster, auto-rotate it roughly once a month and drop the old CA 24 hours
 	// after rotation.
 	log.Info("Generating CA certificates for seed cluster")
-	if _, err := secretsManager.Generate(ctx, &secretsutils.CertificateSecretConfig{
-		Name:       v1beta1constants.SecretNameCASeed,
-		CommonName: "kubernetes",
-		CertType:   secretsutils.CACert,
-		Validity:   ptr.To(30 * 24 * time.Hour),
-	}, secretsmanager.Rotate(secretsmanager.KeepOld), secretsmanager.IgnoreOldSecretsAfter(24*time.Hour)); err != nil {
-		return err
+	for _, config := range caCertConfigurations() {
+		if _, err := secretsManager.Generate(ctx, config, caCertGenerateOptionsFor()...); err != nil {
+			return err
+		}
 	}
 
 	secrets, err := gardenerutils.ReadGardenSecrets(
@@ -213,7 +200,7 @@ func (r *Reconciler) runReconcileSeedFlow(
 		deployEtcdCRDs = g.Add(flow.Task{
 			Name:   "Deploying ETCD-related custom resource definitions",
 			Fn:     component.OpWait(c.etcdCRD).Deploy,
-			SkipIf: seedIsGarden,
+			SkipIf: seedIsGarden || seedIsSelfHostedShoot,
 		})
 		deployIstioCRDs = g.Add(flow.Task{
 			Name:   "Deploying Istio-related custom resource definitions",
@@ -240,6 +227,11 @@ func (r *Reconciler) runReconcileSeedFlow(
 			Fn:     component.OpWait(c.persesCRD).Deploy,
 			SkipIf: seedIsGarden,
 		})
+		deployVictoriaCRDs = g.Add(flow.Task{
+			Name:   "Deploying Victoria-related custom resource definitions",
+			Fn:     component.OpWait(c.victoriaCRD).Deploy,
+			SkipIf: seedIsGarden,
+		})
 		deployOpenTelemetryCRDs = g.Add(flow.Task{
 			Name:   "Deploy OpenTelemetry-related custom resource definitions",
 			Fn:     component.OpWait(c.openTelemetryCRD).Deploy,
@@ -254,6 +246,7 @@ func (r *Reconciler) runReconcileSeedFlow(
 			deployFluentCRDs,
 			deployPrometheusCRDs,
 			deployPersesCRDs,
+			deployVictoriaCRDs,
 			deployOpenTelemetryCRDs,
 		)
 		_ = g.Add(flow.Task{
@@ -263,11 +256,17 @@ func (r *Reconciler) runReconcileSeedFlow(
 			},
 			Dependencies: flow.NewTaskIDs(syncPointCRDs),
 		})
+		waitForIstioCRDs = g.Add(flow.Task{
+			Name:         "Waiting for custom resource definitions for Istio",
+			Fn:           c.istioCRD.Wait,
+			Dependencies: flow.NewTaskIDs(deployIstioCRDs),
+			SkipIf:       seedIsGarden,
+		})
 		deployGardenerResourceManager = g.Add(flow.Task{
 			Name:         "Deploying and waiting for gardener-resource-manager to be healthy",
 			Fn:           component.OpWait(c.gardenerResourceManager).Deploy,
-			Dependencies: flow.NewTaskIDs(syncPointCRDs),
-			SkipIf:       seedIsGarden,
+			Dependencies: flow.NewTaskIDs(syncPointCRDs, waitForIstioCRDs),
+			SkipIf:       seedIsGarden || seedIsSelfHostedShoot,
 		})
 		deploySystemResources = g.Add(flow.Task{
 			Name:         "Deploying system resources",
@@ -422,7 +421,7 @@ func (r *Reconciler) runReconcileSeedFlow(
 			Name:         "Deploying ETCD Druid",
 			Fn:           c.etcdDruid.Deploy,
 			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
-			SkipIf:       seedIsGarden,
+			SkipIf:       seedIsGarden || seedIsSelfHostedShoot,
 		})
 
 		_ = g.Add(flow.Task{
@@ -433,6 +432,12 @@ func (r *Reconciler) runReconcileSeedFlow(
 		_ = g.Add(flow.Task{
 			Name:         "Deploying OpenTelemetry Operator",
 			Fn:           c.openTelemetryOperator.Deploy,
+			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
+			SkipIf:       seedIsGarden,
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deploying OpenTelemetry Collector",
+			Fn:           c.openTelemetryCollector.Deploy,
 			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
 			SkipIf:       seedIsGarden,
 		})
@@ -454,16 +459,32 @@ func (r *Reconciler) runReconcileSeedFlow(
 			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents, deployFluentOperator),
 			SkipIf:       seedIsGarden,
 		})
-		_ = g.Add(flow.Task{
+		deployPlutono = g.Add(flow.Task{
 			Name:         "Deploying Plutono",
 			Fn:           c.plutono.Deploy,
 			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
+		})
+		waitUntilPlutonoReady = g.Add(flow.Task{
+			Name:         "Waiting until Plutono is ready",
+			Fn:           c.plutono.Wait,
+			Dependencies: flow.NewTaskIDs(deployPlutono),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deploying VictoriaLogs",
+			Fn:           c.victoriaLogs.Deploy,
+			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
+			SkipIf:       seedIsGarden,
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Deploying Vali",
 			Fn:           c.vali.Deploy,
 			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
 			SkipIf:       seedIsGarden,
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deploying istio-basic-auth-server",
+			Fn:           c.istioBasicAuthServer.Deploy,
+			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents, waitUntilPlutonoReady),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Deploying Prometheus Operator",
@@ -494,6 +515,12 @@ func (r *Reconciler) runReconcileSeedFlow(
 		_ = g.Add(flow.Task{
 			Name:         "Deploying Perses Operator",
 			Fn:           c.persesOperator.Deploy,
+			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
+			SkipIf:       seedIsGarden,
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deploying Victoria Operator",
+			Fn:           c.victoriaOperator.Deploy,
 			Dependencies: flow.NewTaskIDs(syncPointReadyForSystemComponents),
 			SkipIf:       seedIsGarden,
 		})
@@ -718,10 +745,31 @@ func (r *Reconciler) deployReferencedResources(ctx context.Context, seed *seedpk
 		return fmt.Errorf("failed to prepare referenced resources for seed copy: %w", err)
 	}
 
-	return managedresources.CreateFromUnstructured(ctx, r.SeedClientSet.Client(), r.GardenNamespace, managedResourceNamePrefix+seed.GetInfo().Name,
-		false, v1beta1constants.SeedResourceManagerClass, unstructuredObjs, false, nil)
+	if err := managedresources.CreateFromUnstructured(
+		ctx, r.SeedClientSet.Client(), r.GardenNamespace, managedResourceNamePrefix+seed.GetInfo().Name,
+		false, v1beta1constants.SeedResourceManagerClass, unstructuredObjs, false, nil,
+	); err != nil {
+		return fmt.Errorf("failed to create referenced resources managed resource: %w", err)
+	}
+
+	if err := gardenerutils.ReconcileWorkloadIdentityReferencedResources(
+		ctx, r.GardenClient, r.SeedClientSet.Client(), seed.GetInfo().Spec.Resources,
+		r.GardenNamespace, r.GardenNamespace, seed.GetInfo(),
+	); err != nil {
+		return fmt.Errorf("failed to reconcile workload identity referenced resources: %w", err)
+	}
+
+	return nil
 }
 
 func (r *Reconciler) destroyReferencedResources(ctx context.Context, seed *seedpkg.Seed) error {
-	return client.IgnoreNotFound(managedresources.Delete(ctx, r.SeedClientSet.Client(), r.GardenNamespace, managedResourceNamePrefix+seed.GetInfo().Name, false))
+	if err := gardenerutils.DestroyWorkloadIdentityReferencedResources(ctx, r.SeedClientSet.Client(), r.GardenNamespace); err != nil {
+		return fmt.Errorf("failed to destroy referenced workload identities: %w", err)
+	}
+
+	if err := client.IgnoreNotFound(managedresources.Delete(ctx, r.SeedClientSet.Client(), r.GardenNamespace, managedResourceNamePrefix+seed.GetInfo().Name, false)); err != nil {
+		return fmt.Errorf("failed to delete managed resource for referenced resources: %w", err)
+	}
+
+	return nil
 }

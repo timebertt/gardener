@@ -49,16 +49,16 @@ images:
   - name: gardener-discovery-server
     sourceRepository: github.com/gardener/gardener-discovery-server
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/gardener-discovery-server
-    tag: "v0.8.0"
+    tag: "v0.9.0"
   # Gardener Dashboard components
   - name: gardener-dashboard
     sourceRepository: github.com/gardener/dashboard
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/dashboard
-    tag: "1.82.5"
+    tag: "1.83.11"
   - name: terminal-controller-manager
     sourceRepository: github.com/gardener/terminal-controller-manager
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/terminal-controller-manager
-    tag: "v0.34.0"
+    tag: "v0.35.0"
   # Seed bootstrap
   - name: pause-container
     sourceRepository: github.com/kubernetes/kubernetes/blob/master/build/pause/Dockerfile
@@ -74,34 +74,19 @@ images:
   - name: etcd-druid
     sourceRepository: github.com/gardener/etcd-druid
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/etcd-druid
-    tag: "v0.33.0"
+    tag: "v0.36.2"
   - name: etcd
     sourceRepository: github.com/etcd-io/etcd
-    repository: quay.io/coreos/etcd
-    tag: "v3.4.34"
+    repository: gcr.io/etcd-development/etcd
+    tag: "v3.5.27"
   - name: dependency-watchdog
     sourceRepository: github.com/gardener/dependency-watchdog
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/dependency-watchdog
-    tag: "v1.6.0"
+    tag: "v1.7.0"
   - name: nginx-ingress-controller
     sourceRepository: github.com/kubernetes/ingress-nginx
     repository: registry.k8s.io/ingress-nginx/controller-chroot
-    tag: "v1.14.0"
-    targetVersion: ">= 1.30"
-    labels:
-      - name: 'gardener.cloud/cve-categorisation'
-        value:
-          network_exposure: 'public'
-          authentication_enforced: true
-          user_interaction: 'end-user'
-          confidentiality_requirement: 'high'
-          integrity_requirement: 'high'
-          availability_requirement: 'low'
-  - name: nginx-ingress-controller
-    sourceRepository: github.com/kubernetes/ingress-nginx
-    repository: registry.k8s.io/ingress-nginx/controller-chroot
-    tag: "v1.13.4"
-    targetVersion: "1.29.x"
+    tag: "v1.15.1"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -114,7 +99,7 @@ images:
   - name: ingress-default-backend
     sourceRepository: github.com/gardener/ingress-default-backend
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/ingress-default-backend
-    tag: "0.24.0"
+    tag: "0.25.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -145,7 +130,7 @@ images:
   - name: machine-controller-manager
     sourceRepository: github.com/gardener/machine-controller-manager
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/machine-controller-manager
-    tag: "v0.60.2"
+    tag: "v0.61.3"
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -155,40 +140,39 @@ images:
           confidentiality_requirement: high
           integrity_requirement: high
           availability_requirement: low
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/mcm-maintainers'
   - name: cluster-autoscaler
     sourceRepository: github.com/gardener/autoscaler
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/autoscaler/cluster-autoscaler
-    tag: "v1.33.0"
-    targetVersion: ">= 1.33"
+    tag: "v1.34.1"
+    targetVersion: ">= 1.34"
   - name: cluster-autoscaler
     sourceRepository: github.com/gardener/autoscaler
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/autoscaler/cluster-autoscaler
-    tag: "v1.32.2"
+    tag: "v1.33.1"
+    targetVersion: "1.33.x"
+  - name: cluster-autoscaler
+    sourceRepository: github.com/gardener/autoscaler
+    repository: europe-docker.pkg.dev/gardener-project/releases/gardener/autoscaler/cluster-autoscaler
+    tag: "v1.32.3"
     targetVersion: "1.32.x"
   - name: cluster-autoscaler
     sourceRepository: github.com/gardener/autoscaler
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/autoscaler/cluster-autoscaler
-    tag: "v1.31.0"
+    tag: "v1.31.1"
     targetVersion: "1.31.x"
-  - name: cluster-autoscaler
-    sourceRepository: github.com/gardener/autoscaler
-    repository: europe-docker.pkg.dev/gardener-project/releases/gardener/autoscaler/cluster-autoscaler
-    tag: "v1.30.2"
-    targetVersion: "1.30.x"
-  - name: cluster-autoscaler
-    sourceRepository: github.com/gardener/autoscaler
-    repository: europe-docker.pkg.dev/gardener-project/releases/gardener/autoscaler/cluster-autoscaler
-    tag: "v1.29.2"
-    targetVersion: "1.29.x"
   - name: vpn-server
     sourceRepository: github.com/gardener/vpn2
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/vpn-server
-    tag: "0.44.0"
+    tag: "0.48.0"
   # OpenTelemetry
   - name: opentelemetry-operator
     sourceRepository: github.com/open-telemetry/opentelemetry-operator
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/opentelemetry-operator/opentelemetry-operator
-    tag: "v0.139.0"
+    tag: "v0.145.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -206,11 +190,28 @@ images:
     sourceRepository: github.com/gardener/opentelemetry-collector
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/observability/opentelemetry-collector
     tag: "v0.0.1"
+  - name: victoria-logs
+    sourceRepository: github.com/VictoriaMetrics/VictoriaLogs
+    repository: europe-docker.pkg.dev/gardener-project/releases/3rd/victoriametrics/victoria-logs
+    tag: "v1.37.2"
+    labels:
+      - name: 'gardener.cloud/cve-categorisation'
+        value:
+          network_exposure: 'private'
+          authentication_enforced: false
+          user_interaction: 'gardener-operator'
+          confidentiality_requirement: 'high'
+          integrity_requirement: 'high'
+          availability_requirement: 'low'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/logging-maintainers'
   # Monitoring
   - name: prometheus-operator
     sourceRepository: github.com/prometheus-operator/prometheus-operator
     repository: quay.io/prometheus-operator/prometheus-operator
-    tag: v0.86.2
+    tag: v0.89.0
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -227,7 +228,7 @@ images:
   - name: alertmanager
     sourceRepository: github.com/prometheus/alertmanager
     repository: quay.io/prometheus/alertmanager
-    tag: v0.29.0
+    tag: v0.32.0
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -244,7 +245,7 @@ images:
   - name: prometheus
     sourceRepository: github.com/prometheus/prometheus
     repository: quay.io/prometheus/prometheus
-    tag: v3.7.3
+    tag: v3.10.0
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -261,7 +262,7 @@ images:
   - name: configmap-reloader
     sourceRepository: github.com/prometheus-operator/prometheus-operator
     repository: quay.io/prometheus-operator/prometheus-config-reloader
-    tag: v0.86.2
+    tag: v0.89.0
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -277,7 +278,7 @@ images:
             teamname: 'gardener/monitoring-maintainers'
   - name: cortex
     repository: quay.io/cortexproject/cortex
-    tag: v1.20.0
+    tag: v1.20.1
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -294,7 +295,7 @@ images:
   - name: kube-state-metrics
     sourceRepository: github.com/kubernetes/kube-state-metrics
     repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
-    tag: v2.17.0
+    tag: v2.18.0
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -311,7 +312,7 @@ images:
   - name: gardener-metrics-exporter
     sourceRepository: github.com/gardener/gardener-metrics-exporter
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/metrics-exporter
-    tag: "0.42.0"
+    tag: "0.44.0"
     resourceId:
       name: metrics-exporter
   - name: node-exporter
@@ -335,7 +336,7 @@ images:
   - name: plutono
     sourceRepository: github.com/credativ/plutono
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/credativ/plutono
-    tag: "v7.5.44"
+    tag: "v7.5.46"
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -352,7 +353,7 @@ images:
   - name: plutono-data-refresher
     sourceRepository: github.com/kiwigrid/k8s-sidecar
     repository: quay.io/kiwigrid/k8s-sidecar
-    tag: "2.1.2"
+    tag: "2.6.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -369,7 +370,7 @@ images:
   - name: blackbox-exporter
     sourceRepository: github.com/prometheus/blackbox_exporter
     repository: quay.io/prometheus/blackbox-exporter
-    tag: v0.27.0
+    tag: v0.28.0
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -387,26 +388,7 @@ images:
   - name: metrics-server
     sourceRepository: github.com/kubernetes-sigs/metrics-server
     repository: registry.k8s.io/metrics-server/metrics-server
-    tag: v0.8.0
-    targetVersion: ">= 1.31"
-    labels:
-      - name: gardener.cloud/cve-categorisation
-        value:
-          network_exposure: private
-          authentication_enforced: false
-          user_interaction: gardener-operator
-          confidentiality_requirement: high
-          integrity_requirement: high
-          availability_requirement: low
-      - name: 'cloud.gardener.cnudie/responsibles'
-        value:
-          - type: 'githubTeam'
-            teamname: 'gardener/monitoring-maintainers'
-  - name: metrics-server
-    sourceRepository: github.com/kubernetes-sigs/metrics-server
-    repository: registry.k8s.io/metrics-server/metrics-server
-    tag: v0.7.2
-    targetVersion: ">= 1.29 < 1.31"
+    tag: v0.8.1
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -423,7 +405,7 @@ images:
   - name: perses
     sourceRepository: github.com/perses/perses
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/persesdev/perses
-    tag: "v0.52.0"
+    tag: "v0.53.1"
     labels:
       - name: gardener.cloud/cve-categorisation
         value:
@@ -440,7 +422,7 @@ images:
   - name: perses-operator
     sourceRepository: github.com/perses/perses-operator
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/persesdev/perses-operator
-    tag: v0.2.0
+    tag: v0.3.2
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -454,15 +436,32 @@ images:
         value:
           - type: 'githubTeam'
             teamname: 'gardener/monitoring-maintainers'
+  - name: victoria-operator
+    sourceRepository: github.com/VictoriaMetrics/operator
+    repository: europe-docker.pkg.dev/gardener-project/releases/3rd/victoriametrics/operator
+    tag: "v0.65.0"
+    labels:
+      - name: 'gardener.cloud/cve-categorisation'
+        value:
+          network_exposure: 'private'
+          authentication_enforced: false
+          user_interaction: 'gardener-operator'
+          confidentiality_requirement: 'low'
+          integrity_requirement: 'low'
+          availability_requirement: 'low'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/logging-maintainers'
   # Shoot core addons
   - name: vpn-client
     sourceRepository: github.com/gardener/vpn2
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/vpn-client
-    tag: "0.44.0"
+    tag: "0.48.0"
   - name: coredns
     sourceRepository: github.com/coredns/coredns
     repository: registry.k8s.io/coredns/coredns
-    tag: "v1.13.1"
+    tag: "v1.14.2"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -497,7 +496,7 @@ images:
   - name: coredns-config-adapter
     sourceRepository: github.com/gardener/coredns-config-adapter
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/coredns-config-adapter
-    tag: "v0.4.0"
+    tag: "v0.5.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -514,7 +513,25 @@ images:
   - name: node-problem-detector
     sourceRepository: github.com/kubernetes/node-problem-detector
     repository: registry.k8s.io/node-problem-detector/node-problem-detector
-    tag: "v1.34.0"
+    tag: "v1.35.2"
+    targetVersion: ">= 1.35"
+    labels:
+      - name: 'gardener.cloud/cve-categorisation'
+        value:
+          network_exposure: 'private'
+          authentication_enforced: false
+          user_interaction: 'end-user'
+          confidentiality_requirement: 'low'
+          integrity_requirement: 'high'
+          availability_requirement: 'low'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/mcm-maintainers'
+  - name: node-problem-detector
+    sourceRepository: github.com/kubernetes/node-problem-detector
+    repository: registry.k8s.io/node-problem-detector/node-problem-detector
+    tag: "v1.34.3"
     targetVersion: ">= 1.34"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
@@ -532,7 +549,7 @@ images:
   - name: node-problem-detector
     sourceRepository: github.com/kubernetes/node-problem-detector
     repository: registry.k8s.io/node-problem-detector/node-problem-detector
-    tag: "v0.8.22"
+    tag: "v0.8.25"
     targetVersion: "< 1.34"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
@@ -568,16 +585,16 @@ images:
   - name: alpine-conntrack
     sourceRepository: github.com/gardener/alpine-conntrack
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/alpine-conntrack
-    tag: "3.21.3"
+    tag: "3.23.3"
   - name: alpine-iptables
     sourceRepository: github.com/gardener/alpine-iptables
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/alpine-iptables
-    tag: "3.22.1"
+    tag: "3.23.3"
   # Logging
   - name: fluent-operator
     sourceRepository: github.com/fluent/fluent-operator
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/fluent-operator/fluent-operator
-    tag: "v3.5.0"
+    tag: "v3.7.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -594,7 +611,7 @@ images:
   - name: fluent-bit
     sourceRepository: github.com/fluent/fluent-operator
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/fluent-operator/fluent-bit
-    tag: "v4.1.1"
+    tag: "v4.2.3"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -613,7 +630,27 @@ images:
       name: fluent-bit-to-vali
     sourceRepository: github.com/gardener/logging
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/fluent-bit-to-vali
-    tag: "v0.69.0"
+    tag: "v0.71.0"
+    labels:
+      - name: 'gardener.cloud/cve-categorisation'
+        value:
+          network_exposure: 'private'
+          authentication_enforced: false
+          user_interaction: 'gardener-operator'
+          confidentiality_requirement: 'none'
+          integrity_requirement: 'none'
+          availability_requirement: 'none'
+          comment: no data is stored or processed by the installer
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/logging-maintainers'
+  - name: fluent-bit-plugin
+    resourceId:
+      name: fluent-bit-plugin
+    sourceRepository: github.com/gardener/logging
+    repository: europe-docker.pkg.dev/gardener-project/releases/gardener/fluent-bit-plugin
+    tag: "v1.4.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -631,7 +668,7 @@ images:
   - name: vali
     sourceRepository: github.com/credativ/vali
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/credativ/vali
-    tag: "v2.2.29"
+    tag: "v2.2.31"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -648,7 +685,7 @@ images:
   - name: vali-curator
     sourceRepository: github.com/gardener/logging
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/vali-curator
-    tag: "v0.69.0"
+    tag: "v0.71.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -665,7 +702,7 @@ images:
   - name: kube-rbac-proxy
     sourceRepository: github.com/brancz/kube-rbac-proxy
     repository: quay.io/brancz/kube-rbac-proxy
-    tag: v0.20.0
+    tag: v0.21.2
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -704,7 +741,7 @@ images:
       name: telegraf-iptables
     sourceRepository: github.com/gardener/logging
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/telegraf-iptables
-    tag: "v0.69.0"
+    tag: "v0.71.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -724,7 +761,7 @@ images:
   - name: event-logger
     sourceRepository: github.com/gardener/logging
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/event-logger
-    tag: "v0.69.0"
+    tag: "v0.71.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -741,7 +778,7 @@ images:
   - name: tune2fs
     sourceRepository: github.com/gardener/logging
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/tune2fs
-    tag: "v0.69.0"
+    tag: "v0.71.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -759,7 +796,7 @@ images:
   - name: vpa-admission-controller
     sourceRepository: github.com/kubernetes/autoscaler
     repository: registry.k8s.io/autoscaling/vpa-admission-controller
-    tag: "1.5.1"
+    tag: "1.6.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -769,10 +806,14 @@ images:
           confidentiality_requirement: 'low'
           integrity_requirement: 'high'
           availability_requirement: 'high'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/vertical-pod-autoscaler-maintainers'
   - name: vpa-recommender
     sourceRepository: github.com/kubernetes/autoscaler
     repository: registry.k8s.io/autoscaling/vpa-recommender
-    tag: "1.5.1"
+    tag: "1.6.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -782,10 +823,14 @@ images:
           confidentiality_requirement: 'low'
           integrity_requirement: 'high'
           availability_requirement: 'high'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/vertical-pod-autoscaler-maintainers'
   - name: vpa-updater
     sourceRepository: github.com/kubernetes/autoscaler
     repository: registry.k8s.io/autoscaling/vpa-updater
-    tag: "1.5.1"
+    tag: "1.6.0"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -795,11 +840,15 @@ images:
           confidentiality_requirement: 'low'
           integrity_requirement: 'high'
           availability_requirement: 'high'
+      - name: 'cloud.gardener.cnudie/responsibles'
+        value:
+          - type: 'githubTeam'
+            teamname: 'gardener/vertical-pod-autoscaler-maintainers'
   # Horizontal cluster-proportional-autoscaler
   - name: cluster-proportional-autoscaler
     sourceRepository: https://github.com/kubernetes-sigs/cluster-proportional-autoscaler
     repository: registry.k8s.io/cpa/cluster-proportional-autoscaler
-    tag: "v1.9.0"
+    tag: "v1.10.3"
     labels:
       - name: 'cloud.gardener.cnudie/responsibles'
         value:
@@ -809,7 +858,7 @@ images:
   - name: istio-proxy
     sourceRepository: github.com/istio/istio
     repository: gcr.io/istio-release/proxyv2
-    tag: "1.27.3-distroless"
+    tag: "1.29.2-distroless"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -826,7 +875,7 @@ images:
   - name: istio-istiod
     sourceRepository: github.com/istio/istio
     repository: gcr.io/istio-release/pilot
-    tag: "1.27.3-distroless"
+    tag: "1.29.2-distroless"
     labels:
       - name: 'gardener.cloud/cve-categorisation'
         value:
@@ -840,11 +889,15 @@ images:
         value:
           - type: 'githubTeam'
             teamname: 'gardener/gardener-core-networking-maintainers'
+  - name: istio-basic-auth-server
+    sourceRepository: github.com/gardener/ext-authz-server
+    repository: europe-docker.pkg.dev/gardener-project/releases/gardener/ext-authz-server
+    tag: "v0.2.0"
   # API Server SNI, VPN-SeedServer and Kube-ApiServer Proxy
   - name: envoy-proxy
     sourceRepository: github.com/envoyproxy/envoy
     repository: europe-docker.pkg.dev/gardener-project/releases/3rd/envoyproxy/envoy
-    tag: "distroless-v1.36.2"
+    tag: "distroless-v1.37.2"
     resourceId:
       version-template:
         type: 'jq'
@@ -864,19 +917,19 @@ images:
             teamname: 'gardener/gardener-core-networking-maintainers'
       - name: 'cloud.gardener.cnudie/dso/scanning-hints/package-versions'
         value:
-          # https://www.envoyproxy.io/docs/envoy/v1.35.0/intro/arch_overview/security/external_deps
+          # https://www.envoyproxy.io/docs/envoy/v1.37.0/intro/arch_overview/security/external_deps
           - name: 'v8'
             version: '13.8.258.26'
           - name: 'grpc'
-            version: '1.72.0'
+            version: '1.76.0'
           - name: 'luajit'
-            version: '19878ec'
+            version: '871db2c'
           - name: 'nghttp2'
             version: '1.66.0'
           - name: 'protobuf'
-            version: '29.3'
+            version: '33.2'
           - name: 'fmt'
-            version: '11.2.0'
+            version: '12.1.0'
           - name: 'boringssl'
             version: '0.20250514.0'
           # lua version is unclear. lua runtime is luajit.
@@ -886,9 +939,11 @@ images:
             version: '5.1'
           - name: 'yaml-cpp'
             version: '0.8.0'
+          - name: 'c-ares'
+            version: '1.34.6'
   - name: apiserver-proxy-sidecar
     resourceId:
       name: apiserver-proxy
     sourceRepository: github.com/gardener/apiserver-proxy
     repository: europe-docker.pkg.dev/gardener-project/releases/gardener/apiserver-proxy
-    tag: "v0.19.0"
+    tag: "v0.21.0"

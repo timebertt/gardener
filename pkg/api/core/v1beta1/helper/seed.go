@@ -1,0 +1,187 @@
+// SPDX-FileCopyrightText: SAP SE or an SAP affiliate company and Gardener contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package helper
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/utils/ptr"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+)
+
+// TaintsHave returns true if the given key is part of the taints list.
+func TaintsHave(taints []gardencorev1beta1.SeedTaint, key string) bool {
+	for _, taint := range taints {
+		if taint.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// TaintsAreTolerated returns true when all the given taints are tolerated by the given tolerations.
+func TaintsAreTolerated(taints []gardencorev1beta1.SeedTaint, tolerations []gardencorev1beta1.Toleration) bool {
+	if len(taints) == 0 {
+		return true
+	}
+	if len(taints) > len(tolerations) {
+		return false
+	}
+
+	tolerationKeyValues := make(map[string]string, len(tolerations))
+	for _, toleration := range tolerations {
+		v := ""
+		if toleration.Value != nil {
+			v = *toleration.Value
+		}
+		tolerationKeyValues[toleration.Key] = v
+	}
+
+	for _, taint := range taints {
+		tolerationValue, ok := tolerationKeyValues[taint.Key]
+		if !ok {
+			return false
+		}
+		if taint.Value != nil && *taint.Value != tolerationValue {
+			return false
+		}
+	}
+
+	return true
+}
+
+// SeedSettingExcessCapacityReservationEnabled returns true if the 'excess capacity reservation' setting is enabled.
+func SeedSettingExcessCapacityReservationEnabled(settings *gardencorev1beta1.SeedSettings) bool {
+	return settings == nil || settings.ExcessCapacityReservation == nil || ptr.Deref(settings.ExcessCapacityReservation.Enabled, true)
+}
+
+// SeedSettingVerticalPodAutoscalerEnabled returns true if the 'verticalPodAutoscaler' setting is enabled.
+func SeedSettingVerticalPodAutoscalerEnabled(settings *gardencorev1beta1.SeedSettings) bool {
+	return settings == nil || settings.VerticalPodAutoscaler == nil || settings.VerticalPodAutoscaler.Enabled
+}
+
+// SeedSettingVerticalPodAutoscalerMaxAllowed returns the configured vertical pod autoscaler's maximum allowed recommendation.
+func SeedSettingVerticalPodAutoscalerMaxAllowed(settings *gardencorev1beta1.SeedSettings) corev1.ResourceList {
+	if settings == nil || settings.VerticalPodAutoscaler == nil {
+		return nil
+	}
+
+	return settings.VerticalPodAutoscaler.MaxAllowed
+}
+
+// SeedSettingDependencyWatchdogWeederEnabled returns true if the dependency-watchdog-weeder is enabled.
+func SeedSettingDependencyWatchdogWeederEnabled(settings *gardencorev1beta1.SeedSettings) bool {
+	return settings == nil || settings.DependencyWatchdog == nil || settings.DependencyWatchdog.Weeder == nil || settings.DependencyWatchdog.Weeder.Enabled
+}
+
+// SeedSettingDependencyWatchdogProberEnabled returns true if the dependency-watchdog-prober is enabled.
+func SeedSettingDependencyWatchdogProberEnabled(settings *gardencorev1beta1.SeedSettings) bool {
+	return settings == nil || settings.DependencyWatchdog == nil || settings.DependencyWatchdog.Prober == nil || settings.DependencyWatchdog.Prober.Enabled
+}
+
+// SeedSettingTopologyAwareRoutingEnabled returns true if the topology-aware routing is enabled.
+func SeedSettingTopologyAwareRoutingEnabled(settings *gardencorev1beta1.SeedSettings) bool {
+	return settings != nil && settings.TopologyAwareRouting != nil && settings.TopologyAwareRouting.Enabled
+}
+
+// SeedSettingZonalIngressEnabled returns true if zonal ingress is enabled for the seed.
+func SeedSettingZonalIngressEnabled(settings *gardencorev1beta1.SeedSettings) bool {
+	if settings == nil || settings.LoadBalancerServices == nil || settings.LoadBalancerServices.ZonalIngress == nil {
+		return true
+	}
+	return ptr.Deref(settings.LoadBalancerServices.ZonalIngress.Enabled, true)
+}
+
+// SeedSettingZoneSelectionMode returns the zone selection mode, or empty string if not configured.
+func SeedSettingZoneSelectionMode(settings *gardencorev1beta1.SeedSettings) gardencorev1beta1.ZoneSelectionMode {
+	if settings == nil || settings.ZoneSelection == nil {
+		return ""
+	}
+	return settings.ZoneSelection.Mode
+}
+
+// SeedBackupCredentialsRefEqual returns true when the credentials reference of the backup configuration is the same.
+func SeedBackupCredentialsRefEqual(oldBackup, newBackup *gardencorev1beta1.Backup) bool {
+	var (
+		oldCredentialsRef *corev1.ObjectReference
+		newCredentialsRef *corev1.ObjectReference
+	)
+
+	if oldBackup != nil {
+		oldCredentialsRef = oldBackup.CredentialsRef
+	}
+
+	if newBackup != nil {
+		newCredentialsRef = newBackup.CredentialsRef
+	}
+
+	return apiequality.Semantic.DeepEqual(oldCredentialsRef, newCredentialsRef)
+}
+
+// DNSProviderCredentialsRefEqual returns true when the credentials reference of the DNS provider configuration is the same.
+func DNSProviderCredentialsRefEqual(oldDNSProvider, newDNSProvider *gardencorev1beta1.SeedDNSProviderConfig) bool {
+	var (
+		oldCredentialsRef *corev1.ObjectReference
+		newCredentialsRef *corev1.ObjectReference
+	)
+
+	if oldDNSProvider != nil {
+		oldCredentialsRef = &oldDNSProvider.CredentialsRef
+	}
+
+	if newDNSProvider != nil {
+		newCredentialsRef = &newDNSProvider.CredentialsRef
+	}
+
+	return apiequality.Semantic.DeepEqual(oldCredentialsRef, newCredentialsRef)
+}
+
+// DNSProvidersCredentialsRefEqual returns true when the credentials references of the DNS provider configurations are the same.
+func DNSProvidersCredentialsRefEqual(oldDNSProviders, newDNSProviders []gardencorev1beta1.SeedDNSProviderConfig) bool {
+	if len(oldDNSProviders) != len(newDNSProviders) {
+		return false
+	}
+
+	for i := range oldDNSProviders {
+		if !DNSProviderCredentialsRefEqual(&oldDNSProviders[i], &newDNSProviders[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// CalculateSeedUsage returns a map representing the number of shoots per seed from the given list of shoots.
+// It takes both spec.seedName and status.seedName into account.
+func CalculateSeedUsage(shootList []*gardencorev1beta1.Shoot) map[string]int {
+	m := map[string]int{}
+
+	for _, shoot := range shootList {
+		var (
+			specSeed   = ptr.Deref(shoot.Spec.SeedName, "")
+			statusSeed = ptr.Deref(shoot.Status.SeedName, "")
+		)
+
+		if specSeed != "" {
+			m[specSeed]++
+		}
+		if statusSeed != "" && specSeed != statusSeed {
+			m[statusSeed]++
+		}
+	}
+
+	return m
+}
+
+// HasShootReconciliationsDisabledAnnotation returns true if shoot reconciliations are currently disabled for the given seed.
+func HasShootReconciliationsDisabledAnnotation(seed *gardencorev1beta1.Seed) bool {
+	if seed == nil {
+		return false
+	}
+	value, ok := seed.Annotations[v1beta1constants.AnnotationEmergencyStopShootReconciliations]
+	return ok && value == "true"
+}

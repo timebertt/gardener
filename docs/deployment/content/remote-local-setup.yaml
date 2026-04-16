@@ -89,21 +89,13 @@ spec:
           echo stern           && go install github.com/stern/stern@latest
           echo neat            && krew install neat
           echo node-shell      && krew install node-shell
-          bash -c "
-            echo {{p,g}-seed,{gu,p,v}-local--local}.ingress.local.seed.local.gardener.cloud \
-                 api.{e2e-managedseed.garden,local.local}.{internal,external}.local.gardener.cloud \
-                 api.e2e-{hib,upg-hib,wake-up,wake-up-ncp,migrate,rotate,default,upd-node,upgrade,upg-ha}{,-wl}.local.{internal,external}.local.gardener.cloud \
-                 api.e2e-upd-node-ovr.local.{internal,external}.local.gardener.cloud \
-                 api.e2e-{unpriv,mgr-hib,force-delete,fd-hib,auth-{one,two},layer4-lb,default-ip,rot-{ip,noroll}}.local.{internal,external}.local.gardener.cloud \
-                 gu-local--e2e-{rotate{,-wl},rot-{ip,noroll}}.ingress.local.seed.local.gardener.cloud
-            " | sed 's/ /\n/g' | sed 's/^/172.18.255.1 /' | sort      >> /etc/hosts
-          echo "172.18.255.3 api.virtual-garden.local.gardener.cloud" >> /etc/hosts
-          echo "127.0.0.1 garden.local.gardener.cloud"                >> /etc/hosts
-          
-          # Resolve e.g. gu-local--e2e-rot{ate{-wl},-noroll}.ingress.$seed_name. ... to 127.0.0.1 for the e2e tests:
+
+          # Resolve local.gardener.cloud domains using local DNS server (conditional forwarding to bind9)
+          mkdir -p /etc/dnsmasq.d
           echo '
-          address=/.seed.local.gardener.cloud/127.0.0.1
-          address=/.garden.external.local.gardener.cloud/127.0.0.1
+          listen-address=127.0.0.1
+          bind-interfaces
+          server=/.local.gardener.cloud/172.18.255.53
           ' > /etc/dnsmasq.d/gardener.conf
           sed '1inameserver 127.0.0.1' /etc/resolv.conf > /tmp/resolv.conf && cat /tmp/resolv.conf > /etc/resolv.conf
           nice dnsmasq --no-daemon --log-debug --log-queries 2>&1 | ts > ~/.dnsmasq.log &
@@ -125,11 +117,13 @@ spec:
           There are multiple variants of the local setup of Gardener
           that can be prepared in a tmux session for convenience:
 
-          - '${g}prepare-gardener.sh${n}'          A basic 'make kind-up gardener-up' setup
-          - '${g}prepare-operator.sh${n}'          A 'make kind-multi-zone-up operator-up' setup
-             ${g}                   ${n}           with several tmux windows
-          - '${g}prepare-operator-complete.sh${n}' A 'make kind-multi-zone-up operator-up operator-seed-up' setup,
-             ${g}                            ${n}  a complete local "development landscape"
+          - '${g}prepare-gardener.sh${n}'                        A basic 'make kind-up gardener-up' setup
+          - '${g}prepare-operator.sh${n}'                        A 'make kind-multi-zone-up operator-up' setup
+             ${g}                   ${n}                         with several tmux windows
+          - '${g}prepare-operator-complete.sh${n}'               A 'make kind-multi-zone-up operator-up operator-seed-up' setup,
+             ${g}                            ${n}                a complete local "development landscape"
+          - '${g}IPFAMILY=ipv6 prepare-operator-complete.sh${n}' As 'prepare-operator-complete.sh' but using IPv6. It requires
+             ${g}                                          ${n}  a shoot with IPv6 enabled.
 
           The "Gardener HA" tmux session is prepared by default.
           To switch to another tmux session, please run the respective script.
@@ -351,10 +345,10 @@ spec:
             kubectl apply -f example/provider-local/shoot.yaml
           EOF
           new_pane "Access the shoot cluster" <<"EOF"
-            KUBECONFIG=<(generate-admin-kubeconf.sh) kubectl get pods -A
+            KUBECONFIG=<(generate-kubeconfig.sh) kubectl get pods -A
           EOF
           new_pane "Run simple e2e test (create and delete shoot)" <<"EOF"
-            make test-e2e-local-simple
+            GOFLAGS="-tags=musl" make test-e2e-local-simple
           EOF
           new_window "ad-hoc" "ad-hoc" Enter <<"EOF"
             # Use this pane for ad-hoc commands
@@ -375,11 +369,11 @@ spec:
           tmux select-pane -T top; rm -f ~/.config/procps/toprc
           for k in top Enter z C c i t t m m V s 5 Enter E e W; do sleep .2; tmux send $k; done
           new_pane "make kind-multi-zone-up" <<"EOF"
-            sync_kubeconfig example/gardener-local/kind/multi-zone & sleep 1
+            sync_kubeconfig dev-setup/kubeconfigs/runtime & sleep 1
             nice make kind-multi-zone-down kind-multi-zone-up && kubectl wait --for=condition=ready pod -A --all --timeout=-1s
           EOF
           new_pane "make operator-up" <<"EOF"
-            export KUBECONFIG=$PWD/example/gardener-local/kind/multi-zone/kubeconfig
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
             nice make operator-up
           EOF
           new_window "lifecycle" "Create" <<"EOF"
@@ -405,14 +399,14 @@ spec:
             watch "k get pods -A -o wide | awk '{split(\$3, a, \"/\"); if (a[1]!=a[2] || \$4 != \"Running\") {print}}'"
           EOF
           new_window "virtual-garden" "virtual-garden" <<"EOF"
-            hack/usage/generate-virtual-garden-admin-kubeconf.sh > /tmp/virtual-garden-kubeconfig && export KUBECONFIG=/tmp/virtual-garden-kubeconfig
+            hack/usage/generate-admin-kubeconfig-local.sh virtual-garden > /tmp/virtual-garden-kubeconfig && export KUBECONFIG=/tmp/virtual-garden-kubeconfig
           EOF
           new_window "git" "git" Enter <<"EOF"
             # Use 'pr' or 'pr_base' to checkout the head or base commit of a PR
             git log --oneline -1
           EOF
           new_window "make generate" "make generate" <<"EOF"
-            nice make generate check test test-integration
+            GOFLAGS-"-tags=musl" nice make generate check test test-integration
           EOF
           new_window "ad-hoc" "ad-hoc" Enter <<"EOF"
             # Use this pane for ad-hoc commands
@@ -433,15 +427,15 @@ spec:
           tmux select-pane -T top; rm -f ~/.config/procps/toprc
           for k in top Enter z C c i t t m m V s 5 Enter E e W; do sleep .2; tmux send $k; done
           new_pane "make kind-multi-zone-up" <<"EOF"
-            sync_kubeconfig example/gardener-local/kind/multi-zone & sleep 1
+            sync_kubeconfig dev-setup/kubeconfigs/runtime & sleep 1
             nice make kind-multi-zone-down kind-multi-zone-up && kubectl wait --for=condition=ready pod -A --all --timeout=-1s
           EOF
           new_pane "make operator-up" <<"EOF"
-            export KUBECONFIG=$PWD/example/gardener-local/kind/multi-zone/kubeconfig
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
             nice make operator-up
           EOF
           new_pane "make operator-seed-up" <<"EOF"
-            export KUBECONFIG=$PWD/example/gardener-local/kind/multi-zone/kubeconfig
+            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/runtime/kubeconfig
             nice make operator-seed-up
           EOF
           new_window "garden" "garden" Enter <<"EOF"
@@ -469,10 +463,17 @@ spec:
             export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
             watch -c "k get -n garden-local shoot local -o yaml | yq -P -C '[.status.conditions[] | del(.lastTransitionTime, .lastUpdateTime)]' | grep --color=Always -E '\"False\"| Unknown| Progressing|$'"
           EOF
-          new_window "shoot lifecycle" "Create" <<"EOF"
-            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
-            k apply -f example/provider-local/shoot.yaml
+          if [[ "$IPFAMILY" == "ipv6" ]]; then
+            new_window "shoot lifecycle" "Create" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/shoot-ipv6.yaml
           EOF
+          else
+            new_window "shoot lifecycle" "Create" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/shoot.yaml
+          EOF
+          fi
           new_pane "Reconcile" <<"EOF"
             export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
             k annotate shoot local -n garden-local 'gardener.cloud/operation=reconcile'
@@ -485,17 +486,31 @@ spec:
             export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
             watch k get -A seeds,shoots,managedseeds
           EOF
-          new_pane "create shoot" Enter <<"EOF"
-            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
-            k apply -f example/provider-local/managedseeds/shoot-managedseed.yaml
+          if [[ "$IPFAMILY" == "ipv6" ]]; then
+            new_pane "create shoot" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/shoot-managedseed-ipv6.yaml
           EOF
-          new_pane "create managed seed" Enter <<"EOF"
-            export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
-            k apply -f example/provider-local/managedseeds/managedseed.yaml
+          else
+            new_pane "create shoot" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/shoot-managedseed.yaml
           EOF
+          fi
+          if [[ "$IPFAMILY" == "ipv6" ]]; then
+            new_pane "create managed seed" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/managedseed-ipv6.yaml
+          EOF
+          else
+            new_pane "create managed seed" <<"EOF"
+              export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
+              k apply -f example/provider-local/managedseeds/managedseed.yaml
+          EOF
+          fi
           new_pane "managed seed pods" <<"EOF"
             export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
-            generate-admin-kubeconf.sh --namespace garden --shoot-name managedseed > /tmp/shoot.kubeconfig && while true; do clear; k --kubeconfig /tmp/shoot.kubeconfig get pods -A -o wide; sleep 10s; done
+            generate-kubeconfig.sh --namespace garden --shoot-name managedseed > /tmp/shoot.kubeconfig && while true; do clear; k --kubeconfig /tmp/shoot.kubeconfig get pods -A -o wide; sleep 10s; done
           EOF
           new_window "runtime&seed pods" "pods" Enter <<"EOF"
             # the while loop is used instead of watch to allow for scrolling a longer list in the tmux pane
@@ -506,11 +521,11 @@ spec:
           EOF
           new_window "shoot pods" "pods" <<"EOF"
             export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
-            generate-admin-kubeconf.sh > /tmp/shoot.kubeconfig && watch k --kubeconfig /tmp/shoot.kubeconfig get pods -A
+            generate-kubeconfig.sh > /tmp/shoot.kubeconfig && watch k --kubeconfig /tmp/shoot.kubeconfig get pods -A
           EOF
           new_pane "not ready pods" <<"EOF"
             export KUBECONFIG=$PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
-            generate-admin-kubeconf.sh > /tmp/shoot.kubeconfig && watch "k --kubeconfig /tmp/shoot.kubeconfig get pods -A -o wide | awk '{split(\$3, a, \"/\"); if (a[1]!=a[2] || \$4 != \"Running\") {print}}'"
+            generate-kubeconfig.sh > /tmp/shoot.kubeconfig && watch "k --kubeconfig /tmp/shoot.kubeconfig get pods -A -o wide | awk '{split(\$3, a, \"/\"); if (a[1]!=a[2] || \$4 != \"Running\") {print}}'"
           EOF
           new_window "gardenctl" "gardenctl" <<"EOF"
             gardenctl config set-garden local --kubeconfig $PWD/dev-setup/kubeconfigs/virtual-garden/kubeconfig
@@ -522,7 +537,7 @@ spec:
             git log --oneline -1
           EOF
           new_window "make generate" "make generate" <<"EOF"
-            nice make generate check test test-integration
+            GOFLAGS="-tags=musl" nice make generate check test test-integration
           EOF
           new_window "ad-hoc" "ad-hoc" Enter <<"EOF"
             # Use this pane for ad-hoc commands

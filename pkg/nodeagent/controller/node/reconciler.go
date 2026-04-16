@@ -12,12 +12,12 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	"github.com/gardener/gardener/pkg/nodeagent/dbus"
 )
 
@@ -26,7 +26,7 @@ const annotationRestartSystemdServices = "worker.gardener.cloud/restart-systemd-
 // Reconciler checks for node annotation changes and restarts the specified systemd services.
 type Reconciler struct {
 	Client   client.Client
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 	DBus     dbus.DBus
 }
 
@@ -51,7 +51,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	var restartGardenerNodeAgent bool
 
-	for _, serviceName := range strings.Split(services, ",") {
+	for serviceName := range strings.SplitSeq(services, ",") {
 		if !strings.HasSuffix(serviceName, ".service") {
 			serviceName = serviceName + ".service"
 		}

@@ -18,10 +18,10 @@ import (
 	"k8s.io/utils/ptr"
 
 	gardencoreapi "github.com/gardener/gardener/pkg/api"
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
+	"github.com/gardener/gardener/pkg/api/core/validation"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	"github.com/gardener/gardener/pkg/apis/core/validation"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
@@ -300,8 +300,15 @@ func (c *validationContext) validateMachineImageOverrides(ctx context.Context, a
 						var oldMachineImageVersion gardencore.MachineImageVersion
 						oldMachineImageVersion, imageVersionAlreadyInNamespacedCloudProfile = oldVersionsSpec.GetImageVersion(image.Name, imageVersion.Version)
 
-						if imageVersionAlreadyInNamespacedCloudProfile && !reflect.DeepEqual(oldMachineImageVersion, imageVersion) {
-							allErrs = append(allErrs, field.Forbidden(imageVersionIndexPath, fmt.Sprintf("cannot update the machine image version spec of \"%s@%s\", as this version has been added to the parent CloudProfile by now", image.Name, imageVersion.Version)))
+						oldMachineImageVersionWithoutExpiration := oldMachineImageVersion.DeepCopy()
+						machineImageVersionWithoutExpiration := imageVersion.DeepCopy()
+						oldMachineImageVersionWithoutExpiration.ExpirationDate = nil
+						machineImageVersionWithoutExpiration.ExpirationDate = nil
+						// Compare the old and new image version without considering the expiration date.
+						// The expiration date is neglected here because it is the only field allowed to change for an existing image version.
+						// If the image versions are equal except for the expiration date, then the update is allowed.
+						if imageVersionAlreadyInNamespacedCloudProfile && !reflect.DeepEqual(oldMachineImageVersionWithoutExpiration, machineImageVersionWithoutExpiration) {
+							allErrs = append(allErrs, field.Forbidden(imageVersionIndexPath, fmt.Sprintf("cannot update the machine image version spec (except for the expiration date) of \"%s@%s\", as this version has been added to the parent CloudProfile by now", image.Name, imageVersion.Version)))
 						}
 					}
 

@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	recommender            = "vpa-recommender"
-	recommenderPortServer  = 8080
-	recommenderPortMetrics = 8942
+	recommenderContainerName = "recommender"
+	recommender              = "vpa-recommender"
+	recommenderPortServer    = 8080
+	recommenderPortMetrics   = 8942
 )
 
 // ValuesRecommender is a set of configuration values for the vpa-recommender.
@@ -77,6 +78,8 @@ type ValuesRecommender struct {
 	PriorityClassName string
 	// Replicas is the number of pod replicas.
 	Replicas *int32
+	// UpdateWorkerCount is the number of workers used for updating VPAs and VPACheckpoints in parallel.
+	UpdateWorkerCount *int64
 }
 
 func (v *vpa) recommenderResourceConfigs() component.ResourceConfigs {
@@ -259,7 +262,7 @@ func (v *vpa) reconcileRecommenderDeployment(deployment *appsv1.Deployment, serv
 			Spec: corev1.PodSpec{
 				PriorityClassName: v.values.Recommender.PriorityClassName,
 				Containers: []corev1.Container{{
-					Name:            "recommender",
+					Name:            recommenderContainerName,
 					Image:           v.values.Recommender.Image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					Args:            v.computeRecommenderArgs(),
@@ -314,8 +317,12 @@ func (v *vpa) reconcileRecommenderVPA(vpa *vpaautoscalingv1.VerticalPodAutoscale
 		ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 			ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 				{
-					ContainerName:    "*",
+					ContainerName:    recommenderContainerName,
 					ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+				},
+				{
+					ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+					Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 				},
 			},
 		},
@@ -346,6 +353,7 @@ func (v *vpa) computeRecommenderArgs() []string {
 		"--leader-elect=true",
 		"--leader-elect-resource-name=" + recommender,
 		fmt.Sprintf("--leader-elect-resource-namespace=%s", v.namespaceForApplicationClassResource()),
+		fmt.Sprintf("--update-worker-count=%d", ptr.Deref(v.values.Recommender.UpdateWorkerCount, gardencorev1beta1.DefaultRecommenderUpdateWorkerCount)),
 	}
 
 	if v.values.ClusterType == component.ClusterTypeShoot {

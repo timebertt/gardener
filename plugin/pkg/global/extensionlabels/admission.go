@@ -17,11 +17,12 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apiserver/pkg/admission"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/apis/security"
+	"github.com/gardener/gardener/pkg/apis/utils"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	gardencorev1beta1listers "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
@@ -133,8 +134,15 @@ func (e *ExtensionLabels) Admit(_ context.Context, a admission.Attributes, _ adm
 			return apierrors.NewBadRequest("could not convert resource into Seed object")
 		}
 
+		controllerRegistrations, err := e.controllerRegistrationLister.List(labels.Everything())
+		if err != nil {
+			return apierrors.NewInternalError(err)
+		}
+
 		removeLabels(&seed.ObjectMeta)
-		addMetaDataLabelsSeed(seed)
+		if err := addMetaDataLabelsSeed(seed, controllerRegistrations); err != nil {
+			return fmt.Errorf("failed to add metadata labels to seed: %w", err)
+		}
 
 	case core.Kind("SecretBinding"):
 		secretBinding, ok := a.GetObject().(*core.SecretBinding)
@@ -233,7 +241,25 @@ func (e *ExtensionLabels) Admit(_ context.Context, a admission.Attributes, _ adm
 	return nil
 }
 
-func addMetaDataLabelsSeed(seed *core.Seed) {
+func addMetaDataLabelsSeed(seed *core.Seed, controllerRegistrations []*gardencorev1beta1.ControllerRegistration) error {
+	v1beta1Seed := &gardencorev1beta1.Seed{}
+	if err := kubernetes.GardenScheme.Convert(seed, v1beta1Seed, nil); err != nil {
+		return fmt.Errorf("could not convert Seed to v1beta1.Seed: %v", err)
+	}
+
+	controllerRegistrationList := &gardencorev1beta1.ControllerRegistrationList{
+		Items: slices.Collect(utils.TransformElements(
+			controllerRegistrations,
+			func(registration *gardencorev1beta1.ControllerRegistration) gardencorev1beta1.ControllerRegistration {
+				return *registration
+			},
+		)),
+	}
+
+	for extensionType := range gardenerutils.ComputeEnabledTypesForKindExtensionSeed(v1beta1Seed, controllerRegistrationList) {
+		metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelExtensionExtensionTypePrefix+extensionType, "true")
+	}
+
 	metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelExtensionProviderTypePrefix+seed.Spec.Provider.Type, "true")
 	if seed.Spec.Backup != nil {
 		metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelExtensionProviderTypePrefix+seed.Spec.Backup.Provider, "true")
@@ -242,6 +268,8 @@ func addMetaDataLabelsSeed(seed *core.Seed) {
 	if seed.Spec.DNS.Provider != nil {
 		metav1.SetMetaDataLabel(&seed.ObjectMeta, v1beta1constants.LabelExtensionDNSRecordTypePrefix+seed.Spec.DNS.Provider.Type, "true")
 	}
+
+	return nil
 }
 
 func addMetaDataLabelsSecretBinding(secretBinding *core.SecretBinding) {
@@ -258,16 +286,14 @@ func addMetaDataLabelsShoot(shoot *core.Shoot, controllerRegistrations []*garden
 	}
 
 	controllerRegistrationList := &gardencorev1beta1.ControllerRegistrationList{
-		Items: slices.Collect(func(yield func(gardencorev1beta1.ControllerRegistration) bool) {
-			for _, registration := range controllerRegistrations {
-				if !yield(*registration) {
-					return
-				}
-			}
-		}),
+		Items: slices.Collect(utils.TransformElements(
+			controllerRegistrations,
+			func(registration *gardencorev1beta1.ControllerRegistration) gardencorev1beta1.ControllerRegistration {
+				return *registration
+			})),
 	}
 
-	for extensionType := range gardenerutils.ComputeEnabledTypesForKindExtension(v1beta1Shoot, controllerRegistrationList) {
+	for extensionType := range gardenerutils.ComputeEnabledTypesForKindExtensionShoot(v1beta1Shoot, controllerRegistrationList) {
 		metav1.SetMetaDataLabel(&shoot.ObjectMeta, v1beta1constants.LabelExtensionExtensionTypePrefix+extensionType, "true")
 	}
 
@@ -279,6 +305,9 @@ func addMetaDataLabelsShoot(shoot *core.Shoot, controllerRegistrations []*garden
 		}
 		if pool.Machine.Image != nil {
 			metav1.SetMetaDataLabel(&shoot.ObjectMeta, v1beta1constants.LabelExtensionOperatingSystemConfigTypePrefix+pool.Machine.Image.Name, "true")
+		}
+		if pool.ControlPlane != nil && pool.ControlPlane.Exposure != nil {
+			metav1.SetMetaDataLabel(&shoot.ObjectMeta, v1beta1constants.LabelExtensionSelfHostedShootExposureTypePrefix+*pool.ControlPlane.Exposure.Extension.Type, "true")
 		}
 	}
 
@@ -324,6 +353,7 @@ func removeLabels(objectMeta *metav1.ObjectMeta) {
 		v1beta1constants.LabelExtensionNetworkingTypePrefix,
 		v1beta1constants.LabelExtensionOperatingSystemConfigTypePrefix,
 		v1beta1constants.LabelExtensionContainerRuntimeTypePrefix,
+		v1beta1constants.LabelExtensionSelfHostedShootExposureTypePrefix,
 	}
 	for k := range objectMeta.Labels {
 		for _, label := range extensionLabels {

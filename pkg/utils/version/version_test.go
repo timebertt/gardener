@@ -15,34 +15,14 @@ import (
 
 var _ = Describe("Version", func() {
 	DescribeTable("Constraints",
-		func(constraint *semver.Constraints, version *semver.Version, matcher gomegatypes.GomegaMatcher) {
+		func(constraint *Constraints, version *semver.Version, matcher gomegatypes.GomegaMatcher) {
 			Expect(constraint.Check(version)).To(matcher)
 		},
-
-		Entry("ConstraintK8sLess130, success", ConstraintK8sLess130, semver.MustParse("1.29.1"), BeTrue()),
-		Entry("ConstraintK8sLess130, failure", ConstraintK8sLess130, semver.MustParse("1.30.0"), BeFalse()),
-		Entry("ConstraintK8sLess130, success w/ suffix", ConstraintK8sLess130, semver.MustParse("v1.29.1-foo.12"), BeTrue()),
-		Entry("ConstraintK8sLess130, failure w/ suffix", ConstraintK8sLess130, semver.MustParse("v1.30.0-foo.12"), BeFalse()),
-
-		Entry("ConstraintK8sGreaterEqual130, success", ConstraintK8sGreaterEqual130, semver.MustParse("1.30.0"), BeTrue()),
-		Entry("ConstraintK8sGreaterEqual130, failure", ConstraintK8sGreaterEqual130, semver.MustParse("1.29.0"), BeFalse()),
-		Entry("ConstraintK8sGreaterEqual130, success w/ suffix", ConstraintK8sGreaterEqual130, semver.MustParse("v1.30.0-foo.12"), BeTrue()),
-		Entry("ConstraintK8sGreaterEqual130, failure w/ suffix", ConstraintK8sGreaterEqual130, semver.MustParse("v1.29.0-foo.12"), BeFalse()),
-
-		Entry("ConstraintK8sLess131, success", ConstraintK8sLess131, semver.MustParse("1.30.1"), BeTrue()),
-		Entry("ConstraintK8sLess131, failure", ConstraintK8sLess131, semver.MustParse("1.31.0"), BeFalse()),
-		Entry("ConstraintK8sLess131, success w/ suffix", ConstraintK8sLess131, semver.MustParse("v1.30.1-foo.12"), BeTrue()),
-		Entry("ConstraintK8sLess131, failure w/ suffix", ConstraintK8sLess131, semver.MustParse("v1.31.0-foo.12"), BeFalse()),
 
 		Entry("ConstraintK8sEqual131, success", ConstraintK8sEqual131, semver.MustParse("1.31.1"), BeTrue()),
 		Entry("ConstraintK8sEqual131, failure", ConstraintK8sEqual131, semver.MustParse("1.30.0"), BeFalse()),
 		Entry("ConstraintK8sEqual131, success w/ suffix", ConstraintK8sEqual131, semver.MustParse("v1.31.1-foo.12"), BeTrue()),
 		Entry("ConstraintK8sEqual131, failure w/ suffix", ConstraintK8sEqual131, semver.MustParse("v1.30.0-foo.12"), BeFalse()),
-
-		Entry("ConstraintK8sGreaterEqual131, success", ConstraintK8sGreaterEqual131, semver.MustParse("1.31.0"), BeTrue()),
-		Entry("ConstraintK8sGreaterEqual131, failure", ConstraintK8sGreaterEqual131, semver.MustParse("1.30.0"), BeFalse()),
-		Entry("ConstraintK8sGreaterEqual131, success w/ suffix", ConstraintK8sGreaterEqual131, semver.MustParse("v1.31.0-foo.12"), BeTrue()),
-		Entry("ConstraintK8sGreaterEqual131, failure w/ suffix", ConstraintK8sGreaterEqual131, semver.MustParse("v1.30.0-foo.12"), BeFalse()),
 
 		Entry("ConstraintK8sLess132, success", ConstraintK8sLess132, semver.MustParse("1.31.1"), BeTrue()),
 		Entry("ConstraintK8sLess132, failure", ConstraintK8sLess132, semver.MustParse("1.32.0"), BeFalse()),
@@ -73,6 +53,16 @@ var _ = Describe("Version", func() {
 		Entry("ConstraintK8sGreaterEqual134, failure", ConstraintK8sGreaterEqual134, semver.MustParse("1.33.0"), BeFalse()),
 		Entry("ConstraintK8sGreaterEqual134, success w/ suffix", ConstraintK8sGreaterEqual134, semver.MustParse("v1.34.0-foo.12"), BeTrue()),
 		Entry("ConstraintK8sGreaterEqual134, failure w/ suffix", ConstraintK8sGreaterEqual134, semver.MustParse("v1.33.0-foo.12"), BeFalse()),
+
+		Entry("ConstraintK8sLess135, success", ConstraintK8sLess135, semver.MustParse("1.34.1"), BeTrue()),
+		Entry("ConstraintK8sLess135, failure", ConstraintK8sLess135, semver.MustParse("1.35.0"), BeFalse()),
+		Entry("ConstraintK8sLess135, success w/ suffix", ConstraintK8sLess135, semver.MustParse("v1.34.1-foo.12"), BeTrue()),
+		Entry("ConstraintK8sLess135, failure w/ suffix", ConstraintK8sLess135, semver.MustParse("v1.35.0-foo.12"), BeFalse()),
+
+		Entry("ConstraintK8sGreaterEqual135, success", ConstraintK8sGreaterEqual135, semver.MustParse("1.35.0"), BeTrue()),
+		Entry("ConstraintK8sGreaterEqual135, failure", ConstraintK8sGreaterEqual135, semver.MustParse("1.34.0"), BeFalse()),
+		Entry("ConstraintK8sGreaterEqual135, success w/ suffix", ConstraintK8sGreaterEqual135, semver.MustParse("v1.35.0-foo.12"), BeTrue()),
+		Entry("ConstraintK8sGreaterEqual135, failure w/ suffix", ConstraintK8sGreaterEqual135, semver.MustParse("v1.34.0-foo.12"), BeFalse()),
 	)
 
 	DescribeTable("#CompareVersions",
@@ -101,6 +91,7 @@ var _ = Describe("Version", func() {
 		Entry("handles both suffix and metadata", "1.2.3-rc1+build123", "1.2.3"),
 		Entry("returns unchanged version without 'v', suffix, or metadata", "1.2.3", "1.2.3"),
 		Entry("handles empty version string", "", ""),
+		Entry("removes Debian style suffix '~ds1'", "1.2.3~ds1", "1.2.3"),
 	)
 
 	DescribeTable("#CheckVersionMeetsConstraint",

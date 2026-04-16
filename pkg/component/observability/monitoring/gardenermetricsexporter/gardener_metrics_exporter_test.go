@@ -143,7 +143,7 @@ var _ = Describe("GardenerMetricsExporter", func() {
 					MetricRelabelConfigs: []monitoringv1.RelabelConfig{{
 						SourceLabels: []monitoringv1.LabelName{"__name__"},
 						Action:       "keep",
-						Regex:        `^(garden_projects_status|garden_users_total|garden_shoot_info|garden_shoot_condition|garden_shoot_node_info|garden_shoot_operation_states|garden_shoot_node_max_total|garden_shoot_node_min_total|garden_shoot_response_duration_milliseconds|garden_shoot_operations_total|garden_shoots_hibernation_enabled_total|garden_shoots_hibernation_schedule_total|garden_shoot_hibernated|garden_shoots_custom_addon_kubedashboard_total|garden_shoots_custom_addon_nginxingress_total|garden_shoots_custom_apiserver_auditpolicy_total|garden_shoots_custom_apiserver_basicauth_total|garden_shoots_custom_apiserver_featuregates_total|garden_shoots_custom_apiserver_oidcconfig_total|garden_shoots_custom_extensions_total|garden_shoots_custom_kcm_horizontalpodautoscale_total|garden_shoots_custom_kcm_nodecidrmasksize_total|garden_shoots_custom_kubelet_podpidlimit_total|garden_shoots_custom_network_customdomain_total|garden_shoots_custom_proxy_mode_total|garden_shoots_custom_worker_annotations_total|garden_shoots_custom_worker_multiplepools_total|garden_shoots_custom_worker_multizones_total|garden_shoots_custom_worker_taints_total|garden_seed_info|garden_seed_condition|garden_seed_capacity|garden_seed_usage)$`,
+						Regex:        `^(garden_projects_status|garden_users_total|garden_shoot_info|garden_shoot_condition|garden_shoot_node_info|garden_shoot_operation_states|garden_shoot_node_max_total|garden_shoot_node_min_total|garden_shoot_response_duration_milliseconds|garden_shoot_operations_total|garden_shoots_hibernation_enabled_total|garden_shoots_hibernation_schedule_total|garden_shoot_hibernated|garden_shoots_custom_addon_kubedashboard_total|garden_shoots_custom_addon_nginxingress_total|garden_shoots_custom_apiserver_auditpolicy_total|garden_shoots_custom_apiserver_basicauth_total|garden_shoots_custom_apiserver_featuregates_total|garden_shoots_custom_apiserver_oidcconfig_total|garden_shoots_custom_extensions_total|garden_shoots_custom_kcm_horizontalpodautoscale_total|garden_shoots_custom_kcm_nodecidrmasksize_total|garden_shoots_custom_kubelet_podpidlimit_total|garden_shoots_custom_network_customdomain_total|garden_shoots_custom_proxy_mode_total|garden_shoots_custom_worker_annotations_total|garden_shoots_custom_worker_multiplepools_total|garden_shoots_custom_worker_multizones_total|garden_shoots_custom_worker_taints_total|garden_seed_info|garden_seed_condition|garden_seed_capacity|garden_seed_usage|garden_seed_operation_states)$`,
 					}},
 				}},
 			},
@@ -171,6 +171,7 @@ var _ = Describe("GardenerMetricsExporter", func() {
 					APIGroups: []string{seedmanagementv1alpha1.GroupName},
 					Resources: []string{
 						"managedseeds",
+						"gardenlets",
 					},
 					Verbs: []string{"get", "list", "watch"},
 				},
@@ -685,6 +686,18 @@ func deployment(namespace string, testValues Values) *appsv1.Deployment {
 									},
 								},
 								PeriodSeconds: 5,
+							},
+							StartupProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path:   "/",
+										Port:   intstr.FromInt32(2718),
+										Scheme: corev1.URISchemeHTTP,
+									},
+								},
+								// Wait for 2 minutes to allow the informer cache to sync
+								PeriodSeconds:    5,
+								FailureThreshold: 24,
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{

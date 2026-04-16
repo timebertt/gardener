@@ -7,6 +7,7 @@ package v1beta1
 import (
 	"time"
 
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,9 +64,12 @@ type ShootTemplate struct {
 // ShootSpec is the specification of a Shoot.
 type ShootSpec struct {
 	// Addons contains information about enabled/disabled addons and their configuration.
+	//
+	// Deprecated: This field is deprecated. Enabling addons will be forbidden starting from Kubernetes 1.35.
 	// +optional
-	Addons *Addons `json:"addons,omitempty" protobuf:"bytes,1,opt,name=addons"`
+	Addons *Addons `json:"addons,omitempty" protobuf:"bytes,1,opt,name=addons"` // TODO(timuthy): Drop this field when support for Kubernetes 1.34 is dropped.
 	// CloudProfileName is a name of a CloudProfile object.
+	//
 	// Deprecated: This field will be removed in a future version of Gardener. Use `CloudProfile` instead.
 	// Until Kubernetes v1.33, this field is synced with the `CloudProfile` field.
 	// Starting with Kubernetes v1.34, this field is set to empty string and must not be provided anymore.
@@ -111,6 +115,7 @@ type ShootSpec struct {
 	// +optional
 	SeedName *string `json:"seedName,omitempty" protobuf:"bytes,14,opt,name=seedName"`
 	// SeedSelector is an optional selector which must match a seed's labels for the shoot to be scheduled on that seed.
+	// Once the shoot is assigned to a seed, the selector can only be changed later if the new one still matches the assigned seed.
 	// +optional
 	SeedSelector *SeedSelector `json:"seedSelector,omitempty" protobuf:"bytes,15,opt,name=seedSelector"`
 	// Resources holds a list of named resource references that can be referred to in extension configs by their names.
@@ -120,9 +125,8 @@ type ShootSpec struct {
 	// +patchMergeKey=key
 	// +patchStrategy=merge
 	// +optional
-	Tolerations []Toleration `json:"tolerations,omitempty" patchStrategy:"merge" patchMergeKey:"key" protobuf:"bytes,17,rep,name=tolerations"`
+	Tolerations []Toleration `json:"tolerations,omitempty" patchMergeKey:"key" patchStrategy:"merge" protobuf:"bytes,17,rep,name=tolerations"`
 	// ExposureClassName is the optional name of an exposure class to apply a control plane endpoint exposure strategy.
-	// This field is immutable.
 	// +optional
 	ExposureClassName *string `json:"exposureClassName,omitempty" protobuf:"bytes,18,opt,name=exposureClassName"`
 	// SystemComponents contains the settings of system components in the control or data plane of the Shoot cluster.
@@ -154,12 +158,12 @@ type ShootStatus struct {
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
-	Conditions []Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+	Conditions []Condition `json:"conditions,omitempty" patchMergeKey:"type" patchStrategy:"merge" protobuf:"bytes,1,rep,name=conditions"`
 	// Constraints represents conditions of a Shoot's current state that constraint some operations on it.
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +optional
-	Constraints []Condition `json:"constraints,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,2,rep,name=constraints"`
+	Constraints []Condition `json:"constraints,omitempty" patchMergeKey:"type" patchStrategy:"merge" protobuf:"bytes,2,rep,name=constraints"`
 	// Gardener holds information about the Gardener which last acted on the Shoot.
 	Gardener Gardener `json:"gardener" protobuf:"bytes,3,opt,name=gardener"`
 	// IsHibernated indicates whether the Shoot is currently hibernated.
@@ -197,7 +201,7 @@ type ShootStatus struct {
 	// +optional
 	// +patchMergeKey=name
 	// +patchStrategy=merge
-	AdvertisedAddresses []ShootAdvertisedAddress `json:"advertisedAddresses,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,13,rep,name=advertisedAddresses"`
+	AdvertisedAddresses []ShootAdvertisedAddress `json:"advertisedAddresses,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,13,rep,name=advertisedAddresses"`
 	// MigrationStartTime is the time when a migration to a different seed was initiated.
 	// +optional
 	MigrationStartTime *metav1.Time `json:"migrationStartTime,omitempty" protobuf:"bytes,14,opt,name=migrationStartTime"`
@@ -211,14 +215,10 @@ type ShootStatus struct {
 	// LastMaintenance holds information about the last maintenance operations on the Shoot.
 	// +optional
 	LastMaintenance *LastMaintenance `json:"lastMaintenance,omitempty" protobuf:"bytes,17,opt,name=lastMaintenance"`
-	// EncryptedResources is the list of resources in the Shoot which are currently encrypted.
-	// Secrets are encrypted by default and are not part of the list.
-	// See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
-	//
-	// Deprecated: This field is deprecated and will be removed with release v1.138.
-	// This field will be removed in favor of `status.credentials.encryptionAtRest.resources`.
-	// +optional
-	EncryptedResources []string `json:"encryptedResources,omitempty" protobuf:"bytes,18,rep,name=encryptedResources"`
+
+	// EncryptedResources is tombstoned to show why 18 is reserved protobuf tag.
+	// EncryptedResources []string `json:"encryptedResources,omitempty" protobuf:"bytes,18,rep,name=encryptedResources"`
+
 	// Networking contains information about cluster networking such as CIDRs.
 	// +optional
 	Networking *NetworkingStatus `json:"networking,omitempty" protobuf:"bytes,19,opt,name=networking"`
@@ -318,6 +318,14 @@ type EncryptionAtRest struct {
 	// See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
 	// +optional
 	Resources []string `json:"resources,omitempty" protobuf:"bytes,1,rep,name=resources"`
+	// Provider contains information about Shoot encryption provider.
+	Provider EncryptionProviderStatus `json:"provider" protobuf:"bytes,2,opt,name=provider"`
+}
+
+// EncryptionProviderStatus contains information about Shoot encryption provider.
+type EncryptionProviderStatus struct {
+	// Type is the used encryption provider type.
+	Type EncryptionProviderType `json:"type" protobuf:"bytes,1,opt,name=type"`
 }
 
 // CARotation contains information about the certificate authority credential rotation.
@@ -473,6 +481,9 @@ type ShootAdvertisedAddress struct {
 	Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
 	// The URL of the API Server. e.g. https://api.foo.bar or https://1.2.3.4
 	URL string `json:"url" protobuf:"bytes,2,opt,name=url"`
+	// Application is the name of the application this address belongs to. Used by UI clients.
+	// +optional
+	Application *string `json:"application,omitempty" protobuf:"bytes,3,opt,name=application"`
 }
 
 // Addons is a collection of configuration for specific addons which are managed by the Gardener.
@@ -541,10 +552,8 @@ type DNS struct {
 	//
 	// Deprecated: Configuring multiple DNS providers is deprecated and will be forbidden in a future release.
 	// Please use the DNS extension provider config (e.g. shoot-dns-service) for additional providers.
-	// +patchMergeKey=type
-	// +patchStrategy=merge
 	// +optional
-	Providers []DNSProvider `json:"providers,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,2,rep,name=providers"`
+	Providers []DNSProvider `json:"providers,omitempty" protobuf:"bytes,2,rep,name=providers"`
 }
 
 // TODO(timuthy): Rework the 'DNSProvider' struct and deprecated fields in the scope of https://github.com/gardener/gardener/issues/9176.
@@ -567,8 +576,11 @@ type DNSProvider struct {
 	// provider. When not specified, the Gardener will use the cloud provider credentials referenced
 	// by the Shoot and try to find respective credentials there (primary provider only). Specifying this field may override
 	// this behavior, i.e. forcing the Gardener to only look into the given secret.
+	//
+	// Deprecated: This field is deprecated and will be forbidden starting from Kubernetes 1.35. Please use `CredentialsRef` instead.
+	// Until removed, this field is synced with the `CredentialsRef` field when it refers to a secret.
 	// +optional
-	SecretName *string `json:"secretName,omitempty" protobuf:"bytes,3,opt,name=secretName"`
+	SecretName *string `json:"secretName,omitempty" protobuf:"bytes,3,opt,name=secretName"` // TODO(vpnachev): Remove this field once support for Kubernetes 1.34 is dropped.
 	// Type is the DNS provider type.
 	// +optional
 	Type *string `json:"type,omitempty" protobuf:"bytes,4,opt,name=type"`
@@ -579,6 +591,10 @@ type DNSProvider struct {
 	// Please use the DNS extension provider config (e.g. shoot-dns-service) for additional configuration.
 	// +optional
 	Zones *DNSIncludeExclude `json:"zones,omitempty" protobuf:"bytes,5,opt,name=zones"`
+	// CredentialsRef is a reference to a resource providing credentials for the DNS provider.
+	// Supported resources are Secret and WorkloadIdentity.
+	// +optional
+	CredentialsRef *autoscalingv1.CrossVersionObjectReference `json:"credentialsRef,omitempty" protobuf:"bytes,6,opt,name=credentialsRef"`
 }
 
 // DNSIncludeExclude contains information about which domains shall be included/excluded.
@@ -712,7 +728,8 @@ type ClusterAutoscaler struct {
 	// +optional
 	MaxGracefulTerminationSeconds *int32 `json:"maxGracefulTerminationSeconds,omitempty" protobuf:"varint,9,opt,name=maxGracefulTerminationSeconds"`
 	// IgnoreTaints specifies a list of taint keys to ignore in node templates when considering to scale a node group.
-	// Deprecated: Ignore taints are deprecated as of K8S 1.29 and treated as startup taints
+	//
+	// Deprecated: Ignore taints are deprecated and treated as startup taints
 	// +optional
 	IgnoreTaints []string `json:"ignoreTaints,omitempty" protobuf:"bytes,10,opt,name=ignoreTaints"`
 
@@ -779,6 +796,10 @@ const (
 	// ClusterAutoscalerExpanderRandom should be used when you don't have a particular need
 	// for the node groups to scale differently.
 	ClusterAutoscalerExpanderRandom ExpanderMode = "random"
+	// ClusterAutoscalerExpanderLeastNodes selects the node group that will use the least number of nodes after scale-up.
+	// This is useful when you want to minimize the number of nodes in the cluster and opt for fewer larger nodes.
+	// Useful when chained with the most-pods expander before it to ensure that the node group selected can fit the most pods on the fewest nodes.
+	ClusterAutoscalerExpanderLeastNodes ExpanderMode = "least-nodes"
 )
 
 // VerticalPodAutoscaler contains the configuration flags for the Kubernetes vertical pod autoscaler.
@@ -864,6 +885,10 @@ type VerticalPodAutoscaler struct {
 	// Defaults to nil (no maximum).
 	// +optional
 	MaxAllowed corev1.ResourceList `json:"maxAllowed,omitempty" protobuf:"bytes,20,rep,name=maxAllowed,casttype=k8s.io/api/core/v1.ResourceList,castkey=k8s.io/api/core/v1.ResourceName"`
+	// RecommenderUpdateWorkerCount is the number of workers used in the vpa-recommender for updating VPAs and VPACheckpoints in parallel.
+	// (default: 10)
+	// +optional
+	RecommenderUpdateWorkerCount *int64 `json:"recommenderUpdateWorkerCount,omitempty" protobuf:"varint,21,opt,name=recommenderUpdateWorkerCount"`
 }
 
 const (
@@ -904,6 +929,8 @@ var (
 	DefaultMemoryAggregationInterval = metav1.Duration{Duration: 24 * time.Hour}
 	// DefaultMemoryAggregationIntervalCount is the default value for the MemoryAggregationIntervalCount field in the VPA configuration.
 	DefaultMemoryAggregationIntervalCount = int64(8)
+	// DefaultRecommenderUpdateWorkerCount is the default value for the RecommenderUpdateWorkerCount field in the VPA configuration.
+	DefaultRecommenderUpdateWorkerCount = int64(10)
 )
 
 // KubernetesConfig contains common configuration fields for the control plane components.
@@ -925,7 +952,7 @@ type KubeAPIServerConfig struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	AdmissionPlugins []AdmissionPlugin `json:"admissionPlugins,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,2,rep,name=admissionPlugins"`
+	AdmissionPlugins []AdmissionPlugin `json:"admissionPlugins,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,2,rep,name=admissionPlugins"`
 	// APIAudiences are the identifiers of the API. The service account token authenticator will
 	// validate that tokens used against the API are bound to at least one of these audiences.
 	// Defaults to ["kubernetes"].
@@ -969,12 +996,11 @@ type KubeAPIServerConfig struct {
 	// of the API server should be allowed (flag `--anonymous-auth`).
 	// See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
 	//
-	// Deprecated: This field is deprecated and will be removed in a future release.
+	// Deprecated: This field is deprecated and will be removed after support for Kubernetes v1.34 is dropped.
+	// This field is forbidden for clusters with Kubernetes version >= 1.35.
 	// Please use anonymous authentication configuration instead.
-	// For more information see: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-authenticator-configuration
-	// TODO(marc1404): Forbid this field when the feature gate AnonymousAuthConfigurableEndpoints has graduated.
 	// +optional
-	EnableAnonymousAuthentication *bool `json:"enableAnonymousAuthentication,omitempty" protobuf:"varint,11,opt,name=enableAnonymousAuthentication"`
+	EnableAnonymousAuthentication *bool `json:"enableAnonymousAuthentication,omitempty" protobuf:"varint,11,opt,name=enableAnonymousAuthentication"` // TODO(dimityrmirchev): Drop this field when support for Kubernetes 1.34 is dropped.
 	// EventTTL controls the amount of time to retain events.
 	// Defaults to 1h.
 	// +optional
@@ -998,11 +1024,9 @@ type KubeAPIServerConfig struct {
 	// +optional
 	EncryptionConfig *EncryptionConfig `json:"encryptionConfig,omitempty" protobuf:"bytes,16,opt,name=encryptionConfig"`
 	// StructuredAuthentication contains configuration settings for structured authentication for the kube-apiserver.
-	// This field is only available for Kubernetes v1.30 or later.
 	// +optional
 	StructuredAuthentication *StructuredAuthentication `json:"structuredAuthentication,omitempty" protobuf:"bytes,17,opt,name=structuredAuthentication"`
 	// StructuredAuthorization contains configuration settings for structured authorization for the kube-apiserver.
-	// This field is only available for Kubernetes v1.30 or later.
 	// +optional
 	StructuredAuthorization *StructuredAuthorization `json:"structuredAuthorization,omitempty" protobuf:"bytes,18,opt,name=structuredAuthorization"`
 	// Autoscaling contains auto-scaling configuration options for the kube-apiserver.
@@ -1047,7 +1071,21 @@ type EncryptionConfig struct {
 	// Each item is a Kubernetes resource name in plural (resource or resource.group) that should be encrypted.
 	// Wildcards are not supported for now.
 	// See https://github.com/gardener/gardener/blob/master/docs/usage/security/etcd_encryption_config.md for more details.
-	Resources []string `json:"resources" protobuf:"bytes,1,rep,name=resources"`
+	// +optional
+	Resources []string `json:"resources,omitempty" protobuf:"bytes,1,rep,name=resources"`
+	// Provider contains information about the encryption provider.
+	Provider EncryptionProvider `json:"provider" protobuf:"bytes,2,opt,name=provider"`
+}
+
+// EncryptionProvider contains information about the encryption provider.
+type EncryptionProvider struct {
+	// Type contains the type of the encryption provider.
+	//
+	// Supported types:
+	//   - "aescbc"
+	// Defaults to aescbc.
+	// +optional
+	Type *EncryptionProviderType `json:"type,omitempty" protobuf:"bytes,1,opt,name=type"`
 }
 
 // ServiceAccountConfig is the kube-apiserver configuration for service accounts.
@@ -1125,13 +1163,10 @@ type OIDCConfig struct {
 	// If set, the OpenID server's certificate will be verified by one of the authorities in the oidc-ca-file, otherwise the host's root CA set will be used.
 	// +optional
 	CABundle *string `json:"caBundle,omitempty" protobuf:"bytes,1,opt,name=caBundle"`
-	// ClientAuthentication can optionally contain client configuration used for kubeconfig generation.
-	//
-	// Deprecated: This field has no implemented use and will be forbidden starting from Kubernetes 1.31.
-	// It's use was planned for generating OIDC kubeconfig https://github.com/gardener/gardener/issues/1433
-	// TODO(AleksandarSavchev): Drop this field after support for Kubernetes 1.30 is dropped.
-	// +optional
-	ClientAuthentication *OpenIDConnectClientAuthentication `json:"clientAuthentication,omitempty" protobuf:"bytes,2,opt,name=clientAuthentication"`
+
+	// ClientAuthentication is tombstoned to show why 2 is reserved protobuf tag.
+	// ClientAuthentication *OpenIDConnectClientAuthentication `json:"clientAuthentication,omitempty" protobuf:"bytes,2,opt,name=clientAuthentication"`
+
 	// The client ID for the OpenID Connect client, must be set.
 	// +optional
 	ClientID *string `json:"clientID,omitempty" protobuf:"bytes,3,opt,name=clientID"`
@@ -1166,7 +1201,7 @@ type OpenIDConnectClientAuthentication struct {
 	ExtraConfig map[string]string `json:"extraConfig,omitempty" protobuf:"bytes,1,rep,name=extraConfig"`
 	// The client Secret for the OpenID Connect client.
 	// +optional
-	Secret *string `json:"secret,omitempty" protobuf:"bytes,2,opt,name=secret"`
+	Secret *string `json:"secret,omitempty" protobuf:"bytes,2,opt,name=secret"` // #nosec: G117 -- Field name for API spec.
 }
 
 // AdmissionPlugin contains information about a specific admission plugin and its corresponding configuration.
@@ -1186,11 +1221,12 @@ type AdmissionPlugin struct {
 
 // WatchCacheSizes contains configuration of the API server's watch cache sizes.
 type WatchCacheSizes struct {
-	// Default configures the default watch cache size of the kube-apiserver
-	// (flag `--default-watch-cache-size`, defaults to 100).
-	// See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+	// Default is not respected anymore by kube-apiserver.
+	// The cache is sized automatically.
+	//
+	// Deprecated: This field is deprecated. Setting the default cache size will be forbidden starting from Kubernetes 1.35.
 	// +optional
-	Default *int32 `json:"default,omitempty" protobuf:"varint,1,opt,name=default"`
+	Default *int32 `json:"default,omitempty" protobuf:"varint,1,opt,name=default"` // TODO(timuthy): Drop this field when support for Kubernetes 1.35 is dropped.
 	// Resources configures the watch cache size of the kube-apiserver per resource
 	// (flag `--watch-cache-sizes`).
 	// See: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
@@ -1236,6 +1272,9 @@ type KubeControllerManagerConfig struct {
 	// NodeMonitorGracePeriod defines the grace period before an unresponsive node is marked unhealthy.
 	// +optional
 	NodeMonitorGracePeriod *metav1.Duration `json:"nodeMonitorGracePeriod,omitempty" protobuf:"bytes,5,opt,name=nodeMonitorGracePeriod"`
+	// NodeCIDRMaskSizeIPv6 defines the mask size for node cidr in cluster (default is 64). This field is immutable.
+	// +optional
+	NodeCIDRMaskSizeIPv6 *int32 `json:"nodeCIDRMaskSizeIPv6,omitempty" protobuf:"varint,6,opt,name=nodeCIDRMaskSizeIPv6"`
 }
 
 // HorizontalPodAutoscalerConfig contains horizontal pod autoscaler configuration settings for the kube-controller-manager.
@@ -1275,12 +1314,13 @@ const (
 type KubeSchedulerConfig struct {
 	KubernetesConfig `json:",inline" protobuf:"bytes,1,opt,name=kubernetesConfig"`
 
-	// KubeMaxPDVols allows to configure the `KUBE_MAX_PD_VOLS` environment variable for the kube-scheduler.
-	// Please find more information here: https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits
-	// Note that using this field is considered alpha-/experimental-level and is on your own risk. You should be aware
-	// of all the side-effects and consequences when changing it.
+	// KubeMaxPDVols is not respected anymore by kube-scheduler.
+	// The maximum number of attached volumes is configured by the CSI driver.
+	// More information can be found at https://kubernetes.io/docs/concepts/storage/storage-limits/#custom-limits.
+	//
+	// Deprecated: This field is deprecated. Using this field will be forbidden starting from Kubernetes 1.35.
 	// +optional
-	KubeMaxPDVols *string `json:"kubeMaxPDVols,omitempty" protobuf:"bytes,2,opt,name=kubeMaxPDVols"`
+	KubeMaxPDVols *string `json:"kubeMaxPDVols,omitempty" protobuf:"bytes,2,opt,name=kubeMaxPDVols"` // TODO(timuthy): Drop this field when support for Kubernetes 1.35 is dropped.
 	// Profile configures the scheduling profile for the cluster.
 	// If not specified, the used profile is "balanced" (provides the default kube-scheduler behavior).
 	// +optional
@@ -1316,16 +1356,17 @@ type KubeProxyConfig struct {
 }
 
 // ProxyMode available in Linux platform: 'userspace' (older, going to be EOL), 'iptables'
-// (newer, faster), 'ipvs' (newest, better in performance and scalability).
-// As of now only 'iptables' and 'ipvs' is supported by Gardener.
+// (newer, faster), 'nftables', and 'ipvs' (deprecated starting with Kubernetes 1.35).
+// As of now only 'iptables', 'nftables' and 'ipvs' (deprecated starting with Kubernetes 1.35) is supported by Gardener.
 // In Linux platform, if the iptables proxy is selected, regardless of how, but the system's kernel or iptables versions are
-// insufficient, this always falls back to the userspace proxy. IPVS mode will be enabled when proxy mode is set to 'ipvs',
-// and the fall back path is firstly iptables and then userspace.
+// insufficient, this always falls back to the userspace proxy.
 type ProxyMode string
 
 const (
 	// ProxyModeIPTables uses iptables as proxy implementation.
 	ProxyModeIPTables ProxyMode = "IPTables"
+	// ProxyModeNFTables uses nftables as proxy implementation.
+	ProxyModeNFTables ProxyMode = "NFTables"
 	// ProxyModeIPVS uses ipvs as proxy implementation.
 	ProxyModeIPVS ProxyMode = "IPVS"
 )
@@ -1398,14 +1439,10 @@ type KubeletConfig struct {
 	// +optional
 	// Default: cpu=80m,memory=1Gi,pid=20k
 	KubeReserved *KubeletConfigReserved `json:"kubeReserved,omitempty" protobuf:"bytes,14,opt,name=kubeReserved"`
-	// SystemReserved is the configuration for resources reserved for system processes not managed by kubernetes (e.g. journald).
-	// When updating these values, be aware that cgroup resizes may not succeed on active worker nodes. Look for the NodeAllocatableEnforced event to determine if the configuration was applied.
-	//
-	// Deprecated: Separately configuring resource reservations for system processes is deprecated in Gardener and will be forbidden starting from Kubernetes 1.31.
-	// Please merge existing resource reservations into the kubeReserved field.
-	// TODO(MichaelEischer): Drop this field after support for Kubernetes 1.30 is dropped.
-	// +optional
-	SystemReserved *KubeletConfigReserved `json:"systemReserved,omitempty" protobuf:"bytes,15,opt,name=systemReserved"`
+
+	// SystemReserved is tombstoned to show why 15 is reserved protobuf tag.
+	// SystemReserved *KubeletConfigReserved `json:"systemReserved,omitempty" protobuf:"bytes,15,opt,name=systemReserved"`
+
 	// ImageGCHighThresholdPercent describes the percent of the disk usage which triggers image garbage collection.
 	// +optional
 	// Default: 50
@@ -1545,21 +1582,17 @@ type SwapBehavior string
 
 const (
 	// NoSwap is a constant for the kubelet's swap behavior restricting Kubernetes workloads to not use swap.
-	// Only available for Kubernetes versions >= v1.30.
 	NoSwap SwapBehavior = "NoSwap"
 	// LimitedSwap is a constant for the kubelet's swap behavior limiting the amount of swap usable for Kubernetes workloads. Workloads on the node not managed by Kubernetes can still swap.
 	// - cgroupsv1 host: Kubernetes workloads can use any combination of memory and swap, up to the pod's memory limit
 	// - cgroupsv2 host: swap is managed independently from memory. Kubernetes workloads cannot use swap memory.
 	LimitedSwap SwapBehavior = "LimitedSwap"
-	// UnlimitedSwap is a constant for the kubelet's swap behavior enabling Kubernetes workloads to use as much swap memory as required, up to the system limit (not limited by pod or container memory limits).
-	// Only available for Kubernetes versions < v1.30.
-	UnlimitedSwap SwapBehavior = "UnlimitedSwap"
 )
 
 // MemorySwapConfiguration contains kubelet swap configuration
 // For more information, please see KEP: 2400-node-swap
 type MemorySwapConfiguration struct {
-	// SwapBehavior configures swap memory available to container workloads. May be one of {"LimitedSwap", "UnlimitedSwap"}
+	// SwapBehavior configures swap memory available to container workloads. May be one of {"NoSwap", "LimitedSwap"}
 	// defaults to: LimitedSwap
 	// +optional
 	SwapBehavior *SwapBehavior `json:"swapBehavior,omitempty" protobuf:"bytes,1,opt,name=swapBehavior"`
@@ -1618,6 +1651,9 @@ type Maintenance struct {
 	// an immediate roll out which is changes to the Spec.Hibernation.Enabled field.
 	// +optional
 	ConfineSpecUpdateRollout *bool `json:"confineSpecUpdateRollout,omitempty" protobuf:"varint,3,opt,name=confineSpecUpdateRollout"`
+	// AutoRotation contains information about which rotations should be automatically performed.
+	// +optional
+	AutoRotation *MaintenanceAutoRotation `json:"autoRotation,omitempty" protobuf:"bytes,4,opt,name=autoRotation"`
 }
 
 // MaintenanceAutoUpdate contains information about which constraints should be automatically updated.
@@ -1627,6 +1663,34 @@ type MaintenanceAutoUpdate struct {
 	// MachineImageVersion indicates whether the machine image version may be automatically updated (default: true).
 	// +optional
 	MachineImageVersion *bool `json:"machineImageVersion,omitempty" protobuf:"varint,2,opt,name=machineImageVersion"`
+}
+
+// MaintenanceAutoRotation contains information about which rotations should be automatically performed.
+type MaintenanceAutoRotation struct {
+	// Credentials contains information about which credentials should be automatically rotated.
+	// +optional
+	Credentials *MaintenanceCredentialsAutoRotation `json:"credentials,omitempty" protobuf:"bytes,1,opt,name=credentials"`
+}
+
+// MaintenanceCredentialsAutoRotation contains information about which credentials should be automatically rotated.
+type MaintenanceCredentialsAutoRotation struct {
+	// Observability configures the automatic rotation for the observability credentials.
+	// +optional
+	Observability *MaintenanceRotationConfig `json:"observability,omitempty" protobuf:"bytes,1,opt,name=observability"`
+	// SSHKeypair configures the automatic rotation for the ssh keypair for worker nodes.
+	// +optional
+	SSHKeypair *MaintenanceRotationConfig `json:"sshKeypair,omitempty" protobuf:"bytes,2,opt,name=sshKeypair"`
+	// ETCDEncryptionKey configures the automatic rotation for the etcd encryption key.
+	// +optional
+	ETCDEncryptionKey *MaintenanceRotationConfig `json:"etcdEncryptionKey,omitempty" protobuf:"bytes,3,opt,name=etcdEncryptionKey"`
+}
+
+// MaintenanceRotationConfig contains configuration for automatic rotation.
+type MaintenanceRotationConfig struct {
+	// RotationPeriod is the period between a completed rotation and the start of a new rotation (default: 7d).
+	// The allowed rotation period is between 30m and 90d. When set to 0, rotation is disabled.
+	// +optional
+	RotationPeriod *metav1.Duration `json:"rotationPeriod,omitempty" protobuf:"bytes,1,opt,name=rotationPeriod"`
 }
 
 // MaintenanceTimeWindow contains information about the time window for maintenance operations.
@@ -1674,7 +1738,7 @@ type Provider struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	// +optional
-	Workers []Worker `json:"workers,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,4,rep,name=workers"`
+	Workers []Worker `json:"workers,omitempty" patchMergeKey:"name" patchStrategy:"merge" protobuf:"bytes,4,rep,name=workers"`
 	// WorkersSettings contains settings for all workers.
 	// +optional
 	WorkersSettings *WorkersSettings `json:"workersSettings,omitempty" protobuf:"bytes,5,opt,name=workersSettings"`
@@ -1769,7 +1833,37 @@ type WorkerControlPlane struct {
 	// If it is not specified, then there won't be any backups taken.
 	// +optional
 	Backup *Backup `json:"backup,omitempty" protobuf:"bytes,1,opt,name=backup"`
+	// Exposure holds the exposure configuration for the shoot (either `extension` or `dns` or omitted/empty).
+	// +optional
+	Exposure *Exposure `json:"exposure,omitempty" protobuf:"bytes,2,opt,name=exposure"`
 }
+
+// Exposure holds the exposure configuration for the shoot (either `extension` or `dns` or omitted/empty).
+type Exposure struct {
+	// Extension holds the type and provider config of the exposure extension.
+	// Mutually exclusive with DNS.
+	// +optional
+	Extension *ExtensionExposure `json:"extension,omitempty" protobuf:"bytes,1,opt,name=extension"`
+	// DNS specifies that this shoot will be exposed by DNS.
+	// Mutually exclusive with Extension.
+	// +optional
+	DNS *DNSExposure `json:"dns,omitempty" protobuf:"bytes,2,opt,name=dns"`
+}
+
+// ExtensionExposure holds the type and provider config of the exposure extension.
+type ExtensionExposure struct {
+	// Type defines the type of the extension exposure.
+	// Defaults to `.spec.provider.type`
+	// +optional
+	Type *string `json:"type,omitempty" protobuf:"bytes,1,opt,name=type"`
+	// ProviderConfig holds the extension specific configuration.
+	// +optional
+	ProviderConfig *runtime.RawExtension `json:"providerConfig,omitempty" protobuf:"bytes,2,opt,name=providerConfig"`
+}
+
+// DNSExposure specifies that this shoot will be exposed by DNS.
+// There is no specific configuration currently, for future extendability.
+type DNSExposure struct{}
 
 // MachineUpdateStrategy specifies the machine update strategy for the worker pool.
 type MachineUpdateStrategy string

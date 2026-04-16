@@ -104,26 +104,36 @@ var _ = Describe("Fluent Operator", func() {
 				{
 					APIGroups: []string{""},
 					Resources: []string{"secrets", "configmaps", "serviceaccounts", "services"},
-					Verbs:     []string{"get", "list", "watch"},
+					Verbs:     []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 				{
 					APIGroups: []string{"apps"},
 					Resources: []string{"daemonsets", "statefulsets"},
-					Verbs:     []string{"get", "list", "watch"},
+					Verbs:     []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 				{
 					APIGroups: []string{"rbac.authorization.k8s.io"},
 					Resources: []string{"clusterrolebindings", "clusterroles"},
-					Verbs:     []string{"get", "list", "watch", "create"},
+					Verbs:     []string{"create", "delete", "get", "list", "patch", "update", "watch"},
 				},
 				{
 					APIGroups: []string{""},
 					Resources: []string{"pods"},
-					Verbs:     []string{"get"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{""},
+					Resources: []string{"namespaces"},
+					Verbs:     []string{"get", "list", "watch"},
 				},
 				{
 					APIGroups: []string{"extensions.gardener.cloud"},
 					Resources: []string{"clusters"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{"opentelemetry.io"},
+					Resources: []string{"opentelemetrycollectors"},
 					Verbs:     []string{"get", "list", "watch"},
 				},
 			},
@@ -255,7 +265,7 @@ var _ = Describe("Fluent Operator", func() {
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("20m"),
+									corev1.ResourceCPU:    resource.MustParse("4m"),
 									corev1.ResourceMemory: resource.MustParse("50Mi"),
 								},
 							},
@@ -300,10 +310,15 @@ var _ = Describe("Fluent Operator", func() {
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							ContainerName:       name,
+							ControlledResources: &[]corev1.ResourceName{corev1.ResourceMemory},
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("128Mi"),
 							},
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},

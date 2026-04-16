@@ -140,6 +140,13 @@ func (in *GardenletDeployment) DeepCopyInto(out *GardenletDeployment) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.Tolerations != nil {
+		in, out := &in.Tolerations, &out.Tolerations
+		*out = make([]v1.Toleration, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	return
 }
 
@@ -295,6 +302,11 @@ func (in *Image) DeepCopyInto(out *Image) {
 	if in.PullPolicy != nil {
 		in, out := &in.PullPolicy, &out.PullPolicy
 		*out = new(v1.PullPolicy)
+		**out = **in
+	}
+	if in.Ref != nil {
+		in, out := &in.Ref, &out.Ref
+		*out = new(string)
 		**out = **in
 	}
 	return

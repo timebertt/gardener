@@ -20,8 +20,8 @@ import (
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/utils/ptr"
 
+	gardencorehelper "github.com/gardener/gardener/pkg/api/core/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	gardencorehelper "github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
@@ -319,6 +319,10 @@ func (e *ExtensionValidator) validateShoot(kindToExtensions map[string][]extensi
 		}
 
 		requiredExtensions = append(requiredExtensions, requiredExtension{extensionsv1alpha1.OperatingSystemConfigResource, worker.Machine.Image.Name, fmt.Sprintf("%s operating system type", message), field.NewPath("spec", "provider", "workers").Index(i).Child("machine", "image", "name")})
+
+		if worker.ControlPlane != nil && worker.ControlPlane.Exposure != nil {
+			requiredExtensions = append(requiredExtensions, requiredExtension{extensionsv1alpha1.SelfHostedShootExposureResource, *worker.ControlPlane.Exposure.Extension.Type, fmt.Sprintf("%s self hosted shoot exposure type", message), field.NewPath("spec", "provider", "workers").Index(i).Child("controlPlane", "exposure", "type")})
+		}
 	}
 
 	if err := requiredExtensions.areRegistered(kindToExtensions, gardencorev1beta1.ClusterTypeShoot); err != nil {

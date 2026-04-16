@@ -26,6 +26,12 @@ import (
 )
 
 func (b *Botanist) determineControllerReplicas(ctx context.Context, deploymentName string, defaultReplicas int32) (int32, error) {
+	// Self-Hosted Shoots should always use defaultReplicas because they don't support
+	// hibernation and have no dependency-watchdog.
+	if b.Shoot.IsSelfHosted() {
+		return defaultReplicas, nil
+	}
+
 	isCreateOrRestoreOperation := b.Shoot.GetInfo().Status.LastOperation != nil &&
 		(b.Shoot.GetInfo().Status.LastOperation.Type == gardencorev1beta1.LastOperationTypeCreate ||
 			b.Shoot.GetInfo().Status.LastOperation.Type == gardencorev1beta1.LastOperationTypeRestore)
@@ -104,7 +110,7 @@ func (b *Botanist) HibernateControlPlane(ctx context.Context) error {
 			// Note: if custom csi-drivers are installed in the cluster (controllers running on the shoot itself), the VolumeAttachments will
 			// probably not be finalized, because the controller pods are drained like all the other pods, so we still need to cleanup
 			// VolumeAttachments of those csi-drivers.
-			if err := CleanVolumeAttachments(ctxWithTimeOut, b.ShootClientSet.Client()); err != nil {
+			if err := CleanVolumeAttachments(ctxWithTimeOut, b.Logger, b.ShootClientSet.Client()); err != nil {
 				return err
 			}
 		}

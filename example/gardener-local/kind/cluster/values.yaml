@@ -1,4 +1,4 @@
-image: kindest/node:v1.33.4@sha256:25a6018e48dfcaee478f4a59af81157a437f15e6e140bf103f85a2e7cd0cbbf2
+image: kindest/node:v1.34.2@sha256:745f8ed46d8e99517774768227fd1a0af34a6bf395aef9c7ed98fbce0e263918
 
 gardener:
   apiserverRelay:
@@ -22,11 +22,11 @@ gardener:
     deployed: false
     virtualGarden:
       listenAddress: 172.18.255.3
+  selfHostedShoot:
+    deployed: true
+    listenAddress: 172.18.255.4
 
 backupBucket:
-  deployed: true
-
-registry:
   deployed: true
 
 networking:

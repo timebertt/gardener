@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	"github.com/gardener/gardener/pkg/controller/vpaevictionrequirements"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 )
 
@@ -30,7 +30,7 @@ func AddToManager(
 	cfg gardenletconfigv1alpha1.VPAEvictionRequirementsControllerConfiguration,
 	seedCluster cluster.Cluster,
 ) error {
-	seedIsGarden, err := gardenletutils.SeedIsGarden(ctx, seedCluster.GetAPIReader())
+	seedIsGarden, err := gardenletutils.ClusterIsGarden(ctx, seedCluster.GetAPIReader())
 	if err != nil {
 		return fmt.Errorf("failed checking whether the seed is the garden cluster: %w", err)
 	}
@@ -68,7 +68,7 @@ func AddToManager(
 	// way, gardenlet will restart and not add the controller again.
 	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		wait.Until(func() {
-			seedIsGarden, err = gardenletutils.SeedIsGarden(ctx, seedCluster.GetClient())
+			seedIsGarden, err = gardenletutils.ClusterIsGarden(ctx, seedCluster.GetClient())
 			if err != nil {
 				mgr.GetLogger().Error(err, "Failed checking whether the seed cluster is the garden cluster")
 				return

@@ -10,12 +10,13 @@ import (
 	"slices"
 	"strings"
 
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 )
 
 // UpdateAdvertisedAddresses updates the shoot.status.advertisedAddresses with the list of
@@ -94,6 +95,12 @@ func (b *Botanist) ToAdvertisedAddresses(ctx context.Context) ([]gardencorev1bet
 	}
 	addresses = append(addresses, ingressItems...)
 
+	virtualServiceItems, err := b.GetVirtualServiceAdvertisedEndpoints(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get virtual service advertised endpoints: %w", err)
+	}
+	addresses = append(addresses, virtualServiceItems...)
+
 	return addresses, nil
 }
 
@@ -120,16 +127,61 @@ func (b *Botanist) GetIngressAdvertisedEndpoints(ctx context.Context) ([]gardenc
 	// [gardencorev1beta1.ShootAdvertisedAddress] is constrained to https://
 	// endpoints only.
 	for _, ingress := range ingressList.Items {
+		var application *string
+		if v, ok := ingress.Labels[v1beta1constants.LabelShootEndpointApplication]; ok && v != "" {
+			application = &v
+		}
 		for tlsIdx, tlsItem := range ingress.Spec.TLS {
 			for hostIdx, hostItem := range tlsItem.Hosts {
 				if strings.Contains(hostItem, "*") {
 					continue
 				}
 				result = append(result, gardencorev1beta1.ShootAdvertisedAddress{
-					Name: fmt.Sprintf("ingress/%s/%d/%d", ingress.Name, tlsIdx, hostIdx),
-					URL:  fmt.Sprintf("https://%s", hostItem),
+					Name:        fmt.Sprintf("ingress/%s/%d/%d", ingress.Name, tlsIdx, hostIdx),
+					URL:         fmt.Sprintf("https://%s", hostItem),
+					Application: application,
 				})
 			}
+		}
+	}
+
+	slices.SortStableFunc(result, func(a, b gardencorev1beta1.ShootAdvertisedAddress) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	return result, nil
+}
+
+// GetVirtualServiceAdvertisedEndpoints returns a list of
+// [gardencorev1beta1.ShootAdvertisedAddress] items, which have been derived
+// from any existing [istionetworkingv1beta1.VirtualService] resources labeled with
+// [v1beta1constants.LabelShootEndpointAdvertise].
+func (b *Botanist) GetVirtualServiceAdvertisedEndpoints(ctx context.Context) ([]gardencorev1beta1.ShootAdvertisedAddress, error) {
+	var (
+		result             = make([]gardencorev1beta1.ShootAdvertisedAddress, 0)
+		virtualServiceList istionetworkingv1beta1.VirtualServiceList
+	)
+
+	if err := b.SeedClientSet.Client().List(
+		ctx,
+		&virtualServiceList,
+		client.InNamespace(b.Shoot.ControlPlaneNamespace),
+		client.MatchingLabels(map[string]string{
+			v1beta1constants.LabelShootEndpointAdvertise: "true",
+		}),
+	); err != nil {
+		return nil, fmt.Errorf("failed to list virtual service resources: %w", err)
+	}
+
+	for _, virtualService := range virtualServiceList.Items {
+		for hostIdx, hostItem := range virtualService.Spec.Hosts {
+			if strings.Contains(hostItem, "*") {
+				continue
+			}
+			result = append(result, gardencorev1beta1.ShootAdvertisedAddress{
+				Name: fmt.Sprintf("virtualservice/%s/%d", virtualService.Name, hostIdx),
+				URL:  fmt.Sprintf("https://%s", hostItem),
+			})
 		}
 	}
 

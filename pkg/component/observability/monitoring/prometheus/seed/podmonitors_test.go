@@ -42,11 +42,29 @@ var _ = Describe("PodMonitors", func() {
 									TargetLabel:  "job",
 								},
 								{
-									SourceLabels: []monitoringv1.LabelName{"__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"},
-									Regex:        `([^:]+)(?::\d+)?;(\d+)`,
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `([^:]+)`,
 									Action:       "replace",
-									Replacement:  ptr.To(`$1:$2`),
-									TargetLabel:  "__address__",
+									Replacement:  ptr.To(`$1`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip_ipv4",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `(.+:.+)`,
+									Action:       "replace",
+									Replacement:  ptr.To(`[$1]`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip_ipv6_with_brackets",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{
+										"__tmp_kubernetes_pod_ip_ipv4",
+										"__tmp_kubernetes_pod_ip_ipv6_with_brackets",
+										"__meta_kubernetes_pod_annotation_prometheus_io_port",
+									},
+									Regex:       `(.*);(.*);(.+)`,
+									Action:      "replace",
+									Replacement: ptr.To(`$1$2:$3`),
+									TargetLabel: "__address__",
 								},
 								{
 									Action: "labelmap",
@@ -62,8 +80,10 @@ var _ = Describe("PodMonitors", func() {
 					},
 					Spec: monitoringv1.PodMonitorSpec{
 						PodMetricsEndpoints: []monitoringv1.PodMetricsEndpoint{{
-							Scheme:     "https",
-							HTTPConfig: monitoringv1.HTTPConfig{TLSConfig: &monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+							Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+							HTTPConfigWithProxy: monitoringv1.HTTPConfigWithProxy{
+								HTTPConfig: monitoringv1.HTTPConfig{TLSConfig: &monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+							},
 							RelabelConfigs: []monitoringv1.RelabelConfig{
 								{
 									SourceLabels: []monitoringv1.LabelName{
@@ -86,10 +106,24 @@ var _ = Describe("PodMonitors", func() {
 									TargetLabel:  "__scheme__",
 								},
 								{
-									SourceLabels: []monitoringv1.LabelName{"__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"},
-									Regex:        `([^:]+)(?::\d+)?;(\d+)`,
-									Replacement:  ptr.To(`$1:$2`),
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `(.+:.+:.+)`,
 									Action:       "replace",
+									Replacement:  ptr.To(`[$1]`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_ip"},
+									Regex:        `([^:]+)`,
+									Action:       "replace",
+									Replacement:  ptr.To(`$1`),
+									TargetLabel:  "__tmp_kubernetes_pod_ip",
+								},
+								{
+									SourceLabels: []monitoringv1.LabelName{"__tmp_kubernetes_pod_ip", "__meta_kubernetes_pod_annotation_prometheus_io_port"},
+									Regex:        `(.+);(.+)`,
+									Action:       "replace",
+									Replacement:  ptr.To(`$1:$2`),
 									TargetLabel:  "__address__",
 								},
 								{

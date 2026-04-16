@@ -15,6 +15,7 @@ import (
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +35,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/gardener/gardener/pkg/api/indexer"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -42,12 +44,11 @@ import (
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	fakeclientmap "github.com/gardener/gardener/pkg/client/kubernetes/clientmap/fake"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
-	"github.com/gardener/gardener/pkg/component/etcd/etcd"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/gardenlet/controller/shoot/care"
 	"github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils"
+	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	gardenerenvtest "github.com/gardener/gardener/test/envtest"
 	"github.com/gardener/gardener/test/utils/namespacefinalizer"
@@ -72,13 +73,16 @@ var (
 	shootClientMap clientmap.ClientMap
 	mgrClient      client.Client
 
-	project       *gardencorev1beta1.Project
-	seed          *gardencorev1beta1.Seed
-	testNamespace *corev1.Namespace
-	testRunID     string
-	projectName   string
-	seedName      string
-	shootName     string
+	project               *gardencorev1beta1.Project
+	seed                  *gardencorev1beta1.Seed
+	testNamespace         *corev1.Namespace
+	gardenNamespace       *corev1.Namespace
+	selfHostedCPNamespace *corev1.Namespace
+	testRunID             string
+	projectName           string
+	selfHostedProjectName string
+	seedName              string
+	shootName             string
 )
 
 var _ = BeforeSuite(func() {
@@ -91,9 +95,11 @@ var _ = BeforeSuite(func() {
 	By("Fetch Etcd CRD")
 	k8sVersion, err := gardenerenvtest.GetK8SVersion()
 	Expect(err).NotTo(HaveOccurred())
-	etcdCRDGetter, err := etcd.NewCRDGetter(k8sVersion)
+	etcdCRDs, err := druidcorecrds.GetAll(k8sVersion.String())
 	Expect(err).NotTo(HaveOccurred())
-	etcdCRD, err := etcdCRDGetter.GetCRD(druidcorecrds.ResourceNameEtcd)
+	etcdCRDYAML, ok := etcdCRDs[druidcorecrds.ResourceNameEtcd]
+	Expect(ok).To(BeTrue())
+	etcdCRD, err := kubernetesutils.DecodeCRD(etcdCRDYAML)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("Start test environment")
@@ -112,6 +118,7 @@ var _ = BeforeSuite(func() {
 					filepath.Join("..", "..", "..", "..", "..", "example", "seed-crds", "10-crd-extensions.gardener.cloud_networks.yaml"),
 					filepath.Join("..", "..", "..", "..", "..", "example", "seed-crds", "10-crd-extensions.gardener.cloud_operatingsystemconfigs.yaml"),
 					filepath.Join("..", "..", "..", "..", "..", "example", "seed-crds", "10-crd-extensions.gardener.cloud_workers.yaml"),
+					filepath.Join("..", "..", "..", "..", "..", "example", "seed-crds", "10-crd-monitoring.coreos.com_prometheuses.yaml"),
 				},
 				CRDs: []*apiextensionsv1.CustomResourceDefinition{etcdCRD},
 			},
@@ -136,6 +143,7 @@ var _ = BeforeSuite(func() {
 		extensionsv1alpha1.AddToScheme,
 		resourcesv1alpha1.AddToScheme,
 		druidcorev1alpha1.AddToScheme,
+		monitoringv1.AddToScheme,
 	)
 	testScheme := runtime.NewScheme()
 	Expect(testSchemeBuilder.AddToScheme(testScheme)).To(Succeed())
@@ -146,6 +154,7 @@ var _ = BeforeSuite(func() {
 
 	testRunID = utils.ComputeSHA256Hex([]byte(uuid.NewUUID()))[:8]
 	projectName = "p-" + testRunID
+	selfHostedProjectName = "p-" + utils.ComputeSHA256Hex([]byte(uuid.NewUUID()))[:8]
 	seedName = "seed-" + testRunID
 	shootName = "shoot-" + testRunID
 
@@ -167,6 +176,69 @@ var _ = BeforeSuite(func() {
 		Expect(testClient.Delete(ctx, testNamespace)).To(Or(Succeed(), BeNotFoundError()))
 	})
 
+	// Self-hosted shoots must be in the "garden" namespace.
+	// The namespace must also carry a ProjectName label so the operation builder can resolve it to a Project.
+	By("Create garden Namespace")
+	gardenNamespace = &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: v1beta1constants.GardenNamespace,
+			Labels: map[string]string{
+				testID:                       testRunID,
+				v1beta1constants.ProjectName: selfHostedProjectName,
+			},
+		},
+	}
+	// The garden namespace may already exist in the envtest environment; ignore AlreadyExists.
+	if err := testClient.Create(ctx, gardenNamespace); client.IgnoreAlreadyExists(err) != nil {
+		Expect(err).NotTo(HaveOccurred())
+	}
+	// Ensure the labels are present for cache selector and project lookup.
+	Eventually(func(g Gomega) {
+		g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(gardenNamespace), gardenNamespace)).To(Succeed())
+		patch := client.MergeFrom(gardenNamespace.DeepCopy())
+		if gardenNamespace.Labels == nil {
+			gardenNamespace.Labels = map[string]string{}
+		}
+		gardenNamespace.Labels[testID] = testRunID
+		gardenNamespace.Labels[v1beta1constants.ProjectName] = selfHostedProjectName
+		g.Expect(testClient.Patch(ctx, gardenNamespace, patch)).To(Succeed())
+	}).Should(Succeed())
+
+	gardenNamespaceName := gardenNamespace.Name
+	By("Create self-hosted Project")
+	selfHostedProject := &gardencorev1beta1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   selfHostedProjectName,
+			Labels: map[string]string{testID: testRunID},
+		},
+		Spec: gardencorev1beta1.ProjectSpec{
+			Namespace: &gardenNamespaceName,
+		},
+	}
+	Expect(testClient.Create(ctx, selfHostedProject)).To(Succeed())
+	log.Info("Created self-hosted Project for test", "project", selfHostedProject.Name)
+
+	DeferCleanup(func() {
+		By("Delete self-hosted Project")
+		Expect(client.IgnoreNotFound(testClient.Delete(ctx, selfHostedProject))).To(Succeed())
+	})
+
+	selfHostedCPNamespaceName := "cp-" + testRunID
+	By("Create self-hosted control plane Namespace")
+	selfHostedCPNamespace = &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   selfHostedCPNamespaceName,
+			Labels: map[string]string{testID: testRunID},
+		},
+	}
+	Expect(testClient.Create(ctx, selfHostedCPNamespace)).To(Succeed())
+	log.Info("Created self-hosted control plane Namespace for test", "namespaceName", selfHostedCPNamespace.Name)
+
+	DeferCleanup(func() {
+		By("Delete self-hosted control plane Namespace")
+		Expect(testClient.Delete(ctx, selfHostedCPNamespace)).To(Or(Succeed(), BeNotFoundError()))
+	})
+
 	project = &gardencorev1beta1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   projectName,
@@ -184,6 +256,24 @@ var _ = BeforeSuite(func() {
 	DeferCleanup(func() {
 		By("Delete Project")
 		Expect(client.IgnoreNotFound(testClient.Delete(ctx, project))).To(Succeed())
+	})
+
+	By("Create Internal Domain Secret")
+	internalDomainSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "internal-domain-secret",
+			Namespace: testNamespace.Name,
+			Labels: map[string]string{
+				testID: testRunID,
+			},
+		},
+	}
+	Expect(testClient.Create(ctx, internalDomainSecret)).To(Succeed())
+	log.Info("Created Internal Domain Secret for test", "secret", client.ObjectKeyFromObject(internalDomainSecret))
+
+	DeferCleanup(func() {
+		By("Delete Internal Domain Secret")
+		Expect(client.IgnoreNotFound(testClient.Delete(ctx, internalDomainSecret))).To(Or(Succeed(), BeNotFoundError()))
 	})
 
 	seed = &gardencorev1beta1.Seed{
@@ -206,9 +296,21 @@ var _ = BeforeSuite(func() {
 			DNS: gardencorev1beta1.SeedDNS{
 				Provider: &gardencorev1beta1.SeedDNSProvider{
 					Type: "providerType",
-					SecretRef: corev1.SecretReference{
-						Name:      "some-secret",
-						Namespace: "some-namespace",
+					CredentialsRef: &corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "some-secret",
+						Namespace:  "some-namespace",
+					},
+				},
+				Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+					Type:   "providerType",
+					Domain: "internal.example.com",
+					CredentialsRef: corev1.ObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       "internal-domain-secret",
+						Namespace:  testNamespace.Name,
 					},
 				},
 			},
@@ -249,6 +351,7 @@ var _ = BeforeSuite(func() {
 	By("Setup field indexes")
 	Expect(indexer.AddManagedSeedShootName(ctx, mgr.GetFieldIndexer())).To(Succeed())
 	Expect(indexer.AddControllerInstallationSeedRefName(ctx, mgr.GetFieldIndexer())).To(Succeed())
+	Expect(indexer.AddControllerInstallationShootRefName(ctx, mgr.GetFieldIndexer())).To(Succeed())
 
 	By("Create test clientset")
 	testClientSet, err = kubernetes.NewWithConfig(
@@ -259,7 +362,10 @@ var _ = BeforeSuite(func() {
 	)
 	Expect(err).NotTo(HaveOccurred())
 
-	shootClientMap = fakeclientmap.NewClientMapBuilder().WithClientSetForKey(keys.ForShoot(&gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: testNamespace.Name}}), testClientSet).Build()
+	shootClientMap = fakeclientmap.NewClientMapBuilder().
+		WithClientSetForKey(keys.ForShoot(&gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: testNamespace.Name}}), testClientSet).
+		WithClientSetForKey(keys.ForShoot(&gardencorev1beta1.Shoot{ObjectMeta: metav1.ObjectMeta{Name: shootName, Namespace: v1beta1constants.GardenNamespace}}), testClientSet).
+		Build()
 	fakeClock = testclock.NewFakeClock(time.Now().Round(time.Second))
 
 	By("Register controller")

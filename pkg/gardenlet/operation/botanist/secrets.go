@@ -13,20 +13,18 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
-	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	shootstate "github.com/gardener/gardener/pkg/utils/gardener/shootstate"
 	"github.com/gardener/gardener/pkg/utils/gardener/tokenrequest"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	secretsutils "github.com/gardener/gardener/pkg/utils/secrets"
@@ -119,33 +117,51 @@ func (b *Botanist) restoreSecretsFromShootState(ctx context.Context) error {
 				Labels:    entry.Labels,
 			}
 
-			data := make(map[string][]byte)
-			if err := json.Unmarshal(entry.Data.Raw, &data); err != nil {
-				return err
-			}
-
-			var secret *corev1.Secret
-			if objectMeta.Labels[secretsmanager.LabelKeyManagedBy] == secretsmanager.LabelValueSecretsManager {
-				secret = secretsmanager.Secret(objectMeta, data)
-			} else {
-				// TODO(plkokanov): Add ability to also restore the secret's immutability and type from the `ShootState`.
-				// For secrets that have the `managed-by: secrets-manager` label this information is inferred from the
-				// secret data and handled by the `secretsmanager.Secret(objectMeta, data)` function above.
-				// Currently only opaque secrets that do not have the `managed-by: secrets-manager` are expected to be persisted and restored.
-				// For more details, see https://github.com/gardener/gardener/issues/13262.
-				// Note that the e2e and testmachinery tests, check that the restored type and immutability matches the original.
-				secret = &corev1.Secret{
-					ObjectMeta: objectMeta,
-					Data:       data,
-					Type:       corev1.SecretTypeOpaque,
-				}
-			}
-
-			return client.IgnoreAlreadyExists(b.SeedClientSet.Client().Create(ctx, secret))
+			return restoreSecretFromPersistedData(ctx, b.SeedClientSet.Client(), objectMeta, entry.Data.Raw)
 		})
 	}
 
 	return flow.Parallel(fns...)(ctx)
+}
+
+// restoreSecretFromPersistedData restores a Kubernetes Secret from persisted GardenerResourceData.
+// It handles both formats (with Immutable and Type fields) and (plain map[string][]byte)
+func restoreSecretFromPersistedData(ctx context.Context, seedClient client.Client, objectMeta metav1.ObjectMeta, rawData []byte) error {
+	var newSecretInfo shootstate.SecretState
+
+	var (
+		secretData map[string][]byte
+		immutable  *bool
+		secretType = corev1.SecretTypeOpaque
+	)
+
+	if err := json.Unmarshal(rawData, &newSecretInfo); err != nil || newSecretInfo.Data == nil {
+		// TODO(tobschli): Remove this fallback after v1.143 has been released, as ShootStates will be reconciled and use the new format.
+		// plain map[string][]byte
+		if err := json.Unmarshal(rawData, &secretData); err != nil {
+			return fmt.Errorf("failed unmarshalling secret data for secret %s: neither new nor old format matched: %w", objectMeta.Name, err)
+		}
+
+		if objectMeta.Labels[secretsmanager.LabelKeyManagedBy] == secretsmanager.LabelValueSecretsManager {
+			secret := secretsmanager.Secret(objectMeta, secretData)
+			return client.IgnoreAlreadyExists(seedClient.Create(ctx, secret))
+		}
+	} else {
+		secretData = newSecretInfo.Data
+		immutable = newSecretInfo.Immutable
+		if newSecretInfo.Type != "" {
+			secretType = newSecretInfo.Type
+		}
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: objectMeta,
+		Type:       secretType,
+		Data:       secretData,
+		Immutable:  immutable,
+	}
+
+	return client.IgnoreAlreadyExists(seedClient.Create(ctx, secret))
 }
 
 func caCertConfigurations(isWorkerless, isSelfHosted bool) []secretsutils.ConfigInterface {
@@ -159,6 +175,7 @@ func caCertConfigurations(isWorkerless, isSelfHosted bool) []secretsutils.Config
 		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAETCD, CommonName: "etcd", CertType: secretsutils.CACert},
 		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAETCDPeer, CommonName: "etcd-peer", CertType: secretsutils.CACert},
 		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAFrontProxy, CommonName: "front-proxy", CertType: secretsutils.CACert},
+		&secretsutils.CertificateSecretConfig{Name: v1beta1constants.SecretNameCAIstioBasicAuthServer, CommonName: "istio-basic-auth-server", CertType: secretsutils.CACert},
 	}
 
 	if !isWorkerless {
@@ -522,51 +539,35 @@ func (b *Botanist) reconcileWildcardIngressCertificate(ctx context.Context) erro
 // DeployCloudProviderSecret creates or updates the cloud provider secret in the Shoot namespace
 // in the Seed cluster.
 func (b *Botanist) DeployCloudProviderSecret(ctx context.Context) error {
+	var data map[string][]byte
+
 	switch credentials := b.Shoot.Credentials.(type) {
 	case *securityv1alpha1.WorkloadIdentity:
-		shootInfo := b.Shoot.GetInfo()
-		gvk, err := apiutil.GVKForObject(shootInfo, kubernetes.GardenScheme)
-		if err != nil {
-			return err
-		}
-		shootMeta := securityv1alpha1.ContextObject{
-			APIVersion: gvk.GroupVersion().String(),
-			Kind:       gvk.Kind,
-			Namespace:  ptr.To(shootInfo.Namespace),
-			Name:       shootInfo.Name,
-			UID:        shootInfo.UID,
-		}
-
-		secret, err := workloadidentity.NewSecret(
-			v1beta1constants.SecretNameCloudProvider,
-			b.Shoot.ControlPlaneNamespace,
-			workloadidentity.For(credentials.Name, credentials.Namespace, credentials.Spec.TargetSystem.Type),
-			workloadidentity.WithProviderConfig(credentials.Spec.TargetSystem.ProviderConfig),
-			workloadidentity.WithContextObject(shootMeta),
-			workloadidentity.WithLabels(map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider}),
+		return workloadidentity.Deploy(
+			ctx, b.SeedClientSet.Client(), credentials, v1beta1constants.SecretNameCloudProvider, b.Shoot.ControlPlaneNamespace,
+			nil, map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider},
+			b.Shoot.GetInfo(),
 		)
-		if err != nil {
-			return err
-		}
-		return secret.Reconcile(ctx, b.SeedClientSet.Client())
+	case *gardencorev1beta1.InternalSecret:
+		data = credentials.Data
 	case *corev1.Secret:
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      v1beta1constants.SecretNameCloudProvider,
-				Namespace: b.Shoot.ControlPlaneNamespace,
-			},
-		}
-		_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.SeedClientSet.Client(), secret, func() error {
-			secret.Annotations = map[string]string{}
-			secret.Labels = map[string]string{
-				v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider,
-			}
-			secret.Type = corev1.SecretTypeOpaque
-			secret.Data = credentials.Data
-			return nil
-		})
-		return err
+		data = credentials.Data
 	default:
-		return fmt.Errorf("unexpected type %T, should be either Secret or WorkloadIdentity", credentials)
+		return fmt.Errorf("unexpected type %T, should be either Secret, InternalSecret, or WorkloadIdentity", credentials)
 	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      v1beta1constants.SecretNameCloudProvider,
+			Namespace: b.Shoot.ControlPlaneNamespace,
+		},
+	}
+	_, err := controllerutils.GetAndCreateOrMergePatch(ctx, b.SeedClientSet.Client(), secret, func() error {
+		secret.Annotations = map[string]string{}
+		secret.Labels = map[string]string{v1beta1constants.GardenerPurpose: v1beta1constants.SecretNameCloudProvider}
+		secret.Type = corev1.SecretTypeOpaque
+		secret.Data = data
+		return nil
+	})
+	return err
 }

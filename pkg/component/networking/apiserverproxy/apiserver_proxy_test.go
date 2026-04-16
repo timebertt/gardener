@@ -96,7 +96,7 @@ var _ = Describe("APIServerProxy", func() {
 			},
 			Spec: monitoringv1alpha1.ScrapeConfigSpec{
 				HonorLabels: ptr.To(false),
-				Scheme:      ptr.To("HTTPS"),
+				Scheme:      ptr.To(monitoringv1.SchemeHTTPS),
 				TLSConfig:   &monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)},
 				Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-shoot"},
@@ -272,7 +272,7 @@ var _ = Describe("APIServerProxy", func() {
 
 		Context("IPv4", func() {
 			It("should deploy the managed resource successfully", func() {
-				testFunc("cb9301ef")
+				testFunc("00d55bbf") // hash of envoy config with V4_ONLY DNS + port 8443 (default: UseUnifiedHTTPProxyPort=true)
 			})
 		})
 
@@ -283,7 +283,7 @@ var _ = Describe("APIServerProxy", func() {
 			})
 
 			It("should deploy the managed resource successfully", func() {
-				testFunc("5a33f6dd")
+				testFunc("25408ef2") // hash of envoy config with V6_ONLY DNS + port 8443 (default: UseUnifiedHTTPProxyPort=true)
 			})
 		})
 
@@ -294,7 +294,7 @@ var _ = Describe("APIServerProxy", func() {
 			})
 
 			It("should deploy the managed resource successfully", func() {
-				testFunc("9e555b69")
+				testFunc("3b9cdaf4") // hash of envoy config with IstioTLSTermination + port 8443 (default: UseUnifiedHTTPProxyPort=true)
 			})
 		})
 	})
@@ -560,7 +560,7 @@ static_resources:
             address:
               socket_address:
                 address: api.internal.local.
-                port_value: 8132
+                port_value: 8443
     upstream_connection_options:
       tcp_keepalive:
         keepalive_time: 7200
@@ -629,14 +629,11 @@ func getDaemonSet(hash string, advertiseIPAddress string) *appsv1.DaemonSet {
 					AutomountServiceAccountToken: func(b bool) *bool { return &b }(false),
 					Containers: []corev1.Container{
 						{
-							Args:            []string{"--ip-address=" + advertiseIPAddress, "--interface=lo"},
+							Args:            []string{"--ip-address=" + advertiseIPAddress, "--interface=apiserver-proxy"},
 							Image:           "sidecar-image:some-tag",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Name:            "sidecar",
 							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceMemory: resource.MustParse("90Mi"),
-								},
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("5m"),
 									corev1.ResourceMemory: resource.MustParse("15Mi"),
@@ -687,9 +684,6 @@ func getDaemonSet(hash string, advertiseIPAddress string) *appsv1.DaemonSet {
 								TimeoutSeconds:      1,
 							},
 							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceMemory: resource.MustParse("1Gi"),
-								},
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("5m"),
 									corev1.ResourceMemory: resource.MustParse("30Mi"),
@@ -717,14 +711,11 @@ func getDaemonSet(hash string, advertiseIPAddress string) *appsv1.DaemonSet {
 					HostNetwork: true,
 					InitContainers: []corev1.Container{
 						{
-							Args:            []string{"--ip-address=" + advertiseIPAddress, "--daemon=false", "--interface=lo"},
+							Args:            []string{"--ip-address=" + advertiseIPAddress, "--daemon=false", "--interface=apiserver-proxy"},
 							Image:           "sidecar-image:some-tag",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Name:            "setup",
 							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceMemory: resource.MustParse("200Mi"),
-								},
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("20m"),
 									corev1.ResourceMemory: resource.MustParse("20Mi"),

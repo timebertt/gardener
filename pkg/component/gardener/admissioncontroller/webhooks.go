@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/admissioncontroller/apis/config/v1alpha1"
+	admissioncontrollerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/admissioncontroller/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	operationsv1alpha1 "github.com/gardener/gardener/pkg/apis/operations/v1alpha1"
@@ -379,9 +379,17 @@ func (a *gardenerAdmissionController) validatingWebhookConfiguration(caSecret *c
 					{
 						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
 						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{"v1"},
+							Resources:   []string{"configmaps", "secrets"},
+						},
+					},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+						Rule: admissionregistrationv1.Rule{
 							APIGroups:   []string{gardencorev1beta1.GroupName},
 							APIVersions: []string{gardencorev1beta1.SchemeGroupVersion.Version},
-							Resources:   []string{"projects", "shoots"},
+							Resources:   []string{"backupbuckets", "backupentries", "projects", "shoots"},
 						},
 					},
 				},
@@ -416,14 +424,24 @@ func (a *gardenerAdmissionController) mutatingWebhookConfiguration(caSecret *cor
 				Name:                    "sync-provider-secret-labels.gardener.cloud",
 				AdmissionReviewVersions: []string{"v1", "v1beta1"},
 				TimeoutSeconds:          ptr.To[int32](10),
-				Rules: []admissionregistrationv1.RuleWithOperations{{
-					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-					Rule: admissionregistrationv1.Rule{
-						APIGroups:   []string{corev1.GroupName},
-						APIVersions: []string{"v1"},
-						Resources:   []string{"secrets"},
+				Rules: []admissionregistrationv1.RuleWithOperations{
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{corev1.GroupName},
+							APIVersions: []string{corev1.SchemeGroupVersion.Version},
+							Resources:   []string{"secrets"},
+						},
 					},
-				}},
+					{
+						Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+						Rule: admissionregistrationv1.Rule{
+							APIGroups:   []string{gardencorev1beta1.GroupName},
+							APIVersions: []string{gardencorev1beta1.SchemeGroupVersion.Version},
+							Resources:   []string{"internalsecrets"},
+						},
+					},
+				},
 				FailurePolicy: &failurePolicyFail,
 				NamespaceSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{

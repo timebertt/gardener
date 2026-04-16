@@ -13,16 +13,20 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/etcd/etcd"
 	"github.com/gardener/gardener/pkg/component/extensions/dnsrecord"
 	"github.com/gardener/gardener/pkg/component/garden/system/virtual"
 	gardeneraccess "github.com/gardener/gardener/pkg/component/gardener/access"
@@ -37,6 +41,7 @@ import (
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
@@ -72,6 +77,14 @@ func (r *Reconciler) delete(
 		return reconcile.Result{}, err
 	}
 
+	// When the runtime cluster is a self-hosted shoot, etcd-druid and the runtime gardener-resource-manager are also
+	// serving the shoot's control plane. They must not be destroyed during Garden deletion — the gardenlet will continue
+	// managing them.
+	runtimeClusterIsSelfHostedShoot, err := gardenletutils.SeedIsSelfHostedShoot(ctx, r.RuntimeClientSet.Client())
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
 	const (
 		defaultTimeout  = 30 * time.Second
 		defaultInterval = 5 * time.Second
@@ -80,9 +93,14 @@ func (r *Reconciler) delete(
 	var (
 		g = flow.NewGraph("Garden deletion")
 
-		_ = g.Add(flow.Task{
+		deletePlutono = g.Add(flow.Task{
 			Name: "Destroying Plutono",
 			Fn:   component.OpDestroyAndWait(c.plutono).Destroy,
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Destroying istio-basic-auth-server",
+			Fn:           component.OpDestroyAndWait(c.istioBasicAuthServer).Destroy,
+			Dependencies: flow.NewTaskIDs(deletePlutono),
 		})
 		_ = g.Add(flow.Task{
 			Name: "Destroying Gardener Metrics Exporter",
@@ -105,6 +123,10 @@ func (r *Reconciler) delete(
 			Fn: func(ctx context.Context) error {
 				return r.destroyGardenPrometheus(ctx, c.prometheusGarden)
 			},
+		})
+		destroyOpenTelemetryCollector = g.Add(flow.Task{
+			Name: "Destroying OpenTelemetry Collector",
+			Fn:   component.OpDestroyAndWait(c.openTelemetryCollector).Destroy,
 		})
 		destroyBlackboxExporter = g.Add(flow.Task{
 			Name: "Destroying blackbox-exporter",
@@ -296,6 +318,7 @@ func (r *Reconciler) delete(
 		destroyEtcdDruid = g.Add(flow.Task{
 			Name:         "Destroying ETCD Druid",
 			Fn:           component.OpDestroyAndWait(c.etcdDruid).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(syncPointVirtualGardenControlPlaneDestroyed),
 		})
 		destroyIstio = g.Add(flow.Task{
@@ -321,7 +344,7 @@ func (r *Reconciler) delete(
 		destroyOpenTelemetryOperator = g.Add(flow.Task{
 			Name:         "Destroying OpenTelemetry Operator",
 			Fn:           component.OpDestroyAndWait(c.openTelemetryOperator).Destroy,
-			Dependencies: flow.NewTaskIDs(syncPointVirtualGardenControlPlaneDestroyed),
+			Dependencies: flow.NewTaskIDs(destroyOpenTelemetryCollector, syncPointVirtualGardenControlPlaneDestroyed),
 		})
 		destroyFluentOperatorCustomResources = g.Add(flow.Task{
 			Name:         "Destroying fluent-operator custom resources",
@@ -343,12 +366,28 @@ func (r *Reconciler) delete(
 			Fn:           component.OpDestroyAndWait(c.vali).Destroy,
 			Dependencies: flow.NewTaskIDs(destroyFluentOperatorCustomResources),
 		})
+		destroyVictoriaLogs = g.Add(flow.Task{
+			Name:         "Destroying VictoriaLogs",
+			Fn:           component.OpDestroyAndWait(c.victoriaLogs).Destroy,
+			Dependencies: flow.NewTaskIDs(destroyFluentOperatorCustomResources),
+		})
 		destroyPersesOperator = g.Add(flow.Task{
 			Name: "Destroying perses-operator",
 			Fn:   component.OpDestroyAndWait(c.persesOperator).Destroy,
 		})
+		destroyVictoriaOperator = g.Add(flow.Task{
+			Name:         "Destroying victoria-operator",
+			Fn:           component.OpDestroyAndWait(c.victoriaOperator).Destroy,
+			Dependencies: flow.NewTaskIDs(destroyVictoriaLogs),
+		})
+		resetExtensionRequiredVirtualCondition = g.Add(flow.Task{
+			Name:         "Resetting RequiredVirtual condition on extensions since virtual cluster has been destroyed",
+			Fn:           r.resetExtensionRequiredVirtualCondition,
+			Dependencies: flow.NewTaskIDs(syncPointVirtualGardenControlPlaneDestroyed),
+		})
 		syncPointCleanedUp = flow.NewTaskIDs(
 			waitUntilExtensionResourcesDeleted,
+			resetExtensionRequiredVirtualCondition,
 			destroyDNSRecords,
 			destroyMainETCDBackupBucket,
 			destroyEtcdDruid,
@@ -364,6 +403,8 @@ func (r *Reconciler) delete(
 			destroyBlackboxExporter,
 			destroyGardenerOperatorVPA,
 			destroyPersesOperator,
+			destroyVictoriaOperator,
+			destroyVictoriaLogs,
 		)
 
 		destroyRuntimeSystemResources = g.Add(flow.Task{
@@ -373,32 +414,37 @@ func (r *Reconciler) delete(
 		})
 		ensureNoManagedResourcesExistAnymore = g.Add(flow.Task{
 			Name:         "Ensuring no ManagedResources exist anymore",
-			Fn:           r.checkIfManagedResourcesExist(),
+			Fn:           r.checkIfManagedResourcesExist(runtimeClusterIsSelfHostedShoot),
 			Dependencies: flow.NewTaskIDs(destroyRuntimeSystemResources),
 		})
 		destroyGardenerResourceManager = g.Add(flow.Task{
 			Name:         "Destroying and waiting for gardener-resource-manager to be deleted",
 			Fn:           component.OpWait(c.gardenerResourceManager).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(ensureNoManagedResourcesExistAnymore),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for extensions",
 			Fn:           component.OpWait(c.extensionCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for prometheus-operator",
 			Fn:           component.OpWait(c.prometheusCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for opentelemetry-operator",
 			Fn:           component.OpWait(c.openTelemetryCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for fluent-operator",
 			Fn:           component.OpWait(c.fluentCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
@@ -409,17 +455,25 @@ func (r *Reconciler) delete(
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for VPA",
 			Fn:           component.OpWait(c.vpaCRD).Destroy,
-			SkipIf:       !vpaEnabled(garden.Spec.RuntimeCluster.Settings),
+			SkipIf:       !vpaEnabled(garden.Spec.RuntimeCluster.Settings) || runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying ETCD-related custom resource definitions",
 			Fn:           component.OpWait(c.etcdCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Destroying custom resource definition for perses-operator",
 			Fn:           component.OpWait(c.persesCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
+			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Destroying custom resource definition for victoria-operator",
+			Fn:           component.OpWait(c.victoriaCRD).Destroy,
+			SkipIf:       runtimeClusterIsSelfHostedShoot,
 			Dependencies: flow.NewTaskIDs(destroyGardenerResourceManager),
 		})
 		_ = g.Add(flow.Task{
@@ -463,7 +517,11 @@ func (r *Reconciler) checkIfVirtualGardenManagedResourcesAreGone(excludedNames .
 			ctx,
 			r.RuntimeClientSet.Client(),
 			nil,
-			append(excludedNames, resourcemanager.ManagedResourceName)...,
+			append(excludedNames, resourcemanager.ManagedResourceName),
+			// When the runtime cluster is a self-hosted shoot, kube-system contains classless ManagedResources for the
+			// shoot's control plane components (managed by gardenlet). These must be excluded to prevent blocking the
+			// Garden deletion flow.
+			[]string{metav1.NamespaceSystem},
 		)
 		if err != nil {
 			return err
@@ -480,12 +538,26 @@ func (r *Reconciler) checkIfVirtualGardenManagedResourcesAreGone(excludedNames .
 	}
 }
 
-func (r *Reconciler) checkIfManagedResourcesExist() func(context.Context) error {
+func (r *Reconciler) checkIfManagedResourcesExist(runtimeClusterIsSelfHostedShoot bool) func(context.Context) error {
 	return func(ctx context.Context) error {
+		var excludeNames, excludeNamespaces []string
+		if runtimeClusterIsSelfHostedShoot {
+			// When the runtime cluster is a self-hosted shoot, kube-system contains seed-class ManagedResources for the
+			// shoot's control plane components (managed by gardenlet). These must be excluded to prevent blocking the
+			// Garden deletion flow.
+			excludeNamespaces = append(excludeNamespaces, metav1.NamespaceSystem)
+			// Additionally, the garden namespace may contain ManagedResource of components which are part of the
+			// self-hosted shoot's control plane. These muss be excluded as well to prevent blocking to the Garden
+			// deletion flow.
+			excludeNames = append(excludeNames, etcd.Druid)
+		}
+
 		managedResourcesStillExist, err := managedresources.CheckIfManagedResourcesExist(
 			ctx,
 			r.RuntimeClientSet.Client(),
 			ptr.To(v1beta1constants.SeedResourceManagerClass),
+			excludeNames,
+			excludeNamespaces,
 		)
 		if err != nil {
 			return err
@@ -497,7 +569,7 @@ func (r *Reconciler) checkIfManagedResourcesExist() func(context.Context) error 
 
 		return &reconcilerutils.RequeueAfterError{
 			RequeueAfter: 5 * time.Second,
-			Cause:        errors.New("at least one ManagedResource still exists"),
+			Cause:        fmt.Errorf("at least one ManagedResource with class %q still exists", v1beta1constants.SeedResourceManagerClass),
 		}
 	}
 }
@@ -534,6 +606,7 @@ func (r *Reconciler) destroyDNSRecords(ctx context.Context, log logr.Logger) err
 				dnsrecord.DefaultInterval,
 				dnsrecord.DefaultSevereThreshold,
 				dnsrecord.DefaultTimeout,
+				nil, // when values.SecretName is not set credentialsDeployer is not needed
 			)).Destroy(ctx)
 		})
 	}
@@ -563,4 +636,33 @@ func (r *Reconciler) cleanupIstioInternalLoadBalancingConfigMap(ctx context.Cont
 		[]string{},
 		false,
 	)
+}
+
+func (r *Reconciler) resetExtensionRequiredVirtualCondition(ctx context.Context) error {
+	extensionList := &operatorv1alpha1.ExtensionList{}
+	if err := r.RuntimeClientSet.Client().List(ctx, extensionList); err != nil {
+		return err
+	}
+
+	for _, extension := range extensionList.Items {
+		condition := v1beta1helper.GetCondition(extension.Status.Conditions, operatorv1alpha1.ExtensionRequiredVirtual)
+		if condition == nil || condition.Status == gardencorev1beta1.ConditionFalse {
+			continue
+		}
+
+		patch := client.MergeFromWithOptions(extension.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		extension.Status.Conditions = v1beta1helper.MergeConditions(extension.Status.Conditions, v1beta1helper.UpdatedConditionWithClock(
+			r.Clock,
+			*condition,
+			gardencorev1beta1.ConditionFalse,
+			"GardenDeleted",
+			"Virtual cluster has been destroyed",
+		))
+
+		if err := r.RuntimeClientSet.Client().Status().Patch(ctx, &extension, patch); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

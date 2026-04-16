@@ -46,8 +46,8 @@ For reference, check out the `Validate` and `ValidateUpdate` functions:
 
 The validation code itself for a resource resides in dedicated validation package. This validation package is API group specific and contains the validation code for all resources from the API group. These validation packages are consumed by the `Validate`/`ValidateUpdate` functions of the strategy implementation.
 For reference, check out the validation packages:
-- for the Gardener Core API group - [`github.com/gardener/gardener/pkg/apis/core/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/core/validation)
-- for the Gardener Security API group - [`github.com/gardener/gardener/pkg/apis/security/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/security/validation)
+- for the Gardener Core API group - [`github.com/gardener/gardener/pkg/api/core/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/core/validation)
+- for the Gardener Security API group - [`github.com/gardener/gardener/pkg/api/security/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/security/validation)
 - for the Kubernetes Core API group - [`k8s.io/kubernetes/pkg/apis/core/validation`](https://pkg.go.dev/k8s.io/kubernetes/pkg/apis/core/validation)
 
 #### Writing Validation Code in the Storage Layer
@@ -55,7 +55,7 @@ For reference, check out the validation packages:
 - Write a validation code for a field in the storage layer if the validation logic does not require information from another resource. If the validation logic requires checking the presence of another resource or its specification, write the validation code in a validating API server admission plugin.
   - Example: Shoot's `.spec.kubernetes.kubeProxy.mode` field can be validated in the storage layer. The validation logic checks if the field value is one of the supported kube-proxy modes (`IPTables`, `IPVS`). There is no need to check another resource or its specification in order to validate this field.
 - The `Validate` function of the strategy implementation **must** perform validation of an API resource. The `ValidateUpdate` function **must** perform validation specific for update operation (e.g. validate field is immutable) and **must** ensure the new object is valid (usually implemented by reusing the logic that `Validate` already uses).
-  - Example: [`shoot.shootStrategy#Validate`](https://github.com/gardener/gardener/blob/f6fb7e2ca019fdd2a09c0a5da6475bf5d6bd2430/pkg/apiserver/registry/core/shoot/strategy.go#L174) invokes [`validation.ValidateShoot`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/core/validation#ValidateShoot). [`shoot.shootStrategy#ValidateUpdate`](https://github.com/gardener/gardener/blob/f6fb7e2ca019fdd2a09c0a5da6475bf5d6bd2430/pkg/apiserver/registry/core/shoot/strategy.go#L195) invokes [`validation.ValidateShootUpdate`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/core/validation#ValidateShootUpdate) which invokes [`validation.ValidateShoot`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/core/validation#ValidateShoot) with the new object.
+  - Example: [`shoot.shootStrategy#Validate`](https://github.com/gardener/gardener/blob/f6fb7e2ca019fdd2a09c0a5da6475bf5d6bd2430/pkg/apiserver/registry/core/shoot/strategy.go#L174) invokes [`validation.ValidateShoot`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/core/validation#ValidateShoot). [`shoot.shootStrategy#ValidateUpdate`](https://github.com/gardener/gardener/blob/f6fb7e2ca019fdd2a09c0a5da6475bf5d6bd2430/pkg/apiserver/registry/core/shoot/strategy.go#L195) invokes [`validation.ValidateShootUpdate`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/core/validation#ValidateShootUpdate) which invokes [`validation.ValidateShoot`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/core/validation#ValidateShoot) with the new object.
 
 #### Validation in API Server Admission Plugins
 
@@ -105,22 +105,22 @@ However, more advanced validation is hard to express via these means and is perf
 
 The extensibility story is based on the CRDs from the `extensions.gardener.cloud` API group.
 They are validated by the `gardener-resource-manager`'s validating webhook. See [Extension Resource Validation](../concepts/resource-manager.md#extension-resource-validation).
-The validation functions are defined in the [`github.com/gardener/gardener/pkg/apis/extensions/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/extensions/validation) package.
+The validation functions are defined in the [`github.com/gardener/gardener/pkg/api/extensions/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/extensions/validation) package.
 
 #### `operator.gardener.cloud` API group
 
 The [gardener-operator](../concepts/operator.md) is responsible for the management of the garden cluster environment.
 It does this by using the `Garden` and `Extension` CRDs from the `operator.gardener.cloud` API group.
 The CRDs are validated by the `gardener-operator`'s validating webhook. See [`gardener-operator` validation section](../concepts/operator.md#validation).
-The validation functions are defined in the [`github.com/gardener/gardener/pkg/apis/operator/v1alpha1/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/apis/operator/v1alpha1/validation) package.
+The validation functions are defined in the [`github.com/gardener/gardener/pkg/api/operator/v1alpha1/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/operator/v1alpha1/validation) package.
 
 ### Validation of Component Configurations
 
 Most Gardener components have a component configuration that follows similar validation principles to those of the Gardener API.
 Although the component configuration APIs are internal ones, they are also subject to validation.
 For reference, check out the validation packages:
-- for the `gardener-controller-manager` component configuration - [`github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1/validation)
-- for the `gardener-resource-manager` component configuration - [`github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1/validation)
+- for the `gardener-controller-manager` component configuration - [`github.com/gardener/gardener/pkg/api/config/controllermanager/v1alpha1/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/config/controllermanager/v1alpha1/validation)
+- for the `gardener-resource-manager` component configuration - [`github.com/gardener/gardener/pkg/api/config/resourcemanager/v1alpha1/validation`](https://pkg.go.dev/github.com/gardener/gardener/pkg/api/config/resourcemanager/v1alpha1/validation)
 
 ## Utility Functions
 
@@ -150,6 +150,8 @@ Frequently used validation functions for creation:
   - Use this function only for labels which are not part of the object metadata. `apivalidation.ValidateObjectMeta` already validates the object metadata labels. See [example usage](https://github.com/gardener/gardener/blob/f6fb7e2ca019fdd2a09c0a5da6475bf5d6bd2430/pkg/apis/core/validation/shoot.go#L1926).
 - [`metav1validation.ValidateLabelSelector`](https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1/validation#ValidateLabelSelector)
   - Use this function to validate fields of type `metav1.LabelSelector`. See [example usage](https://github.com/gardener/gardener/blob/f6fb7e2ca019fdd2a09c0a5da6475bf5d6bd2430/pkg/apis/core/validation/shoot.go#L272-L274).
+- [`apivalidation.ValidateNamespaceName`](https://pkg.go.dev/k8s.io/apimachinery/pkg/api/validation#ValidateNamespaceName), [`apivalidation.ValidateServiceAccountName`](https://pkg.go.dev/k8s.io/apimachinery/pkg/api/validation#ValidateServiceAccountName)
+  - Use these functions to validate fields which represent Namespace name (Project's `.spec.namespace` field, CredentialsBinding's `.credentialsRef.namespace` field) or ServiceAccount name (ManagedSeed's `.spec.gardenlet.deployment.serviceAccountName`).
 - [`validation.IsDNS1123Subdomain`](https://pkg.go.dev/k8s.io/apimachinery/pkg/util/validation#IsDNS1123Subdomain)
   - Validates that the value is a DNS subdomain. See [DNS Subdomain Names](https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-subdomain-names).
 - [`validation.IsValidIP`](https://pkg.go.dev/k8s.io/apimachinery/pkg/util/validation#IsValidIP)
@@ -229,7 +231,8 @@ Frequently used ones are:
   - Consider if updates to the field value should be allowed and are supported by the underlying controller. If not, consider making the field immutable. Add a doc string to the field to denote the immutability constraint.
 - Introducing new validation for existing field or making existing validation more restrictive might be a breaking change.
   - When working with existing field, aim to add validation which is obvious and unlikely to break a working functionality.
-  - If breaking change is inevitable and it is likely to break a working functionality:
-    - In case the functionality is _relevant to end-users_ , consider imposing the breaking change only with the upcoming minor Kubernetes version. This way, end-users are forced to actively adapt their manifests when performing Kubernetes upgrades.
+  - If a breaking change is inevitable and it is likely to break a working functionality, consider the following alternatives:
     - Consider using "ratcheting" validation to incrementally tighten validation. See [Ratcheting validation](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api_changes.md#ratcheting-validation).
+      - An example usage of "ratcheting" validation - allow invalid field value if the value is not updated; otherwise, do not allow. Examples: https://github.com/gardener/gardener/pull/12902/commits/b11f10abdb8fed5a10339880b856238376365288, https://github.com/gardener/gardener/pull/13514
     - Consider using a feature gate to roll out the breaking change. The feature gate gives control when to impose the breaking change. In case of issues, it is possible to revert back to the old behavior by disabling the feature gate.
+    - In case the functionality is _relevant to the majority of the end-users_, consider imposing the breaking change only with the upcoming minor Kubernetes version. This way, end-users are forced to actively adapt their manifests when performing Kubernetes upgrades.

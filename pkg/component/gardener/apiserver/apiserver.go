@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,7 @@ import (
 	"github.com/gardener/gardener/pkg/utils/managedresources"
 	"github.com/gardener/gardener/pkg/utils/retry"
 	secretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager"
+	"github.com/gardener/gardener/pkg/utils/version"
 )
 
 const (
@@ -88,6 +90,8 @@ type Values struct {
 	WorkloadIdentityKeyRotationPhase gardencorev1beta1.CredentialsRotationPhase
 	// ShootAdminKubeconfigMaxExpiration is the maximum expiration time of the admin kubeconfig.
 	ShootAdminKubeconfigMaxExpiration *metav1.Duration
+	// TargetVersion is the version of the kube-apiserver the gardener-apiserver is connecting to.
+	TargetVersion *semver.Version
 }
 
 // AutoscalingConfig contains information for configuring autoscaling settings for the API server.
@@ -209,8 +213,7 @@ func (g *gardenerAPIServer) Deploy(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("failed waiting for service %s to get created by gardener-resource-manager: %w", client.ObjectKeyFromObject(serviceRuntime), err)
 	}
-
-	virtualResources, err := virtualRegistry.AddAllAndSerialize(
+	err = virtualRegistry.Add(
 		g.apiService(secretCAGardener, gardencorev1.SchemeGroupVersion.Group, gardencorev1.SchemeGroupVersion.Version),
 		g.apiService(secretCAGardener, gardencorev1beta1.SchemeGroupVersion.Group, gardencorev1beta1.SchemeGroupVersion.Version),
 		g.apiService(secretCAGardener, seedmanagementv1alpha1.SchemeGroupVersion.Group, seedmanagementv1alpha1.SchemeGroupVersion.Version),
@@ -218,12 +221,28 @@ func (g *gardenerAPIServer) Deploy(ctx context.Context) error {
 		g.apiService(secretCAGardener, settingsv1alpha1.SchemeGroupVersion.Group, settingsv1alpha1.SchemeGroupVersion.Version),
 		g.apiService(secretCAGardener, securityv1alpha1.SchemeGroupVersion.Group, securityv1alpha1.SchemeGroupVersion.Version),
 		g.service(),
-		g.endpoints(serviceRuntime.Spec.ClusterIP),
 		g.clusterRole(),
 		g.clusterRoleBinding(secretVirtualGardenAccess.ServiceAccountName),
 		g.clusterRoleBindingAuthDelegation(secretVirtualGardenAccess.ServiceAccountName),
 		g.roleBindingAuthReader(secretVirtualGardenAccess.ServiceAccountName),
 	)
+	if err != nil {
+		return err
+	}
+
+	var endpointsResources []client.Object
+	if version.ConstraintK8sGreaterEqual134.Check(g.GetValues().TargetVersion) {
+		endpointsResources = []client.Object{g.endpointSlice(serviceRuntime.Spec.ClusterIP)}
+	} else if version.ConstraintK8sGreaterEqual133.Check(g.GetValues().TargetVersion) {
+		// For Kubernetes 1.33, we create both Endpoints and EndpointSlice resources. This is required so we can safely
+		// switch to EndpointSlices only in 1.34. Otherwise, there can be unwanted downtime of the Gardener API server if
+		// some issue occurs during the process of removing the Endpoints and creating the EndpointSlice in one go.
+		endpointsResources = []client.Object{g.endpoints(serviceRuntime.Spec.ClusterIP), g.endpointSlice(serviceRuntime.Spec.ClusterIP)}
+	} else {
+		endpointsResources = []client.Object{g.endpoints(serviceRuntime.Spec.ClusterIP)}
+	}
+
+	virtualResources, err := virtualRegistry.AddAllAndSerialize(endpointsResources...)
 	if err != nil {
 		return err
 	}

@@ -6,18 +6,19 @@ package predicate
 
 import (
 	"reflect"
+	"slices"
 
 	"k8s.io/utils/set"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/api/extensions"
+	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 )
 
@@ -32,6 +33,13 @@ func IsDeleting() predicate.Predicate {
 func HasName(name string) predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetName() == name
+	})
+}
+
+// HasNamespace returns a predicate which returns true when the object has the provided namespace.
+func HasNamespace(namespace string) predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		return obj.GetNamespace() == namespace
 	})
 }
 
@@ -52,12 +60,7 @@ const (
 // ForEventTypes is a predicate which returns true only for the provided event types.
 func ForEventTypes(events ...EventType) predicate.Predicate {
 	has := func(event EventType) bool {
-		for _, e := range events {
-			if e == event {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(events, event)
 	}
 
 	return predicate.Funcs{
@@ -233,9 +236,9 @@ func HasType(typeName string) predicate.Predicate {
 
 // AddTypeAndClassPredicates returns a new slice which contains a HasClass, a type predicate and the given `predicates`.
 // If more than one extensionTypes is given they are combined with an OR.
-func AddTypeAndClassPredicates(predicates []predicate.Predicate, extensionClass extensionsv1alpha1.ExtensionClass, extensionTypes ...string) []predicate.Predicate {
+func AddTypeAndClassPredicates(predicates []predicate.Predicate, extensionClasses []extensionsv1alpha1.ExtensionClass, extensionTypes ...string) []predicate.Predicate {
 	resultPredicates := make([]predicate.Predicate, 0, len(predicates)+2)
-	resultPredicates = append(resultPredicates, HasClass(extensionClass))
+	resultPredicates = append(resultPredicates, HasClass(extensionClasses...))
 	resultPredicates = append(resultPredicates, HasOneOfTypesPredicate(extensionTypes...))
 	resultPredicates = append(resultPredicates, predicates...)
 	return resultPredicates

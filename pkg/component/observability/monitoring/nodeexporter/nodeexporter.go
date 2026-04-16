@@ -424,7 +424,7 @@ func (n *nodeExporter) computeResourcesData() (map[string][]byte, error) {
 								},
 								Resources: corev1.ResourceRequirements{
 									Requests: corev1.ResourceList{
-										corev1.ResourceCPU:    resource.MustParse("50m"),
+										corev1.ResourceCPU:    resource.MustParse("3m"),
 										corev1.ResourceMemory: resource.MustParse("50Mi"),
 									},
 								},
@@ -484,11 +484,16 @@ func (n *nodeExporter) computeResourcesData() (map[string][]byte, error) {
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							ContainerName:       name,
+							ControlledResources: &[]corev1.ResourceName{corev1.ResourceMemory},
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("50Mi"),
 							},
 							ControlledValues: &vpaControlledValues,
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},

@@ -30,11 +30,11 @@ import (
 	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/utils/ptr"
 
+	"github.com/gardener/gardener/pkg/api/core/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	"github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
@@ -267,6 +267,27 @@ func (v *ValidateShoot) Validate(ctx context.Context, a admission.Attributes, _ 
 		seed, err = v.seedLister.Get(*shoot.Spec.SeedName)
 		if err != nil {
 			return apierrors.NewInternalError(fmt.Errorf("could not find referenced seed %q: %+v", *shoot.Spec.SeedName, err.Error()))
+		}
+	}
+
+	// Allow changes to the seed selector retrospectively only if the new selector still matches the already selected seed.
+	if !apiequality.Semantic.DeepEqual(oldShoot.Spec.SeedSelector, shoot.Spec.SeedSelector) && shoot.Spec.SeedName != nil && seed != nil {
+		if shoot.Spec.SeedSelector == nil {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "seedSelector"), shoot.Spec.SeedSelector, "cannot unset seedSelector once it has been set"))
+		} else {
+			seedSelector := shoot.Spec.SeedSelector
+			selector, err := metav1.LabelSelectorAsSelector(&seedSelector.LabelSelector)
+			if err != nil {
+				return apierrors.NewInternalError(fmt.Errorf("label selector conversion failed for seedSelector: %w", err))
+			}
+
+			if !selector.Matches(labels.Set(seed.Labels)) {
+				allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "seedSelector"), shoot.Spec.SeedSelector, fmt.Sprintf("cannot change seedSelector to not match the labels of the already selected seed %q", *shoot.Spec.SeedName)))
+			}
+
+			if len(seedSelector.ProviderTypes) > 0 && !slices.Contains(seedSelector.ProviderTypes, seed.Spec.Provider.Type) {
+				allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "seedSelector", "providerTypes"), shoot.Spec.SeedSelector.ProviderTypes, fmt.Sprintf("cannot change seedSelector to not match the provider type of the already selected seed %q", *shoot.Spec.SeedName)))
+			}
 		}
 	}
 
@@ -686,8 +707,12 @@ func (c *validationContext) validateCredentialsBindingChange(
 			credentialsAPIGroup = securityv1alpha1.SchemeGroupVersion.Group
 			credentialsAPIVersion = securityv1alpha1.SchemeGroupVersion.Version
 			credentialsResource = "workloadidentities"
+		} else if credentialsBinding.CredentialsRef.APIVersion == gardencorev1beta1.SchemeGroupVersion.String() {
+			credentialsAPIGroup = gardencorev1beta1.SchemeGroupVersion.Group
+			credentialsAPIVersion = gardencorev1beta1.SchemeGroupVersion.Version
+			credentialsResource = "internalsecrets"
 		} else {
-			return authorizer.AttributesRecord{}, errors.New("unknown credentials ref: CredentialsBinding is referencing neither a Secret nor a WorkloadIdentity")
+			return authorizer.AttributesRecord{}, errors.New("unknown credentials ref: CredentialsBinding is referencing neither a Secret nor an InternalSecret nor a WorkloadIdentity")
 		}
 		return authorizer.AttributesRecord{
 			User:            a.GetUserInfo(),
@@ -773,39 +798,6 @@ func (c *validationContext) validateAdmissionPlugins(a admission.Attributes, sec
 				allErrs = append(allErrs, err)
 			}
 		}
-	}
-
-	return allErrs
-}
-
-// For backwards-compatibility, we want to validate the oidc config only for newly created Shoot clusters.
-// Performing the validation for all Shoots would prevent already existing Shoots with the wrong spec to be updated/deleted.
-// There is additional oidc config validation in the static API validation.
-func (c *validationContext) validateKubeAPIServerOIDCConfig(a admission.Attributes) field.ErrorList {
-	var (
-		allErrs field.ErrorList
-		path    = field.NewPath("spec", "kubernetes", "kubeAPIServer", "oidcConfig")
-	)
-
-	if a.GetOperation() != admission.Create {
-		return nil
-	}
-
-	if c.shoot.Spec.Kubernetes.KubeAPIServer == nil || c.shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig == nil {
-		return nil
-	}
-
-	oidc := c.shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig
-	if oidc.ClientID == nil {
-		allErrs = append(allErrs, field.Required(path.Child("clientID"), "clientID must be set when oidcConfig is provided"))
-	} else if len(*oidc.ClientID) == 0 {
-		allErrs = append(allErrs, field.Required(path.Child("clientID"), "clientID cannot be empty"))
-	}
-
-	if oidc.IssuerURL == nil {
-		allErrs = append(allErrs, field.Required(path.Child("issuerURL"), "issuerURL must be set when oidcConfig is provided"))
-	} else if len(*oidc.IssuerURL) == 0 {
-		allErrs = append(allErrs, field.Required(path.Child("issuerURL"), "issuerURL cannot be empty"))
 	}
 
 	return allErrs
@@ -907,7 +899,6 @@ func (c *validationContext) validateKubernetes(a admission.Attributes) field.Err
 	}
 
 	allErrs = append(allErrs, validateKubernetesVersionConstraints(a, c.cloudProfileSpec.Kubernetes.Versions, c.shoot.Spec.Kubernetes.Version, c.oldShoot.Spec.Kubernetes.Version, false, path.Child("version"))...)
-	allErrs = append(allErrs, c.validateKubeAPIServerOIDCConfig(a)...)
 
 	return allErrs
 }
@@ -1362,10 +1353,8 @@ func isUnavailableInAtleastOneZone(regions []gardencorev1beta1.Region, region st
 					continue
 				}
 
-				for _, unavailableType := range unavailableTypes(z) {
-					if t == unavailableType {
-						return true
-					}
+				if slices.Contains(unavailableTypes(z), t) {
+					return true
 				}
 			}
 		}
@@ -1392,26 +1381,17 @@ func validateKubeletConfig(fldPath *field.Path, machineTypes []gardencorev1beta1
 		}
 	}
 
-	if kubeletConfig.SystemReserved != nil {
-		if kubeletConfig.SystemReserved.CPU != nil {
-			reservedCPU.Add(*kubeletConfig.SystemReserved.CPU)
-		}
-		if kubeletConfig.SystemReserved.Memory != nil {
-			reservedMemory.Add(*kubeletConfig.SystemReserved.Memory)
-		}
-	}
-
 	for _, machineType := range machineTypes {
 		if machineType.Name == workerMachineType {
 			capacityCPU := machineType.CPU
 			capacityMemory := machineType.Memory
 
 			if cmp := reservedCPU.Cmp(capacityCPU); cmp >= 0 {
-				allErrs = append(allErrs, field.Invalid(fldPath, fmt.Sprintf("kubeReserved CPU + systemReserved CPU: %s", reservedCPU.String()), fmt.Sprintf("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity '%s'", capacityCPU.String())))
+				allErrs = append(allErrs, field.Invalid(fldPath, fmt.Sprintf("kubeReserved CPU: %s", reservedCPU.String()), fmt.Sprintf("total reserved CPU (kubeReserved) cannot be more than the Node's CPU capacity '%s'", capacityCPU.String())))
 			}
 
 			if cmp := reservedMemory.Cmp(capacityMemory); cmp >= 0 {
-				allErrs = append(allErrs, field.Invalid(fldPath, fmt.Sprintf("kubeReserved memory + systemReserved memory: %s", reservedMemory.String()), fmt.Sprintf("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity '%s'", capacityMemory.String())))
+				allErrs = append(allErrs, field.Invalid(fldPath, fmt.Sprintf("kubeReserved memory: %s", reservedMemory.String()), fmt.Sprintf("total reserved memory (kubeReserved) cannot be more than the Node's memory capacity '%s'", capacityMemory.String())))
 			}
 		}
 	}
@@ -1831,13 +1811,9 @@ func validateMaxNodesTotal(workers []core.Worker, maxNodesTotal int32) field.Err
 		totalMinimum int32
 	)
 
-	for i, worker := range workers {
+	for _, worker := range workers {
 		totalMinimum += worker.Minimum
-		if worker.Maximum > maxNodesTotal {
-			allErrs = append(allErrs, field.Forbidden(fldPath.Index(i).Child("maximum"), fmt.Sprintf("the maximum node count of a worker pool must not exceed the limit of %d configured in the CloudProfile", maxNodesTotal)))
-		}
 	}
-
 	if totalMinimum > maxNodesTotal {
 		allErrs = append(allErrs, field.Forbidden(fldPath, fmt.Sprintf("the total minimum node count of all worker pools must not exceed the limit of %d configured in the CloudProfile", maxNodesTotal)))
 	}

@@ -36,10 +36,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	"github.com/gardener/gardener/pkg/logger"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	resourcemanagerclient "github.com/gardener/gardener/pkg/resourcemanager/client"
 	"github.com/gardener/gardener/pkg/resourcemanager/webhook/nodeagentauthorizer"
 	"github.com/gardener/gardener/pkg/utils"
@@ -74,6 +74,8 @@ var (
 
 	testRunID     string
 	testNamespace *corev1.Namespace
+
+	mgrNode manager.Manager
 )
 
 var _ = BeforeSuite(func() {
@@ -206,7 +208,7 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	mgrNode, err := manager.New(testRestConfig, manager.Options{
+	mgrNode, err = manager.New(testRestConfig, manager.Options{
 		WebhookServer: webhook.NewServer(webhook.Options{
 			Port:    webhookPortNodeAgentNode,
 			Host:    testEnv.WebhookInstallOptions.LocalServingHost,

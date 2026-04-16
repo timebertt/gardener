@@ -16,11 +16,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	gardenletbootstraputil "github.com/gardener/gardener/pkg/gardenlet/bootstrap/util"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/bootstraptoken"
 )
@@ -65,6 +65,36 @@ func (g *graph) handleManagedSeedCreateOrUpdate(ctx context.Context, managedSeed
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
+	if g.forSelfHostedShoots {
+		g.handleManagedSeedCreateOrUpdateForShoots(managedSeed)
+	} else {
+		g.handleManagedSeedCreateOrUpdateForSeeds(ctx, managedSeed)
+	}
+}
+
+func (g *graph) handleManagedSeedCreateOrUpdateForShoots(managedSeed *seedmanagementv1alpha1.ManagedSeed) {
+	g.deleteAllIncomingEdges(VertexTypeSeed, VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+	g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+	g.deleteAllOutgoingEdges(VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name, VertexTypeShoot)
+
+	var (
+		seedVertex        = g.getOrCreateVertex(VertexTypeSeed, "", managedSeed.Name)
+		managedSeedVertex = g.getOrCreateVertex(VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+		shootVertex       = g.getOrCreateVertex(VertexTypeShoot, managedSeed.Namespace, managedSeed.Spec.Shoot.Name)
+	)
+
+	g.addEdge(seedVertex, managedSeedVertex)
+	g.addEdge(managedSeedVertex, shootVertex)
+
+	// Always add the bootstrap token edge for self-hosted shoots. The Seed typically doesn't exist yet at this point,
+	// and the self-hosted cache doesn't include Seeds, so we skip the allowBootstrap check.
+	if managedSeed.Spec.Gardenlet.Bootstrap != nil && *managedSeed.Spec.Gardenlet.Bootstrap == seedmanagementv1alpha1.BootstrapToken {
+		secretVertex := g.getOrCreateVertex(VertexTypeSecret, metav1.NamespaceSystem, bootstraptokenapi.BootstrapTokenSecretPrefix+bootstraptoken.TokenID(managedSeed.ObjectMeta))
+		g.addEdge(secretVertex, managedSeedVertex)
+	}
+}
+
+func (g *graph) handleManagedSeedCreateOrUpdateForSeeds(ctx context.Context, managedSeed *seedmanagementv1alpha1.ManagedSeed) {
 	g.deleteAllIncomingEdges(VertexTypeSeed, VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
 	g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeSeed, managedSeed.Namespace, managedSeed.Name)
 	g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
@@ -159,5 +189,11 @@ func (g *graph) handleManagedSeedDelete(managedSeed *seedmanagementv1alpha1.Mana
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
-	g.deleteVertex(VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+	if g.forSelfHostedShoots {
+		g.deleteAllIncomingEdges(VertexTypeSeed, VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+		g.deleteAllIncomingEdges(VertexTypeSecret, VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+		g.deleteAllOutgoingEdges(VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name, VertexTypeShoot)
+	} else {
+		g.deleteVertex(VertexTypeManagedSeed, managedSeed.Namespace, managedSeed.Name)
+	}
 }

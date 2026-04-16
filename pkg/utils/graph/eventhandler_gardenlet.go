@@ -17,32 +17,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	seedmanagementv1alpha1helper "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/bootstraptoken"
 )
 
 func (g *graph) setupGardenletWatch(ctx context.Context, informer cache.Informer) error {
 	_, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
+		AddFunc: func(obj any) {
 			if gardenlet, ok := obj.(*seedmanagementv1alpha1.Gardenlet); ok {
 				g.handleGardenletCreateOrUpdate(ctx, gardenlet)
 				return
 			}
 		},
 
-		UpdateFunc: func(_, newObj interface{}) {
+		UpdateFunc: func(_, newObj any) {
 			if gardenlet, ok := newObj.(*seedmanagementv1alpha1.Gardenlet); ok {
 				g.handleGardenletCreateOrUpdate(ctx, gardenlet)
 				return
 			}
 		},
 
-		DeleteFunc: func(obj interface{}) {
+		DeleteFunc: func(obj any) {
 			if tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
 				obj = tombstone.Obj
 			}
@@ -137,6 +137,16 @@ func (g *graph) handleGardenletCreateOrUpdateForSeeds(ctx context.Context, garde
 	if allowBootstrap {
 		secretVertex := g.getOrCreateVertex(VertexTypeSecret, metav1.NamespaceSystem, bootstraptokenapi.BootstrapTokenSecretPrefix+bootstraptoken.TokenID(gardenlet.ObjectMeta))
 		g.addEdge(secretVertex, gardenletVertex)
+	}
+
+	if gardenlet.Spec.Deployment.Helm.OCIRepository.CABundleSecretRef != nil {
+		caBundleSecretVertex := g.getOrCreateVertex(VertexTypeSecret, gardenlet.Namespace, gardenlet.Spec.Deployment.Helm.OCIRepository.CABundleSecretRef.Name)
+		g.addEdge(caBundleSecretVertex, gardenletVertex)
+	}
+
+	if gardenlet.Spec.Deployment.Helm.OCIRepository.PullSecretRef != nil {
+		pullSecretVertex := g.getOrCreateVertex(VertexTypeSecret, gardenlet.Namespace, gardenlet.Spec.Deployment.Helm.OCIRepository.PullSecretRef.Name)
+		g.addEdge(pullSecretVertex, gardenletVertex)
 	}
 }
 

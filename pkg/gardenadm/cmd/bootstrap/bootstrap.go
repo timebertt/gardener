@@ -23,13 +23,13 @@ import (
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/nodeinit"
 	seedsystem "github.com/gardener/gardener/pkg/component/seed/system"
 	gardenerextensions "github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/gardenadm/botanist"
 	"github.com/gardener/gardener/pkg/gardenadm/cmd"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
-	"github.com/gardener/gardener/pkg/utils/imagevector"
 	"github.com/gardener/gardener/pkg/utils/publicip"
 )
 
@@ -261,7 +261,7 @@ func run(ctx context.Context, opts *Options) error {
 		compileShootState = g.Add(flow.Task{
 			Name: "Compiling ShootState",
 			Fn: func(ctx context.Context) error {
-				return shootstate.Deploy(ctx, b.Clock, b.GardenClient, b.SeedClientSet.Client(), b.Shoot.GetInfo(), false)
+				return shootstate.Deploy(ctx, b.Clock, b.GardenClient, b.SeedClientSet.Client(), b.Shoot.GetInfo(), b.Shoot.ControlPlaneNamespace, false)
 			},
 			Dependencies: flow.NewTaskIDs(migrateExtensionResources),
 		})
@@ -269,8 +269,8 @@ func run(ctx context.Context, opts *Options) error {
 		deployBastion = g.Add(flow.Task{
 			Name: "Deploying and connecting to bastion host",
 			Fn: func(ctx context.Context) error {
-				b.Bastion.Values.IngressCIDRs = opts.BastionIngressCIDRs
-				return component.OpWait(b.Bastion).Deploy(ctx)
+				b.Components.Bastion.Values.IngressCIDRs = opts.BastionIngressCIDRs
+				return component.OpWait(b.Components.Bastion).Deploy(ctx)
 			},
 			Dependencies: flow.NewTaskIDs(waitUntilInfrastructureReady),
 		})
@@ -278,7 +278,7 @@ func run(ctx context.Context, opts *Options) error {
 
 		connectToMachine = g.Add(flow.Task{
 			Name:         "Connecting to the first control plane machine",
-			Fn:           flow.TaskFn(b.ConnectToControlPlaneMachine).RetryUntilTimeout(5*time.Second, 5*time.Minute),
+			Fn:           flow.TaskFn(b.ConnectToControlPlaneMachine).RetryUntilTimeout(5*time.Second, 6*time.Minute),
 			Dependencies: flow.NewTaskIDs(listControlPlaneMachines, deployBastion),
 		})
 		copyManifests = g.Add(flow.Task{
@@ -293,8 +293,9 @@ func run(ctx context.Context, opts *Options) error {
 			Name: "Bootstrapping control plane on the first control plane machine",
 			Fn: flow.TaskFn(func(ctx context.Context) error {
 				return b.SSHConnection().RunWithStreams(ctx, nil, opts.Out, opts.ErrOut,
-					fmt.Sprintf("%s=%q /opt/bin/gardenadm init -d %q --log-level=%s",
-						imagevector.OverrideEnv, botanist.ImageVectorOverrideFile, botanist.ManifestsDir, opts.LogLevel,
+					fmt.Sprintf("%s%s init -d %q --log-level=%s",
+						botanist.ImageVectorOverrideEnv(),
+						nodeinit.GardenadmBinaryPath, botanist.ManifestsDir, opts.LogLevel,
 					),
 				)
 			}).Timeout(30 * time.Minute),

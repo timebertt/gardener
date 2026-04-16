@@ -7,7 +7,6 @@ package gardener
 import (
 	"errors"
 	"fmt"
-	"slices"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 )
@@ -74,20 +73,6 @@ func GetDomainInfoFromAnnotations(annotations map[string]string) (provider strin
 	return
 }
 
-// GenerateDNSProviderName creates a name for the dns provider out of the passed `secretName` and `providerType`.
-func GenerateDNSProviderName(secretName, providerType string) string {
-	switch {
-	case secretName != "" && providerType != "":
-		return fmt.Sprintf("%s-%s", providerType, secretName)
-	case secretName != "":
-		return secretName
-	case providerType != "":
-		return providerType
-	default:
-		return ""
-	}
-}
-
 func getIPStackForFamilies(ipFamilies []gardencorev1beta1.IPFamily) string {
 	if gardencorev1beta1.IsIPv4SingleStack(ipFamilies) {
 		return AnnotationValueIPStackIPv4
@@ -95,7 +80,7 @@ func getIPStackForFamilies(ipFamilies []gardencorev1beta1.IPFamily) string {
 	if gardencorev1beta1.IsIPv6SingleStack(ipFamilies) {
 		return AnnotationValueIPStackIPv6
 	}
-	if len(ipFamilies) == 2 && slices.Contains(ipFamilies, gardencorev1beta1.IPFamilyIPv4) && slices.Contains(ipFamilies, gardencorev1beta1.IPFamilyIPv6) {
+	if gardencorev1beta1.IsDualStack(ipFamilies) {
 		return AnnotationValueIPStackIPDualStack
 	}
 	// Fall-back to IPv4 per default

@@ -10,10 +10,10 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 )
 
@@ -45,12 +45,12 @@ func ExtensionForManagedResourceName(managedResourceName string) (string, bool) 
 		return strings.TrimSuffix(strings.TrimPrefix(managedResourceName, extensionRuntimePrefix), extensionRuntimeSuffix), true
 	}
 
-	if strings.HasPrefix(managedResourceName, extensionAdmissionRuntimePrefix) {
-		return strings.TrimPrefix(managedResourceName, extensionAdmissionRuntimePrefix), true
+	if after, ok := strings.CutPrefix(managedResourceName, extensionAdmissionRuntimePrefix); ok {
+		return after, true
 	}
 
-	if strings.HasPrefix(managedResourceName, extensionAdmissionVirtualPrefix) {
-		return strings.TrimPrefix(managedResourceName, extensionAdmissionVirtualPrefix), true
+	if after, ok := strings.CutPrefix(managedResourceName, extensionAdmissionVirtualPrefix); ok {
+		return after, true
 	}
 
 	return "", false

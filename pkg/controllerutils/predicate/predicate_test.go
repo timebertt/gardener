@@ -139,6 +139,61 @@ var _ = Describe("Predicate", func() {
 		})
 	})
 
+	Describe("#HasNamespace", func() {
+		var (
+			shoot        *gardencorev1beta1.Shoot
+			predicate    predicate.Predicate
+			createEvent  event.CreateEvent
+			updateEvent  event.UpdateEvent
+			deleteEvent  event.DeleteEvent
+			genericEvent event.GenericEvent
+		)
+
+		BeforeEach(func() {
+			shoot = &gardencorev1beta1.Shoot{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "foobar"},
+			}
+
+			predicate = HasNamespace(shoot.Namespace)
+
+			createEvent = event.CreateEvent{
+				Object: shoot,
+			}
+			updateEvent = event.UpdateEvent{
+				ObjectOld: shoot,
+				ObjectNew: shoot,
+			}
+			deleteEvent = event.DeleteEvent{
+				Object: shoot,
+			}
+			genericEvent = event.GenericEvent{
+				Object: shoot,
+			}
+		})
+
+		Context("object has the requested namespace", func() {
+			It("should be true", func() {
+				Expect(predicate.Create(createEvent)).To(BeTrue())
+				Expect(predicate.Update(updateEvent)).To(BeTrue())
+				Expect(predicate.Delete(deleteEvent)).To(BeTrue())
+				Expect(predicate.Generic(genericEvent)).To(BeTrue())
+			})
+		})
+
+		Context("object does not have the requested namespace", func() {
+			BeforeEach(func() {
+				shoot.Namespace = "something-else"
+			})
+
+			It("should be false", func() {
+				Expect(predicate.Create(createEvent)).To(BeFalse())
+				Expect(predicate.Update(updateEvent)).To(BeFalse())
+				Expect(predicate.Delete(deleteEvent)).To(BeFalse())
+				Expect(predicate.Generic(genericEvent)).To(BeFalse())
+			})
+		})
+	})
+
 	DescribeTable("#ForEventTypes",
 		func(events []EventType, createMatcher, updateMatcher, deleteMatcher, genericMatcher gomegatypes.GomegaMatcher) {
 			p := ForEventTypes(events...)
@@ -727,7 +782,7 @@ var _ = Describe("Predicate", func() {
 		})
 
 		It("should add the HasType predicate of the passed extension to the given list of predicates", func() {
-			predicates := AddTypeAndClassPredicates([]predicate.Predicate{truePredicate}, extensionsv1alpha1.ExtensionClassShoot, extensionType)
+			predicates := AddTypeAndClassPredicates([]predicate.Predicate{truePredicate}, []extensionsv1alpha1.ExtensionClass{extensionsv1alpha1.ExtensionClassShoot, extensionsv1alpha1.ExtensionClassSeed}, extensionType)
 
 			Expect(predicates).To(HaveLen(3))
 			Expect(reflect.ValueOf(predicates[2])).To(Equal(reflect.ValueOf(truePredicate)), "predicate list should contain the passed predicate at last element")
@@ -738,7 +793,7 @@ var _ = Describe("Predicate", func() {
 			Expect(pred.Delete(deleteEvent)).To(BeTrue())
 			Expect(pred.Generic(genericEvent)).To(BeTrue())
 
-			predicates = AddTypeAndClassPredicates([]predicate.Predicate{truePredicate}, extensionsv1alpha1.ExtensionClassShoot, extensionTypeFoo)
+			predicates = AddTypeAndClassPredicates([]predicate.Predicate{truePredicate}, []extensionsv1alpha1.ExtensionClass{extensionsv1alpha1.ExtensionClassShoot, extensionsv1alpha1.ExtensionClassSeed}, extensionTypeFoo)
 
 			Expect(predicates).To(HaveLen(3))
 			pred = predicate.And(predicates...)
@@ -750,7 +805,7 @@ var _ = Describe("Predicate", func() {
 		})
 
 		It("should add OR of all the HasType predicates for the passed extensions to the given list of predicates", func() {
-			predicates := AddTypeAndClassPredicates([]predicate.Predicate{truePredicate}, extensionsv1alpha1.ExtensionClassShoot, extensionType, extensionTypeFoo)
+			predicates := AddTypeAndClassPredicates([]predicate.Predicate{truePredicate}, []extensionsv1alpha1.ExtensionClass{extensionsv1alpha1.ExtensionClassShoot}, extensionType, extensionTypeFoo)
 
 			Expect(predicates).To(HaveLen(3))
 			pred := predicate.And(predicates...)

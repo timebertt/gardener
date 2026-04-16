@@ -66,7 +66,7 @@ var _ = Describe("KubeControllerManager", func() {
 		_, serviceCIDR2, _       = net.ParseCIDR("2001:db8::/64")
 		serviceCIDRs             = []net.IPNet{*serviceCIDR1, *serviceCIDR2}
 		namespace                = "shoot--foo--bar"
-		version                  = "1.30.3"
+		version                  = "1.33.0"
 		semverVersion, _         = semver.NewVersion(version)
 		runtimeKubernetesVersion = semver.MustParse("1.31.1")
 		image                    = "registry.k8s.io/kube-controller-manager:v1.33.3"
@@ -178,10 +178,16 @@ var _ = Describe("KubeControllerManager", func() {
 						UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 					},
 					ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-						ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-							ContainerName:    "kube-controller-manager",
-							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-						}},
+						ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+							{
+								ContainerName:    "kube-controller-manager",
+								ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+							},
+							{
+								ContainerName: "*",
+								Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+							},
+						},
 					},
 				},
 			}
@@ -235,13 +241,19 @@ var _ = Describe("KubeControllerManager", func() {
 				Spec: monitoringv1.ServiceMonitorSpec{
 					Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "kubernetes", "role": "controller-manager"}},
 					Endpoints: []monitoringv1.Endpoint{{
-						Port:      "metrics",
-						Scheme:    "https",
-						TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
-						Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-" + prometheusName},
-							Key:                  "token",
-						}},
+						Port:   "metrics",
+						Scheme: ptr.To(monitoringv1.SchemeHTTPS),
+						HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+							HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+								TLSConfig: &monitoringv1.TLSConfig{SafeTLSConfig: monitoringv1.SafeTLSConfig{InsecureSkipVerify: ptr.To(true)}},
+								HTTPConfigWithoutTLS: monitoringv1.HTTPConfigWithoutTLS{
+									Authorization: &monitoringv1.SafeAuthorization{Credentials: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{Name: "shoot-access-prometheus-" + prometheusName},
+										Key:                  "token",
+									}},
+								},
+							},
+						},
 						RelabelConfigs: []monitoringv1.RelabelConfig{{
 							Action: "labelmap",
 							Regex:  `__meta_kubernetes_service_label_(.+)`,
@@ -346,6 +358,7 @@ var _ = Describe("KubeControllerManager", func() {
 										version,
 										10257,
 										config.NodeCIDRMaskSize,
+										config.NodeCIDRMaskSizeIPv6,
 										config.NodeMonitorGracePeriod,
 										namespace,
 										isWorkerless,
@@ -501,6 +514,7 @@ namespace: kube-system
 		}
 		configWithFeatureFlags           = &gardencorev1beta1.KubeControllerManagerConfig{KubernetesConfig: gardencorev1beta1.KubernetesConfig{FeatureGates: map[string]bool{"Foo": true, "Bar": false, "Baz": false}}}
 		configWithNodeCIDRMaskSize       = &gardencorev1beta1.KubeControllerManagerConfig{NodeCIDRMaskSize: ptr.To[int32](26)}
+		configWithNodeCIDRMaskSizeIPv6   = &gardencorev1beta1.KubeControllerManagerConfig{NodeCIDRMaskSizeIPv6: ptr.To[int32](80)}
 		configWithPodEvictionTimeout     = &gardencorev1beta1.KubeControllerManagerConfig{PodEvictionTimeout: &podEvictionTimeout}
 		configWithNodeMonitorGracePeriod = &gardencorev1beta1.KubeControllerManagerConfig{NodeMonitorGracePeriod: &nodeMonitorGracePeriod}
 	)
@@ -660,6 +674,7 @@ namespace: kube-system
 			Entry("with non-default autoscaler config", configWithAutoscalerConfig, false, runtimeKubernetesVersion),
 			Entry("with feature flags", configWithFeatureFlags, false, runtimeKubernetesVersion),
 			Entry("with NodeCIDRMaskSize", configWithNodeCIDRMaskSize, false, runtimeKubernetesVersion),
+			Entry("with NodeCIDRMaskSizeIPv6", configWithNodeCIDRMaskSizeIPv6, false, runtimeKubernetesVersion),
 			Entry("with PodEvictionTimeout", configWithPodEvictionTimeout, false, runtimeKubernetesVersion),
 			Entry("with NodeMonitorGracePeriod", configWithNodeMonitorGracePeriod, false, runtimeKubernetesVersion),
 		)
@@ -767,7 +782,7 @@ namespace: kube-system
 				configWithNodeMonitorGracePeriod,
 				nil,
 				true,
-				"--controllers=*,bootstrapsigner,tokencleaner,-attachdetach,-cloud-node-lifecycle,-endpoint,-ephemeral-volume,-nodeipam,-nodelifecycle,-persistentvolume-binder,-persistentvolume-expander,-pv-protection,-ttl",
+				"--controllers=*,bootstrapsigner,tokencleaner,-attachdetach,-cloud-node-lifecycle,-device-taint-eviction-controller,-endpoint,-ephemeral-volume,-nodeipam,-nodelifecycle,-persistentvolume-binder,-persistentvolume-expander,-pv-protection,-ttl",
 			),
 			Entry("with disabled APIs (workerless)",
 				configWithNodeMonitorGracePeriod,
@@ -775,7 +790,7 @@ namespace: kube-system
 					"apps/v1": false,
 				},
 				true,
-				"--controllers=*,bootstrapsigner,tokencleaner,-attachdetach,-cloud-node-lifecycle,-daemonset,-deployment,-endpoint,-ephemeral-volume,-nodeipam,-nodelifecycle,-persistentvolume-binder,-persistentvolume-expander,-pv-protection,-replicaset,-statefulset,-ttl",
+				"--controllers=*,bootstrapsigner,tokencleaner,-attachdetach,-cloud-node-lifecycle,-daemonset,-deployment,-device-taint-eviction-controller,-endpoint,-ephemeral-volume,-nodeipam,-nodelifecycle,-persistentvolume-binder,-persistentvolume-expander,-pv-protection,-replicaset,-statefulset,-ttl",
 			),
 			Entry("with non-disabled APIs (workerless)",
 				configWithNodeMonitorGracePeriod,
@@ -783,7 +798,7 @@ namespace: kube-system
 					"apps/v1": true,
 				},
 				true,
-				"--controllers=*,bootstrapsigner,tokencleaner,-attachdetach,-cloud-node-lifecycle,-endpoint,-ephemeral-volume,-nodeipam,-nodelifecycle,-persistentvolume-binder,-persistentvolume-expander,-pv-protection,-ttl",
+				"--controllers=*,bootstrapsigner,tokencleaner,-attachdetach,-cloud-node-lifecycle,-device-taint-eviction-controller,-endpoint,-ephemeral-volume,-nodeipam,-nodelifecycle,-persistentvolume-binder,-persistentvolume-expander,-pv-protection,-ttl",
 			),
 			Entry("with disabled APIs",
 				configWithNodeMonitorGracePeriod,
@@ -806,7 +821,7 @@ namespace: kube-system
 					"rbac.authorization.k8s.io/v1":       false,
 				},
 				false,
-				"--controllers=*,bootstrapsigner,tokencleaner,-clusterrole-aggregation,-endpointslice,-endpointslicemirroring,-resource-claim-controller,-storage-version-gc",
+				"--controllers=*,bootstrapsigner,tokencleaner,-clusterrole-aggregation,-endpointslice,-endpointslicemirroring,-storage-version-gc",
 			),
 		)
 
@@ -975,6 +990,7 @@ func commandForKubernetesVersion(
 	version *semver.Version,
 	port int32,
 	nodeCIDRMaskSize *int32,
+	nodeCIDRMaskSizeIPv6 *int32,
 	nodeMonitorGracePeriod *metav1.Duration,
 	clusterName string,
 	isWorkerless bool,
@@ -1005,9 +1021,13 @@ func commandForKubernetesVersion(
 	)
 
 	if !isWorkerless {
+		// For dual-stack clusters
 		if nodeCIDRMaskSize != nil {
 			command = append(command, fmt.Sprintf("--node-cidr-mask-size-ipv4=%d", *nodeCIDRMaskSize))
-			command = append(command, fmt.Sprintf("--node-cidr-mask-size-ipv6=%d", 64))
+		}
+		// Only add IPv6 flag if explicitly set (dual-stack or IPv6 single-stack)
+		if nodeCIDRMaskSizeIPv6 != nil {
+			command = append(command, fmt.Sprintf("--node-cidr-mask-size-ipv6=%d", *nodeCIDRMaskSizeIPv6))
 		}
 
 		command = append(command,

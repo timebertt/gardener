@@ -8,8 +8,9 @@
 // +k8s:openapi-gen=true
 // +k8s:defaulter-gen=TypeMeta
 // +k8s:protobuf-gen=package
+// +k8s:openapi-model-package=com.github.gardener.gardener.pkg.apis.core.v1
 
-//go:generate gen-crd-api-reference-docs -api-dir . -config ../../../../hack/api-reference/core-config.json -template-dir ../../../../hack/api-reference/template -out-file ../../../../docs/api-reference/core-v1.md
+//go:generate crd-ref-docs --source-path=. --config=../../../../hack/api-reference/core-config.yaml --renderer=markdown --templates-dir=../../../../hack/api-reference/template --log-level=ERROR --output-path=../../../../docs/api-reference/core-v1.md
 
 // Package v1 is a version of the API.
 // +groupName=core.gardener.cloud

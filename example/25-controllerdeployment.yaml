@@ -1,5 +1,5 @@
 # ControllerDeployment object specifies how extension controllers are deployed.
-# See https://github.com/gardener/gardener/blob/master/docs/proposals/01-extensibility.md.
+# See https://github.com/gardener/enhancements/tree/main/geps/0001-gardener-extensibility.
 ---
 apiVersion: core.gardener.cloud/v1
 kind: ControllerDeployment
@@ -8,8 +8,10 @@ metadata:
 helm:
   ociRepository:
     ref: registry.example.com/foo:1.0.0@sha256:abc
+#   caBundleSecretRef:
+#     name: <ca-bundle-secret-name> # located in garden namespace, secret must have data key bundle.crt and label with key/value "gardener.cloud/role=oci-ca-bundle"
 #   pullSecretRef:
-#     name: <pull-secret-name> # located in garden namespace
+#     name: <pull-secret-name> # located in garden namespace, secret must have label with key/value "gardener.cloud/role=helm-pull-secret"
   values:
     foo: bar
 injectGardenKubeconfig: false

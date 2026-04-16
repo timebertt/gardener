@@ -43,7 +43,7 @@ func (b *Bootstrapper) Start(parentCtx context.Context) error {
 		return fmt.Errorf("failed creating kubernetes client: %w", err)
 	}
 
-	secretsManager, err := secretsmanager.New(ctx, b.Log.WithName("secretsmanager"), clock.RealClock{}, b.Client, v1beta1constants.GardenNamespace, v1beta1constants.SecretManagerIdentityControllerManager, secretsmanager.Config{})
+	secretsManager, err := secretsmanager.New(ctx, b.Log.WithName("secretsmanager"), clock.RealClock{}, b.Client, v1beta1constants.SecretManagerIdentityControllerManager, secretsmanager.WithNamespaces(v1beta1constants.GardenNamespace))
 	if err != nil {
 		return fmt.Errorf("failed creating new secrets manager: %w", err)
 	}
@@ -61,7 +61,7 @@ func (b *Bootstrapper) Start(parentCtx context.Context) error {
 }
 
 func bootstrapCluster(ctx context.Context, gardenClient client.Client, discoveryClient discovery.DiscoveryInterface, secretsManager secretsmanager.Interface) error {
-	const minKubernetesVersion = "1.29"
+	const minKubernetesVersion = "1.31"
 
 	serverVersion, err := discoveryClient.ServerVersion()
 	if err != nil {

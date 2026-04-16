@@ -12,8 +12,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
 	"github.com/gardener/gardener/pkg/component/shared"
 	"github.com/gardener/gardener/pkg/features"
@@ -58,17 +58,18 @@ func (b *Botanist) DefaultResourceManager() (resourcemanager.Interface, error) {
 			TopologyAwareRoutingEnabled:         b.Shoot.TopologyAwareRoutingEnabled,
 			// TODO(vitanovs): Remove the VPAInPlaceUpdates webhook once the
 			// VPAInPlaceUpdates feature gates is deprecated.
-			VPAInPlaceUpdatesEnabled: b.isVPAInPlaceUpdatesEnabled(),
+			VPAInPlaceUpdatesEnabled: features.DefaultFeatureGate.Enabled(features.VPAInPlaceUpdates),
 		}
 	)
+
+	if b.Shoot.HasManagedInfrastructure() {
+		values.MachineNamespace = ptr.To(b.Shoot.ControlPlaneNamespace)
+	}
 
 	if b.Shoot.IsSelfHosted() {
 		values.KubernetesServiceHost = nil
 
-		if b.Shoot.RunsControlPlane() {
-			newFunc = shared.NewCombinedGardenerResourceManager
-			values.TargetNamespaces = nil
-		} else {
+		if !b.Shoot.RunsControlPlane() {
 			newFunc = shared.NewRuntimeGardenerResourceManager
 			values.HighAvailabilityConfigWebhookEnabled = false
 			values.PriorityClassName = v1beta1constants.PriorityClassNameSeedSystemCritical
@@ -95,20 +96,4 @@ func (b *Botanist) DeployGardenerResourceManager(ctx context.Context) error {
 // ScaleGardenerResourceManagerToOne scales the gardener-resource-manager deployment
 func (b *Botanist) ScaleGardenerResourceManagerToOne(ctx context.Context) error {
 	return kubernetesutils.ScaleDeployment(ctx, b.SeedClientSet.Client(), client.ObjectKey{Namespace: b.Shoot.ControlPlaneNamespace, Name: v1beta1constants.DeploymentNameGardenerResourceManager}, 1)
-}
-
-func (b *Botanist) isVPAInPlaceUpdatesEnabled() bool {
-	var (
-		isGardenletFeatureGateEnabled = features.DefaultFeatureGate.Enabled(features.VPAInPlaceUpdates)
-		isShootVPAFeatureGateEnabled  = true
-	)
-
-	shootVerticalPodAutoscaler := b.Shoot.GetInfo().Spec.Kubernetes.VerticalPodAutoscaler
-	if shootVerticalPodAutoscaler != nil {
-		if value, ok := shootVerticalPodAutoscaler.FeatureGates["InPlaceOrRecreate"]; ok {
-			isShootVPAFeatureGateEnabled = value
-		}
-	}
-
-	return isGardenletFeatureGateEnabled && isShootVPAFeatureGateEnabled
 }

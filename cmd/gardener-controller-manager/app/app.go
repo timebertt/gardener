@@ -26,8 +26,8 @@ import (
 
 	"github.com/gardener/gardener/cmd/utils/initrun"
 	"github.com/gardener/gardener/pkg/api/indexer"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/bootstrappers"
 	"github.com/gardener/gardener/pkg/controllermanager/controller"
 	"github.com/gardener/gardener/pkg/controllerutils/routes"
@@ -149,8 +149,14 @@ func addAllFieldIndexes(ctx context.Context, i client.FieldIndexer) error {
 		indexer.AddShootSeedName,
 		indexer.AddShootStatusSeedName,
 		indexer.AddBackupBucketSeedName,
+		indexer.AddBackupBucketShootRefName,
+		indexer.AddBackupBucketShootRefNamespace,
 		indexer.AddBackupEntrySeedName,
+		indexer.AddBackupEntryShootRefName,
+		indexer.AddBackupEntryShootRefNamespace,
 		indexer.AddControllerInstallationSeedRefName,
+		indexer.AddControllerInstallationShootRefName,
+		indexer.AddControllerInstallationShootRefNamespace,
 		indexer.AddControllerInstallationRegistrationRefName,
 		indexer.AddNamespacedCloudProfileParentRefName,
 		// operations API group

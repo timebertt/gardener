@@ -13,10 +13,13 @@ import (
 	gomegatypes "github.com/onsi/gomega/types"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"go.uber.org/mock/gomock"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+	istionetworkingv1alpha3 "istio.io/api/networking/v1alpha3"
+	istionetworkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -52,7 +55,7 @@ const (
 	managedResourceNameTarget                   = "vali-target"
 	managedResourceSecretNameTarget             = "managedresource-vali-target"
 	valiName                                    = "vali"
-	valiConfigMapName                           = "vali-config-e78955f0"
+	valiConfigMapName                           = "vali-config-9a41ed42"
 	telegrafConfigMapName                       = "telegraf-config-b4c38756"
 	valiImage                                   = "vali:0.0.1"
 	curatorImage                                = "curator:0.0.1"
@@ -88,7 +91,7 @@ var _ = Describe("Vali", func() {
 			var err error
 			c = fakeclient.NewClientBuilder().WithScheme(kubernetes.SeedScheme).Build()
 			fakeSecretManager = fakesecretsmanager.New(c, namespace)
-			consistOf = NewManagedResourceConsistOfObjectsMatcher(c)
+			consistOf = NewManagedResourceConsistOfObjectsMatcher(c, test.CmpOptsForIstio()...)
 
 			Expect(err).ToNot(HaveOccurred())
 
@@ -157,6 +160,13 @@ var _ = Describe("Vali", func() {
 				Expect(c.Get(ctx, client.ObjectKey{Name: valitailShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
 				Expect(c.Get(ctx, client.ObjectKey{Name: kubeRBACProxyShootAccessSecretName, Namespace: namespace}, &corev1.Secret{})).To(Succeed())
 
+				tlsSecret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "vali-tls",
+						Namespace: namespace,
+					},
+				}
+				Expect(c.Get(ctx, client.ObjectKeyFromObject(tlsSecret), tlsSecret)).To(Succeed())
 				Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResource), managedResource)).To(Succeed())
 				expectedMr := &resourcesv1alpha1.ManagedResource{
 					ObjectMeta: metav1.ObjectMeta{
@@ -178,8 +188,11 @@ var _ = Describe("Vali", func() {
 				Expect(managedResource).To(consistOf(
 					getTelegrafConfigMap(),
 					getValiConfigMap(),
-					getVPA(true),
-					getIngress("/vali/api/v1/push", "logging", 8080),
+					getVPA(),
+					getGateway(),
+					getVirtualService(),
+					getDestinationRule(),
+					getTLSSecret(tlsSecret),
 					getService(true, "shoot"),
 					getStatefulSet(true),
 					getServiceMonitor("shoot", true),
@@ -278,7 +291,7 @@ var _ = Describe("Vali", func() {
 				Expect(managedResource).To(DeepEqual(expectedMr))
 				Expect(managedResource).To(consistOf(
 					getValiConfigMap(),
-					getVPA(true),
+					getVPA(),
 					getService(true, "shoot"),
 					getStatefulSet(false),
 					getServiceMonitor("shoot", true),
@@ -349,7 +362,7 @@ var _ = Describe("Vali", func() {
 			Expect(managedResource).To(consistOf(
 				getValiConfigMap(),
 				getService(false, "seed"),
-				getVPA(false),
+				getVPA(),
 				getStatefulSet(false),
 				getServiceMonitor("aggregate", false),
 				getPrometheusRule("aggregate"),
@@ -473,7 +486,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -510,7 +523,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -599,7 +612,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -635,7 +648,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -672,7 +685,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -717,7 +730,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -733,7 +746,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -750,7 +763,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new200GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -769,7 +782,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).
 					Do(func(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) {
@@ -788,7 +801,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR).Return(errForbidden),
 			)
 			Expect(valiDeployer.Deploy(ctx)).ToNot(Succeed())
@@ -798,7 +811,7 @@ var _ = Describe("Vali", func() {
 			valiDeployer := New(runtimeClient, gardenNamespace, nil, Values{Storage: &new80GiStorageQuantity})
 			gomock.InOrder(
 				runtimeClient.EXPECT().Get(ctx, valiPVCKey, objectOfTypePVC).DoAndReturn(funcGetValiPVC),
-				// Annotate the Vali MamangedResource with Ignore annotation
+				// Annotate the Vali ManagedResource with Ignore annotation
 				runtimeClient.EXPECT().Get(ctx, client.ObjectKey{Namespace: gardenNamespace, Name: managedResourceName}, objectOfTypeMR),
 				runtimeClient.EXPECT().Patch(ctx, objectOfTypeMR, gomock.Any()).Return(errForbidden),
 			)
@@ -813,7 +826,7 @@ func getService(isRBACProxyEnabled bool, clusterType string) *corev1.Service {
 			Name:        "logging",
 			Namespace:   namespace,
 			Labels:      getLabels(),
-			Annotations: map[string]string{},
+			Annotations: map[string]string{"networking.istio.io/exportTo": "*"},
 		},
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
@@ -983,10 +996,10 @@ ingester:
     min_ready_duration: 1s
 limits_config:
   enforce_metric_name: false
-  reject_old_samples: true
+  reject_old_samples: false
   reject_old_samples_max_age: 168h
-  ingestion_rate_mb: 8
-  ingestion_burst_size_mb: 12
+  ingestion_rate_mb: 12
+  ingestion_burst_size_mb: 16
 schema_config:
   configs:
   - from: 2018-04-15
@@ -1081,7 +1094,7 @@ wait
 	return configMap
 }
 
-func getVPA(isRBACProxyEnabled bool) *vpaautoscalingv1.VerticalPodAutoscaler {
+func getVPA() *vpaautoscalingv1.VerticalPodAutoscaler {
 	vpa := &vpaautoscalingv1.VerticalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      valiName + "-vpa",
@@ -1106,83 +1119,110 @@ func getVPA(isRBACProxyEnabled bool) *vpaautoscalingv1.VerticalPodAutoscaler {
 						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 					},
 					{
-						ContainerName:    "curator",
-						Mode:             ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-					},
-					{
-						ContainerName:    "init-large-dir",
-						Mode:             ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						ContainerName: "*",
+						Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 					},
 				},
 			},
 		},
-	}
-
-	if isRBACProxyEnabled {
-		vpa.Spec.ResourcePolicy.ContainerPolicies = append(vpa.Spec.ResourcePolicy.ContainerPolicies,
-			vpaautoscalingv1.ContainerResourcePolicy{
-				ContainerName:    "kube-rbac-proxy",
-				Mode:             ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-			},
-			vpaautoscalingv1.ContainerResourcePolicy{
-				ContainerName:    "telegraf",
-				Mode:             ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
-				ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-			},
-		)
 	}
 
 	return vpa
 }
 
-func getIngress(path, serviceName string, port int32) *networkingv1.Ingress {
-	pathType := networkingv1.PathTypePrefix
-	annotations := map[string]string{}
-	if features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
-		annotations = map[string]string{"nginx.ingress.kubernetes.io/backend-protocol": "GRPC"}
-	}
-	return &networkingv1.Ingress{
+func getGateway() *istionetworkingv1beta1.Gateway {
+	return &istionetworkingv1beta1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        valiName,
-			Namespace:   namespace,
-			Annotations: annotations,
-			Labels:      getLabels(),
+			Name:      "vali",
+			Namespace: namespace,
+			Labels:    getLabels(),
 		},
-		Spec: networkingv1.IngressSpec{
-			IngressClassName: ptr.To("nginx-ingress-gardener"),
-			TLS: []networkingv1.IngressTLS{
-				{
-					SecretName: "vali-tls",
-					Hosts:      []string{valiHost},
+		Spec: istionetworkingv1alpha3.Gateway{
+			Servers: []*istionetworkingv1alpha3.Server{{
+				Port: &istionetworkingv1alpha3.Port{
+					Number:   443,
+					Protocol: "HTTPS",
+					Name:     "tls",
 				},
-			},
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: valiHost,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: serviceName,
-											Port: networkingv1.ServiceBackendPort{
-												Number: port,
-											},
-										},
-									},
-									Path:     path,
-									PathType: &pathType,
-								},
-							},
-						},
+				Hosts: []string{"vali.foo.bar"},
+				Tls: &istionetworkingv1alpha3.ServerTLSSettings{
+					Mode:           istionetworkingv1alpha3.ServerTLSSettings_SIMPLE,
+					CredentialName: "shoot--foo--bar-vali-vali-tls",
+				},
+			}},
+		},
+	}
+}
+
+func getVirtualService() *istionetworkingv1beta1.VirtualService {
+	return &istionetworkingv1beta1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vali",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istionetworkingv1alpha3.VirtualService{
+			ExportTo: []string{"*"},
+			Gateways: []string{"vali"},
+			Hosts:    []string{"vali.foo.bar"},
+			Http: []*istionetworkingv1alpha3.HTTPRoute{{
+				Match: []*istionetworkingv1alpha3.HTTPMatchRequest{{
+					Uri: &istionetworkingv1alpha3.StringMatch{
+						MatchType: &istionetworkingv1alpha3.StringMatch_Prefix{Prefix: "/vali/api/v1/push"},
+					},
+				}},
+				Route: []*istionetworkingv1alpha3.HTTPRouteDestination{{
+					Destination: &istionetworkingv1alpha3.Destination{
+						Host: "logging.shoot--foo--bar.svc.cluster.local",
+						Port: &istionetworkingv1alpha3.PortSelector{Number: 8080},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+func getDestinationRule() *istionetworkingv1beta1.DestinationRule {
+	return &istionetworkingv1beta1.DestinationRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vali",
+			Namespace: namespace,
+			Labels:    getLabels(),
+		},
+		Spec: istionetworkingv1alpha3.DestinationRule{
+			ExportTo: []string{"*"},
+			Host:     "logging.shoot--foo--bar.svc.cluster.local",
+			TrafficPolicy: &istionetworkingv1alpha3.TrafficPolicy{
+				LoadBalancer: &istionetworkingv1alpha3.LoadBalancerSettings{
+					LocalityLbSetting: &istionetworkingv1alpha3.LocalityLoadBalancerSetting{
+						FailoverPriority: []string{"topology.kubernetes.io/zone"},
+						Enabled:          wrapperspb.Bool(true),
 					},
 				},
+				ConnectionPool: &istionetworkingv1alpha3.ConnectionPoolSettings{
+					Tcp: &istionetworkingv1alpha3.ConnectionPoolSettings_TCPSettings{
+						TcpKeepalive: &istionetworkingv1alpha3.ConnectionPoolSettings_TCPSettings_TcpKeepalive{
+							Time:     &durationpb.Duration{Seconds: 7200},
+							Interval: &durationpb.Duration{Seconds: 75},
+						},
+						MaxConnectionDuration: &durationpb.Duration{Seconds: 86400},
+					},
+				},
+				OutlierDetection: &istionetworkingv1alpha3.OutlierDetection{},
+				Tls:              &istionetworkingv1alpha3.ClientTLSSettings{},
 			},
 		},
+	}
+}
+
+func getTLSSecret(tlsSecret *corev1.Secret) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shoot--foo--bar-vali-vali-tls",
+			Namespace: "istio-ingress",
+			Labels:    getLabels(),
+		},
+		Data: tlsSecret.Data,
 	}
 }
 

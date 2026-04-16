@@ -114,11 +114,11 @@ func accessEndpoint(ctx context.Context, url string, username, password []byte) 
 		},
 	}
 
-	request, err := http.NewRequestWithContext(ctx, "GET", url+":443", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url+":443", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	request.Header.Add("Authorization", "Basic "+base64.StdEncoding.EncodeToString(bytes.Join([][]byte{username, password}, []byte(":"))))
-	return httpClient.Do(request)
+	return httpClient.Do(request) // #nosec: G704 -- Test code with controlled URLs.
 }

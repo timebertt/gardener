@@ -10,6 +10,8 @@ import (
 	"math"
 	"math/big"
 
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/gardener/gardener/imagevector"
@@ -51,7 +53,7 @@ func (b *Botanist) DeployClusterAutoscaler(ctx context.Context) error {
 		b.Shoot.Components.ControlPlane.ClusterAutoscaler.SetNamespaceUID(b.SeedNamespaceObject.UID)
 		b.Shoot.Components.ControlPlane.ClusterAutoscaler.SetMachineDeployments(b.Shoot.Components.Extensions.Worker.MachineDeployments())
 
-		maxNodesTotal, err := b.CalculateMaxNodesTotal(b.Shoot.GetInfo())
+		maxNodesTotal, err := b.CalculateMaxNodesTotal(ctx, b.Shoot.GetInfo())
 		if err != nil {
 			return err
 		}
@@ -70,7 +72,9 @@ func (b *Botanist) ScaleClusterAutoscalerToZero(ctx context.Context) error {
 
 // CalculateMaxNodesTotal returns the maximum number of nodes the shoot can have based on the shoot networks and
 // the limit configured in the CloudProfile. It returns 0 if there is no limitation.
-func (b *Botanist) CalculateMaxNodesTotal(shoot *gardencorev1beta1.Shoot) (int64, error) {
+// If the current number of nodes exceeds the CloudProfile limit, the current count is used instead to
+// prevent unintended forceful terminations due to limit decreases.
+func (b *Botanist) CalculateMaxNodesTotal(ctx context.Context, shoot *gardencorev1beta1.Shoot) (int64, error) {
 	maxNetworks, err := b.CalculateMaxNodesForShootNetworks(shoot)
 	if err != nil {
 		return 0, fmt.Errorf("failed to calculate max nodes for shoot networks: %w", err)
@@ -78,7 +82,13 @@ func (b *Botanist) CalculateMaxNodesTotal(shoot *gardencorev1beta1.Shoot) (int64
 
 	var maxLimit int64
 	if limits := b.Shoot.CloudProfile.Spec.Limits; limits != nil && limits.MaxNodesTotal != nil {
-		maxLimit = int64(*limits.MaxNodesTotal)
+		var machines metav1.PartialObjectMetadataList
+		machines.SetGroupVersionKind(machinev1alpha1.SchemeGroupVersion.WithKind("MachineList"))
+		if err := b.SeedClientSet.Client().List(ctx, &machines, client.InNamespace(b.Shoot.ControlPlaneNamespace)); err != nil {
+			return 0, fmt.Errorf("failed listing machines: %w", err)
+		}
+		maxLimit = max(int64(len(machines.Items)), int64(*limits.MaxNodesTotal))
+		b.Logger.Info("Setting cluster-autoscaler's maximum node limit based on CloudProfile limit and current machine count", "maxLimit", maxLimit, "cloudProfileLimit", *limits.MaxNodesTotal, "currentMachineCount", len(machines.Items), "maxNetworks", maxNetworks)
 	}
 
 	return utils.MinGreaterThanZero(maxNetworks, maxLimit), nil
@@ -103,7 +113,16 @@ func (b *Botanist) CalculateMaxNodesForShootNetworks(shoot *gardencorev1beta1.Sh
 
 func (b *Botanist) calculateMaxNodesForPodsNetwork(shoot *gardencorev1beta1.Shoot) (int64, error) {
 	resultPerIPFamily := map[gardencorev1beta1.IPFamily]int64{}
+	isDualStack := gardencorev1beta1.IsDualStack(shoot.Spec.Networking.IPFamilies)
+
 	for _, podNetwork := range b.Shoot.Networks.Pods {
+		// In dual-stack scenarios, only consider IPv4
+		// For IPv6 the actual effective nodeCIDRMaskSize is often dependent on the infrastructure. Thus, we ignore the pod network for IPv6 in dual-stack scenarios.
+		// The limiting factor for the maximum number of nodes is IPv4 in general, because the ranges for IPv6 are much larger than for IPv4 and thus allows more nodes from a networking perspective.
+		if isDualStack && podNetwork.IP.To4() == nil {
+			continue
+		}
+
 		podCIDRMaskSize, _ := podNetwork.Mask.Size()
 		if podCIDRMaskSize == 0 {
 			return 0, fmt.Errorf("pod CIDR is not in its canonical form")
@@ -111,13 +130,18 @@ func (b *Botanist) calculateMaxNodesForPodsNetwork(shoot *gardencorev1beta1.Shoo
 		// Calculate how many subnets with nodeCIDRMaskSize can be allocated out of the pod network (with podCIDRMaskSize).
 		// This indicates how many Nodes we can host at max from a networking perspective.
 		var maxNodeCount = &big.Int{}
-		// For dual-stack, we use 80 as nodeCIDRMaskSize for IPv6. In general, for ipv6 nodeCIDRMaskSize and podCIDRMaskSize are dependent on the infrastructure provider.
-		// For AWS, it is nodeCIDRMaskSize 80 and podCIDRMaskSize 56, for GCP nodeCIDRMaskSize 112 and podCIDRMaskSize 64.
-		// With 80 as node nodeCIDRMaskSize in this calculation, IPv6 is not a limitation for the number of nodes.
-		exp := 80 - int64(podCIDRMaskSize)
-		if podNetwork.IP.To4() != nil || gardencorev1beta1.IsIPv6SingleStack(shoot.Spec.Networking.IPFamilies) {
-			exp = int64(*shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize) - int64(podCIDRMaskSize)
+		var nodeCIDRMaskSize int64
+		if podNetwork.IP.To4() != nil {
+			nodeCIDRMaskSize = int64(*shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize)
+		} else {
+			if shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6 != nil {
+				nodeCIDRMaskSize = int64(*shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSizeIPv6)
+			} else if gardencorev1beta1.IsIPv6SingleStack(shoot.Spec.Networking.IPFamilies) && shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize != nil {
+				// For single-stack IPv6, fall back to NodeCIDRMaskSize
+				nodeCIDRMaskSize = int64(*shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize)
+			}
 		}
+		exp := nodeCIDRMaskSize - int64(podCIDRMaskSize)
 		// Bigger numbers than 2^62 do not fit into an int64 variable and big.Int{}.Int64() is undefined in such cases.
 		// The pod network is no limitation in this case anyway.
 		if exp > 62 {
@@ -133,7 +157,6 @@ func (b *Botanist) calculateMaxNodesForPodsNetwork(shoot *gardencorev1beta1.Shoo
 		}
 	}
 
-	// In a dual-stack scenario, return the minimum because beyond the minimum dual-stack is no longer possible.
 	var result int64 = math.MaxInt64
 	for _, value := range resultPerIPFamily {
 		result = min(result, value)

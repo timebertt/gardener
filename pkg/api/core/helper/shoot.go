@@ -1,0 +1,348 @@
+// SPDX-FileCopyrightText: SAP SE or an SAP affiliate company and Gardener contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package helper
+
+import (
+	"slices"
+	"strconv"
+
+	"github.com/Masterminds/semver/v3"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
+
+	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+)
+
+// HibernationIsEnabled checks if the given shoot's desired state is hibernated.
+func HibernationIsEnabled(shoot *core.Shoot) bool {
+	return shoot.Spec.Hibernation != nil && ptr.Deref(shoot.Spec.Hibernation.Enabled, false)
+}
+
+// IsShootInHibernation checks if the given shoot is in hibernation or is waking up.
+func IsShootInHibernation(shoot *core.Shoot) bool {
+	if shoot.Spec.Hibernation != nil && shoot.Spec.Hibernation.Enabled != nil {
+		return *shoot.Spec.Hibernation.Enabled || shoot.Status.IsHibernated
+	}
+
+	return shoot.Status.IsHibernated
+}
+
+// ShootWantsVerticalPodAutoscaler checks if the given Shoot needs a VPA.
+func ShootWantsVerticalPodAutoscaler(shoot *core.Shoot) bool {
+	return shoot.Spec.Kubernetes.VerticalPodAutoscaler != nil && shoot.Spec.Kubernetes.VerticalPodAutoscaler.Enabled
+}
+
+// ShootUsesUnmanagedDNS returns true if the shoot's DNS section is marked as 'unmanaged'.
+func ShootUsesUnmanagedDNS(shoot *core.Shoot) bool {
+	if shoot.Spec.DNS == nil {
+		return false
+	}
+
+	primary := FindPrimaryDNSProvider(shoot.Spec.DNS.Providers)
+	if primary != nil {
+		return *primary.Primary && primary.Type != nil && *primary.Type == core.DNSUnmanaged
+	}
+
+	return len(shoot.Spec.DNS.Providers) > 0 && shoot.Spec.DNS.Providers[0].Type != nil && *shoot.Spec.DNS.Providers[0].Type == core.DNSUnmanaged
+}
+
+// ShootNeedsForceDeletion determines whether a Shoot should be force deleted or not.
+func ShootNeedsForceDeletion(shoot *core.Shoot) bool {
+	if shoot == nil {
+		return false
+	}
+
+	value, ok := shoot.Annotations[v1beta1constants.AnnotationConfirmationForceDeletion]
+	if !ok {
+		return false
+	}
+
+	forceDelete, _ := strconv.ParseBool(value)
+	return forceDelete
+}
+
+// IsHAControlPlaneConfigured returns true if HA configuration for the shoot control plane has been set.
+func IsHAControlPlaneConfigured(shoot *core.Shoot) bool {
+	return shoot.Spec.ControlPlane != nil && shoot.Spec.ControlPlane.HighAvailability != nil
+}
+
+// IsHAVPNEnabled checks if the shoot has HA VPN enabled.
+func IsHAVPNEnabled(shoot *core.Shoot) bool {
+	if shoot == nil {
+		return false
+	}
+
+	haVPN := IsHAControlPlaneConfigured(shoot)
+	if haVPNEnabled, err := strconv.ParseBool(shoot.GetAnnotations()[v1beta1constants.ShootAlphaControlPlaneHAVPN]); err == nil {
+		haVPN = haVPNEnabled
+	}
+
+	return haVPN
+}
+
+// IsMultiZonalShootControlPlane checks if the shoot should have a multi-zonal control plane.
+func IsMultiZonalShootControlPlane(shoot *core.Shoot) bool {
+	return shoot.Spec.ControlPlane != nil && shoot.Spec.ControlPlane.HighAvailability != nil && shoot.Spec.ControlPlane.HighAvailability.FailureTolerance.Type == core.FailureToleranceTypeZone
+}
+
+// IsWorkerless checks if the shoot has zero workers.
+func IsWorkerless(shoot *core.Shoot) bool {
+	return len(shoot.Spec.Provider.Workers) == 0
+}
+
+// ShootEnablesSSHAccess returns true if ssh access to worker nodes should be allowed for the given shoot.
+func ShootEnablesSSHAccess(shoot *core.Shoot) bool {
+	return !IsWorkerless(shoot) &&
+		(shoot.Spec.Provider.WorkersSettings == nil || shoot.Spec.Provider.WorkersSettings.SSHAccess == nil || shoot.Spec.Provider.WorkersSettings.SSHAccess.Enabled)
+}
+
+// GetShootCARotationPhase returns the specified shoot CA rotation phase or an empty string
+func GetShootCARotationPhase(credentials *core.ShootCredentials) core.CredentialsRotationPhase {
+	if credentials != nil && credentials.Rotation != nil && credentials.Rotation.CertificateAuthorities != nil {
+		return credentials.Rotation.CertificateAuthorities.Phase
+	}
+	return ""
+}
+
+// GetShootServiceAccountKeyRotationPhase returns the specified shoot service account key rotation phase or an empty
+// string.
+func GetShootServiceAccountKeyRotationPhase(credentials *core.ShootCredentials) core.CredentialsRotationPhase {
+	if credentials != nil && credentials.Rotation != nil && credentials.Rotation.ServiceAccountKey != nil {
+		return credentials.Rotation.ServiceAccountKey.Phase
+	}
+	return ""
+}
+
+// GetShootETCDEncryptionKeyRotationPhase returns the specified shoot ETCD encryption key rotation phase or an empty
+// string.
+func GetShootETCDEncryptionKeyRotationPhase(credentials *core.ShootCredentials) core.CredentialsRotationPhase {
+	if credentials != nil && credentials.Rotation != nil && credentials.Rotation.ETCDEncryptionKey != nil {
+		return credentials.Rotation.ETCDEncryptionKey.Phase
+	}
+	return ""
+}
+
+// ShouldETCDEncryptionKeyRotationBeAutoCompleteAfterPrepared returns whether the current ETCD encryption key rotation should
+// be auto completed after the preparation phase has finished.
+//
+// Deprecated: This function will be removed in a future release. The function will be no longer needed with
+// the removal `rotate-etcd-encryption-key-start` & `rotate-etcd-encryption-key-complete` annotations.
+// TODO(AleksandarSavchev): Remove this after support for Kubernetes v1.33 is dropped.
+func ShouldETCDEncryptionKeyRotationBeAutoCompleteAfterPrepared(credentials *core.ShootCredentials) bool {
+	return credentials != nil &&
+		credentials.Rotation != nil &&
+		credentials.Rotation.ETCDEncryptionKey != nil &&
+		ptr.Deref(credentials.Rotation.ETCDEncryptionKey.AutoCompleteAfterPrepared, false)
+}
+
+// GetAllZonesFromShoot returns the set of all availability zones defined in the worker pools of the Shoot specification.
+func GetAllZonesFromShoot(shoot *core.Shoot) sets.Set[string] {
+	out := sets.New[string]()
+	for _, worker := range shoot.Spec.Provider.Workers {
+		out.Insert(worker.Zones...)
+	}
+	return out
+}
+
+// GetShootAuditPolicyConfigMapName returns the Shoot's ConfigMap reference name for the audit policy.
+func GetShootAuditPolicyConfigMapName(apiServerConfig *core.KubeAPIServerConfig) string {
+	if ref := GetShootAuditPolicyConfigMapRef(apiServerConfig); ref != nil {
+		return ref.Name
+	}
+	return ""
+}
+
+// GetShootAuditPolicyConfigMapRef returns the Shoot's ConfigMap reference for the audit policy.
+func GetShootAuditPolicyConfigMapRef(apiServerConfig *core.KubeAPIServerConfig) *corev1.ObjectReference {
+	if apiServerConfig != nil && apiServerConfig.AuditConfig != nil && apiServerConfig.AuditConfig.AuditPolicy != nil {
+		return apiServerConfig.AuditConfig.AuditPolicy.ConfigMapRef
+	}
+	return nil
+}
+
+// GetShootAuthenticationConfigurationConfigMapName returns the Shoot's ConfigMap reference name for the authentication
+// configuration.
+func GetShootAuthenticationConfigurationConfigMapName(apiServerConfig *core.KubeAPIServerConfig) string {
+	if apiServerConfig != nil && apiServerConfig.StructuredAuthentication != nil {
+		return apiServerConfig.StructuredAuthentication.ConfigMapName
+	}
+	return ""
+}
+
+// GetShootAuthorizationConfigurationConfigMapName returns the Shoot's ConfigMap reference name for the authorization
+// configuration.
+func GetShootAuthorizationConfigurationConfigMapName(apiServerConfig *core.KubeAPIServerConfig) string {
+	if apiServerConfig != nil && apiServerConfig.StructuredAuthorization != nil {
+		return apiServerConfig.StructuredAuthorization.ConfigMapName
+	}
+	return ""
+}
+
+// GetShootServiceAccountConfigIssuer returns the Shoot's ServiceAccountConfig Issuer.
+func GetShootServiceAccountConfigIssuer(apiServerConfig *core.KubeAPIServerConfig) *string {
+	if apiServerConfig != nil && apiServerConfig.ServiceAccountConfig != nil {
+		return apiServerConfig.ServiceAccountConfig.Issuer
+	}
+	return nil
+}
+
+// GetShootServiceAccountConfigAcceptedIssuers returns the Shoot's ServiceAccountConfig AcceptedIssuers.
+func GetShootServiceAccountConfigAcceptedIssuers(apiServerConfig *core.KubeAPIServerConfig) []string {
+	if apiServerConfig != nil && apiServerConfig.ServiceAccountConfig != nil {
+		return apiServerConfig.ServiceAccountConfig.AcceptedIssuers
+	}
+	return nil
+}
+
+// HasManagedIssuer checks if the shoot has managed issuer enabled.
+func HasManagedIssuer(shoot *core.Shoot) bool {
+	return shoot.GetAnnotations()[v1beta1constants.AnnotationAuthenticationIssuer] == v1beta1constants.AnnotationAuthenticationIssuerManaged
+}
+
+// KubernetesDashboardEnabled returns true if the kubernetes-dashboard addon is enabled in the Shoot manifest.
+func KubernetesDashboardEnabled(addons *core.Addons) bool {
+	return addons != nil && addons.KubernetesDashboard != nil && addons.KubernetesDashboard.Enabled
+}
+
+// NginxIngressEnabled returns true if the nginx-ingress addon is enabled in the Shoot manifest.
+func NginxIngressEnabled(addons *core.Addons) bool {
+	return addons != nil && addons.NginxIngress != nil && addons.NginxIngress.Enabled
+}
+
+// FindPrimaryDNSProvider finds the primary provider among the given `providers`.
+// It returns the first provider if multiple candidates are found.
+func FindPrimaryDNSProvider(providers []core.DNSProvider) *core.DNSProvider {
+	if idx := slices.IndexFunc(providers, func(provider core.DNSProvider) bool {
+		return provider.Primary != nil && *provider.Primary
+	}); idx != -1 {
+		return &providers[idx]
+	}
+	return nil
+}
+
+// CalculateEffectiveKubernetesVersion if a shoot has kubernetes version specified by worker group, return this,
+// otherwise the shoot kubernetes version
+func CalculateEffectiveKubernetesVersion(controlPlaneVersion *semver.Version, workerKubernetes *core.WorkerKubernetes) (*semver.Version, error) {
+	if workerKubernetes != nil && workerKubernetes.Version != nil {
+		return semver.NewVersion(*workerKubernetes.Version)
+	}
+	return controlPlaneVersion, nil
+}
+
+// CalculateEffectiveKubeletConfiguration returns the worker group specific kubelet configuration if available.
+// Otherwise the shoot kubelet configuration is returned
+func CalculateEffectiveKubeletConfiguration(shootKubelet *core.KubeletConfig, workerKubernetes *core.WorkerKubernetes) *core.KubeletConfig {
+	if workerKubernetes != nil && workerKubernetes.Kubelet != nil {
+		return workerKubernetes.Kubelet
+	}
+	return shootKubelet
+}
+
+// SystemComponentsAllowed checks if the given worker allows system components to be scheduled onto it
+func SystemComponentsAllowed(worker *core.Worker) bool {
+	return worker.SystemComponents == nil || worker.SystemComponents.Allow
+}
+
+// GetResourceByName returns the NamedResourceReference with the given name in the given slice, or nil if not found.
+func GetResourceByName(resources []core.NamedResourceReference, name string) *core.NamedResourceReference {
+	if idx := slices.IndexFunc(resources, func(resource core.NamedResourceReference) bool {
+		return resource.Name == name
+	}); idx != -1 {
+		return &resources[idx]
+	}
+	return nil
+}
+
+// AccessRestrictionsAreSupported returns true when all the given access restrictions are supported.
+func AccessRestrictionsAreSupported(seedAccessRestrictions []core.AccessRestriction, shootAccessRestrictions []core.AccessRestrictionWithOptions) bool {
+	if len(shootAccessRestrictions) == 0 {
+		return true
+	}
+	if len(shootAccessRestrictions) > len(seedAccessRestrictions) {
+		return false
+	}
+
+	seedAccessRestrictionsNames := sets.New[string]()
+	for _, seedAccessRestriction := range seedAccessRestrictions {
+		seedAccessRestrictionsNames.Insert(seedAccessRestriction.Name)
+	}
+
+	for _, accessRestriction := range shootAccessRestrictions {
+		if !seedAccessRestrictionsNames.Has(accessRestriction.Name) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// FindWorkerByName tries to find the worker with the given name. If it cannot be found it returns nil.
+func FindWorkerByName(workers []core.Worker, name string) *core.Worker {
+	if idx := slices.IndexFunc(workers, func(worker core.Worker) bool {
+		return worker.Name == name
+	}); idx != -1 {
+		return &workers[idx]
+	}
+	return nil
+}
+
+// IsUpdateStrategyInPlace returns true if the given machine update strategy is either AutoInPlaceUpdate or ManualInPlaceUpdate.
+func IsUpdateStrategyInPlace(updateStrategy *core.MachineUpdateStrategy) bool {
+	if updateStrategy == nil {
+		return false
+	}
+	return *updateStrategy == core.AutoInPlaceUpdate || *updateStrategy == core.ManualInPlaceUpdate
+}
+
+// IsLegacyAnonymousAuthenticationSet checks if the legacy anonymous authentication is set in the given kubeAPIServerConfig.
+func IsLegacyAnonymousAuthenticationSet(kubeAPIServerConfig *core.KubeAPIServerConfig) bool {
+	return kubeAPIServerConfig != nil && kubeAPIServerConfig.EnableAnonymousAuthentication != nil
+}
+
+// IsKubeProxyIPVSMode checks if the shoot is running with kube-proxy in IPVS mode.
+func IsKubeProxyIPVSMode(kubeProxyConfig *core.KubeProxyConfig) bool {
+	return kubeProxyConfig != nil && kubeProxyConfig.Enabled != nil && *kubeProxyConfig.Enabled &&
+		kubeProxyConfig.Mode != nil && *kubeProxyConfig.Mode == core.ProxyModeIPVS
+}
+
+// IsShootSelfHosted returns true if the shoot has a worker pool dedicated for running the control plane components.
+func IsShootSelfHosted(workers []core.Worker) bool {
+	return slices.ContainsFunc(workers, func(worker core.Worker) bool {
+		return worker.ControlPlane != nil
+	})
+}
+
+// ControlPlaneWorkerPoolForShoot returns the worker pool running the control plane in case the shoot is self-hosted.
+func ControlPlaneWorkerPoolForShoot(workers []core.Worker) *core.Worker {
+	if idx := slices.IndexFunc(workers, func(worker core.Worker) bool {
+		return worker.ControlPlane != nil
+	}); idx != -1 {
+		return &workers[idx]
+	}
+
+	return nil
+}
+
+// GetEncryptionProviderType returns the encryption provider type.
+func GetEncryptionProviderType(apiServerConfig *core.KubeAPIServerConfig) core.EncryptionProviderType {
+	if apiServerConfig != nil &&
+		apiServerConfig.EncryptionConfig != nil &&
+		apiServerConfig.EncryptionConfig.Provider.Type != nil {
+		return *apiServerConfig.EncryptionConfig.Provider.Type
+	}
+
+	return ""
+}
+
+// GetEncryptionProviderTypeInStatus returns the encryption provider from the shoot status.
+func GetEncryptionProviderTypeInStatus(status core.ShootStatus) core.EncryptionProviderType {
+	if status.Credentials != nil && status.Credentials.EncryptionAtRest != nil {
+		return status.Credentials.EncryptionAtRest.Provider.Type
+	}
+
+	return ""
+}

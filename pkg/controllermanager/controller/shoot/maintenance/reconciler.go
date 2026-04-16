@@ -17,18 +17,18 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/controllermanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
-	controllermanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/controllermanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/controllermanager/controller/shoot/maintenance/helper"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -42,7 +42,7 @@ type Reconciler struct {
 	Client   client.Client
 	Config   controllermanagerconfigv1alpha1.ShootMaintenanceControllerConfiguration
 	Clock    clock.Clock
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // Reconcile reconciles Shoots and maintains them by updating versions or triggering operations.
@@ -134,6 +134,8 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 		log.Error(err, "Failed to maintain Shoot kubernetes version")
 	}
 
+	credentialsToRotationUpdate := computeCredentialsToRotationResults(log, maintainedShoot, metav1.Time{Time: r.Clock.Now()})
+
 	oldShootKubernetesVersion, err := semver.NewVersion(shoot.Spec.Kubernetes.Version)
 	if err != nil {
 		return err
@@ -142,20 +144,6 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 	shootKubernetesVersion, err := semver.NewVersion(maintainedShoot.Spec.Kubernetes.Version)
 	if err != nil {
 		return err
-	}
-
-	// Set the .spec.kubernetes.kubeAPIServer.oidcConfig.clientAuthentication field to nil, when Shoot cluster is being forcefully updated to K8s >= 1.31.
-	// Gardener forbids setting the field for Shoots with K8s 1.31+. See https://github.com/gardener/gardener/pull/10253
-	{
-		if versionutils.ConstraintK8sLess131.Check(oldShootKubernetesVersion) && versionutils.ConstraintK8sGreaterEqual131.Check(shootKubernetesVersion) {
-			if maintainedShoot.Spec.Kubernetes.KubeAPIServer != nil && maintainedShoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig != nil &&
-				maintainedShoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.ClientAuthentication != nil {
-				maintainedShoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.ClientAuthentication = nil
-
-				reason := ".spec.kubernetes.kubeAPIServer.oidcConfig.clientAuthentication is set to nil. Reason: The field was no-op since its introduction and can no longer be enabled for Shoot clusters using Kubernetes version 1.31+"
-				operations = append(operations, reason)
-			}
-		}
 	}
 
 	// Set the .spec.kubernetes.kubeAPIServer.oidcConfig field to nil, when Shoot cluster is being forcefully updated to K8s >= 1.32.
@@ -203,6 +191,21 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 		}
 	}
 
+	// Set the .spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication field to nil, when Shoot cluster is being forcefully updated to K8s >= 1.35.
+	// Gardener forbids setting the field for Shoots with K8s 1.35+.
+	{
+		oldK8sLess135, _ := versionutils.CheckVersionMeetsConstraint(oldShootKubernetesVersion.String(), "< 1.35")
+		newK8sGreaterEqual135, _ := versionutils.CheckVersionMeetsConstraint(shootKubernetesVersion.String(), ">= 1.35")
+		if oldK8sLess135 && newK8sGreaterEqual135 {
+			if maintainedShoot.Spec.Kubernetes.KubeAPIServer != nil && maintainedShoot.Spec.Kubernetes.KubeAPIServer.EnableAnonymousAuthentication != nil {
+				maintainedShoot.Spec.Kubernetes.KubeAPIServer.EnableAnonymousAuthentication = nil
+
+				reason := ".spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication was removed. Reason: The field is no longer supported for Shoot clusters using Kubernetes version 1.35+"
+				operations = append(operations, reason)
+			}
+		}
+	}
+
 	// Migrate from secretBindingName to credentialsBindingName when Shoot cluster is being forcefully updated to K8s >= 1.34.
 	// Gardener forbids setting secretBindingName for Shoots with K8s 1.34+.
 	{
@@ -215,6 +218,56 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 			} else {
 				reason := ".spec.secretBindingName was migrated to .spec.credentialsBindingName. Reason: SecretBinding is deprecated and can no longer be used for Shoot clusters using Kubernetes version 1.34+"
 				operations = append(operations, reason)
+			}
+		}
+	}
+
+	// Remove KubeMaxPDVols when Shoot cluster is being forcefully updated to K8s >= 1.35..
+	{
+		oldK8sLess135 := versionutils.ConstraintK8sLess135.Check(oldShootKubernetesVersion)
+		newK8sGreaterEqual135 := versionutils.ConstraintK8sGreaterEqual135.Check(shootKubernetesVersion)
+		if oldK8sLess135 && newK8sGreaterEqual135 && shoot.Spec.Kubernetes.KubeScheduler != nil && shoot.Spec.Kubernetes.KubeScheduler.KubeMaxPDVols != nil {
+			maintainedShoot.Spec.Kubernetes.KubeScheduler.KubeMaxPDVols = nil
+			reason := ".spec.kubernetes.kubeScheduler.kubeMaxPDVols was removed. Reason: kubeMaxPDVols is deprecated and not respected by the kube-scheduler"
+			operations = append(operations, reason)
+		}
+	}
+
+	// Remove default watch cache size when Shoot cluster is being forcefully updated to K8s >= 1.35..
+	{
+		oldK8sLess135 := versionutils.ConstraintK8sLess135.Check(oldShootKubernetesVersion)
+		newK8sGreaterEqual135 := versionutils.ConstraintK8sGreaterEqual135.Check(shootKubernetesVersion)
+		if oldK8sLess135 && newK8sGreaterEqual135 && shoot.Spec.Kubernetes.KubeAPIServer != nil &&
+			shoot.Spec.Kubernetes.KubeAPIServer.WatchCacheSizes != nil && shoot.Spec.Kubernetes.KubeAPIServer.WatchCacheSizes.Default != nil {
+			maintainedShoot.Spec.Kubernetes.KubeAPIServer.WatchCacheSizes.Default = nil
+			reason := ".spec.kubernetes.kubeAPIServer.watchCacheSizes.default was removed. Reason: the default size configuration is deprecated and not respected by the kube-apiserver"
+			operations = append(operations, reason)
+		}
+	}
+
+	// Remove addons when Shoot cluster is being forcefully updated to K8s >= 1.35..
+	{
+		oldK8sLess135 := versionutils.ConstraintK8sLess135.Check(oldShootKubernetesVersion)
+		newK8sGreaterEqual135 := versionutils.ConstraintK8sGreaterEqual135.Check(shootKubernetesVersion)
+		if oldK8sLess135 && newK8sGreaterEqual135 && shoot.Spec.Addons != nil {
+			maintainedShoot.Spec.Addons = nil
+			reason := ".spec.addons was removed. Reason: addons are not supported anymore for Kubernetes versions 1.35+"
+			operations = append(operations, reason)
+		}
+	}
+
+	// Set the .spec.dns.providers[].secretName field to nil, when Shoot cluster is being forcefully updated to K8s >= 1.35.
+	// Gardener forbids setting the field for Shoots with K8s 1.35+.
+	{
+		oldK8sLess135 := versionutils.ConstraintK8sLess135.Check(oldShootKubernetesVersion)
+		newK8sGreaterEqual135 := versionutils.ConstraintK8sGreaterEqual135.Check(shootKubernetesVersion)
+		if oldK8sLess135 && newK8sGreaterEqual135 && maintainedShoot.Spec.DNS != nil {
+			for i := range maintainedShoot.Spec.DNS.Providers {
+				if maintainedShoot.Spec.DNS.Providers[i].SecretName != nil {
+					maintainedShoot.Spec.DNS.Providers[i].SecretName = nil
+					reason := fmt.Sprintf(".spec.dns.providers[%d].secretName was removed. Reason: The field is no longer supported for Shoot clusters using Kubernetes version 1.35+", i)
+					operations = append(operations, reason)
+				}
 			}
 		}
 	}
@@ -262,68 +315,12 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 		operations = append(operations, reasons...)
 	}
 
-	// Set the swap behavior to `LimitedSwap`, when the shoot cluster and/or worker pool is updated to k8s version >= 1.30.
-	{
-		if versionutils.ConstraintK8sLess130.Check(oldShootKubernetesVersion) &&
-			versionutils.ConstraintK8sGreaterEqual130.Check(shootKubernetesVersion) &&
-			maintainedShoot.Spec.Kubernetes.Kubelet != nil {
-			operations = append(operations, setLimitedSwap(maintainedShoot.Spec.Kubernetes.Kubelet, "spec.kubernetes.kubelet.memorySwap.swapBehavior")...)
-		}
-
-		for i := range maintainedShoot.Spec.Provider.Workers {
-			if maintainedShoot.Spec.Provider.Workers[i].Kubernetes != nil && maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet != nil {
-				kubeletVersion := ptr.Deref(maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Version, maintainedShoot.Spec.Kubernetes.Version)
-				kubeletSemverVersion, err := semver.NewVersion(kubeletVersion)
-				if err != nil {
-					return fmt.Errorf("error parsing kubelet version for worker pool %q: %w", maintainedShoot.Spec.Provider.Workers[i].Name, err)
-				}
-
-				if versionutils.ConstraintK8sGreaterEqual130.Check(kubeletSemverVersion) {
-					operations = append(operations, setLimitedSwap(maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet, fmt.Sprintf("spec.provider.workers[%d].kubernetes.kubelet.memorySwap.swapBehavior", i))...)
-				}
-			}
-		}
-	}
-
-	// Move kubernetes.kubelet.systemReserved for a Shoot or worker pool to kubernetes.kubelet.kubeReserved, when Shoot cluster is being forcefully updated to K8s >= 1.31.
-	// Gardener forbids specifying kubernetes.kubelet.systemReserved for Shoots with K8s 1.31+. See https://github.com/gardener/gardener/pull/10290
-	{
-		if versionutils.ConstraintK8sLess131.Check(oldShootKubernetesVersion) && versionutils.ConstraintK8sGreaterEqual131.Check(shootKubernetesVersion) {
-			if maintainedShoot.Spec.Kubernetes.Kubelet != nil && maintainedShoot.Spec.Kubernetes.Kubelet.SystemReserved != nil {
-				maintainedShoot.Spec.Kubernetes.Kubelet.KubeReserved = v1beta1helper.SumResourceReservations(maintainedShoot.Spec.Kubernetes.Kubelet.KubeReserved, maintainedShoot.Spec.Kubernetes.Kubelet.SystemReserved)
-				maintainedShoot.Spec.Kubernetes.Kubelet.SystemReserved = nil
-
-				reason := ".spec.kubernetes.kubelet.systemReserved is added to .spec.kubernetes.kubelet.kubeReserved. Reason: The systemReserved field is forbidden for Shoot clusters using Kubernetes version 1.31+, its value has to be added to kubeReserved"
-				operations = append(operations, reason)
-			}
-		}
-
-		for i := range maintainedShoot.Spec.Provider.Workers {
-			if maintainedShoot.Spec.Provider.Workers[i].Kubernetes != nil && maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet != nil &&
-				maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet.SystemReserved != nil {
-				kubeletVersion := ptr.Deref(maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Version, maintainedShoot.Spec.Kubernetes.Version)
-				kubeletSemverVersion, err := semver.NewVersion(kubeletVersion)
-				if err != nil {
-					return fmt.Errorf("error parsing kubelet version for worker pool %q: %w", maintainedShoot.Spec.Provider.Workers[i].Name, err)
-				}
-
-				if versionutils.ConstraintK8sGreaterEqual131.Check(kubeletSemverVersion) {
-					maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet.KubeReserved = v1beta1helper.SumResourceReservations(maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet.KubeReserved, maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet.SystemReserved)
-					maintainedShoot.Spec.Provider.Workers[i].Kubernetes.Kubelet.SystemReserved = nil
-
-					reason := fmt.Sprintf(".spec.provider.workers[%[1]d].kubernetes.kubelet.systemReserved is added to .spec.provider.workers[%[1]d].kubernetes.kubelet.kubeReserved. Reason: The systemReserved field is forbidden for Shoot clusters using Kubernetes version 1.31+, its value has to be added to kubeReserved", i)
-					operations = append(operations, reason)
-				}
-			}
-		}
-	}
-
-	operation := maintainOperation(maintainedShoot)
+	operation := maintainOperation(maintainedShoot, credentialsToRotationUpdate)
 	if operation != "" {
 		operations = append(operations, fmt.Sprintf("Added %q operation annotation", operation))
 	}
 
-	requirePatch := len(operations) > 0 || kubernetesControlPlaneUpdate != nil || len(workerToKubernetesUpdate) > 0 || len(workerToMachineImageUpdate) > 0
+	requirePatch := len(operations) > 0 || kubernetesControlPlaneUpdate != nil || len(workerToKubernetesUpdate) > 0 || len(workerToMachineImageUpdate) > 0 || len(credentialsToRotationUpdate) > 0
 	if requirePatch {
 		patch := client.MergeFrom(shoot.DeepCopy())
 
@@ -332,6 +329,7 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 			kubernetesControlPlaneUpdate,
 			workerToKubernetesUpdate,
 			workerToMachineImageUpdate,
+			credentialsToRotationUpdate,
 		)
 
 		// append also other maintenance operation
@@ -383,13 +381,13 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 
 	// update shoot spec changes in maintenance call
 	shoot.Spec = *maintainedShoot.Spec.DeepCopy()
-	_ = maintainOperation(shoot)
+	_ = maintainOperation(shoot, credentialsToRotationUpdate)
 	maintainTasks(shoot, r.Config)
 
 	// try to maintain shoot, but don't retry on conflict, because a conflict means that we potentially operated on stale
 	// data (e.g. when calculating the updated k8s version), so rather return error and backoff
 	if err := r.Client.Update(ctx, shoot); err != nil {
-		r.Recorder.Event(shoot, corev1.EventTypeWarning, gardencorev1beta1.ShootMaintenanceFailed, err.Error())
+		r.Recorder.Eventf(shoot, nil, corev1.EventTypeWarning, gardencorev1beta1.ShootMaintenanceFailed, gardencorev1beta1.EventActionReconcile, err.Error())
 		return err
 	}
 
@@ -419,9 +417,9 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 	// make sure to report (partial) maintenance failures
 	if kubernetesControlPlaneUpdate != nil {
 		if kubernetesControlPlaneUpdate.isSuccessful {
-			r.Recorder.Eventf(shoot, corev1.EventTypeNormal, gardencorev1beta1.ShootEventK8sVersionMaintenance, "%s", fmt.Sprintf("Control Plane: %s. Reason: %s.", kubernetesControlPlaneUpdate.description, kubernetesControlPlaneUpdate.reason))
+			r.Recorder.Eventf(shoot, nil, corev1.EventTypeNormal, gardencorev1beta1.ShootEventK8sVersionMaintenance, gardencorev1beta1.EventActionReconcile, "Control Plane: %s. Reason: %s.", kubernetesControlPlaneUpdate.description, kubernetesControlPlaneUpdate.reason)
 		} else {
-			r.Recorder.Eventf(shoot, corev1.EventTypeWarning, gardencorev1beta1.ShootEventK8sVersionMaintenance, "%s", fmt.Sprintf("Control Plane: Kubernetes version maintenance failed. Reason for update: %s. Error: %v", kubernetesControlPlaneUpdate.reason, kubernetesControlPlaneUpdate.description))
+			r.Recorder.Eventf(shoot, nil, corev1.EventTypeWarning, gardencorev1beta1.ShootEventK8sVersionMaintenance, gardencorev1beta1.EventActionReconcile, "Control Plane: Kubernetes version maintenance failed. Reason for update: %s. Error: %v", kubernetesControlPlaneUpdate.reason, kubernetesControlPlaneUpdate.description)
 		}
 	}
 
@@ -434,7 +432,7 @@ func (r *Reconciler) reconcile(ctx context.Context, log logr.Logger, shoot *gard
 
 // buildMaintenanceMessages builds a combined message containing the performed maintenance operations over all worker pools. If the maintenance operation failed, the description
 // contains an indication for the failure and the reason the update was triggered. Details for failed maintenance operations are returned in the second return string.
-func buildMaintenanceMessages(kubernetesControlPlaneUpdate *updateResult, workerToKubernetesUpdate map[string]updateResult, workerToMachineImageUpdate map[string]updateResult) (string, string) {
+func buildMaintenanceMessages(kubernetesControlPlaneUpdate *updateResult, workerToKubernetesUpdate, workerToMachineImageUpdate, credentialsToRotationUpdate map[string]updateResult) (string, string) {
 	countSuccessfulOperations := 0
 	countFailedOperations := 0
 	description := ""
@@ -475,6 +473,18 @@ func buildMaintenanceMessages(kubernetesControlPlaneUpdate *updateResult, worker
 		failureReason = fmt.Sprintf("%s, Worker pool %q: %s", failureReason, worker, result.description)
 	}
 
+	for credentials, result := range credentialsToRotationUpdate {
+		if result.isSuccessful {
+			countSuccessfulOperations++
+			description = fmt.Sprintf("%s, %s", description, fmt.Sprintf("Credentials %q: %s. Reason: %s", credentials, result.description, result.reason))
+			continue
+		}
+
+		countFailedOperations++
+		description = fmt.Sprintf("%s, %s", description, fmt.Sprintf("Credentials %q: Automatic rotation failed. Reason for update: %s", credentials, result.reason))
+		failureReason = fmt.Sprintf("%s, Credentials %q: Automatic rotation failure due to: %s", failureReason, credentials, result.description)
+	}
+
 	description = strings.TrimPrefix(description, ", ")
 	failureReason = strings.TrimPrefix(failureReason, ", ")
 
@@ -489,17 +499,17 @@ func buildMaintenanceMessages(kubernetesControlPlaneUpdate *updateResult, worker
 func (r *Reconciler) recordMaintenanceEventsForPool(workerToUpdateResult map[string]updateResult, shoot *gardencorev1beta1.Shoot, eventType string, maintenanceType string) {
 	for worker, reason := range workerToUpdateResult {
 		if reason.isSuccessful {
-			r.Recorder.Eventf(shoot, corev1.EventTypeNormal, eventType, "%s", fmt.Sprintf("Worker pool %q: %v. Reason: %s.",
-				worker, reason.description, reason.reason))
+			r.Recorder.Eventf(shoot, nil, corev1.EventTypeNormal, eventType, gardencorev1beta1.EventActionReconcile, "Worker pool %q: %v. Reason: %s.",
+				worker, reason.description, reason.reason)
 			continue
 		}
 
-		r.Recorder.Eventf(shoot, corev1.EventTypeWarning, eventType, "%s", fmt.Sprintf("Worker pool %q: %s version maintenance failed. Reason for update: %s. Error: %v",
-			worker, maintenanceType, reason.reason, reason.description))
+		r.Recorder.Eventf(shoot, nil, corev1.EventTypeWarning, eventType, gardencorev1beta1.EventActionReconcile, "Worker pool %q: %s version maintenance failed. Reason for update: %s. Error: %v",
+			worker, maintenanceType, reason.reason, reason.description)
 	}
 }
 
-func maintainOperation(shoot *gardencorev1beta1.Shoot) string {
+func maintainOperation(shoot *gardencorev1beta1.Shoot, credentialsToRotationUpdate map[string]updateResult) string {
 	var operation string
 	if hasMaintainNowAnnotation(shoot) {
 		delete(shoot.Annotations, v1beta1constants.GardenerOperation)
@@ -516,7 +526,7 @@ func maintainOperation(shoot *gardencorev1beta1.Shoot) string {
 			delete(shoot.Annotations, v1beta1constants.FailedShootNeedsRetryOperation)
 		}
 	default:
-		operation = getOperation(shoot)
+		operation = getOperation(shoot, credentialsToRotationUpdate)
 		metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, v1beta1constants.GardenerOperation, operation)
 		delete(shoot.Annotations, v1beta1constants.GardenerMaintenanceOperation)
 	}
@@ -651,6 +661,106 @@ func maintainKubernetesVersion(log logr.Logger, kubernetesVersion string, autoUp
 	}, nil
 }
 
+// computeCredentialsToRotationResults starts the credentials rotation if necessary and returns the reason why an update was done
+func computeCredentialsToRotationResults(log logr.Logger, shoot *gardencorev1beta1.Shoot, now metav1.Time) map[string]updateResult {
+	var (
+		maintenanceResults                    = make(map[string]updateResult)
+		sshKeypairRotationEnabled             = v1beta1helper.IsSSHKeypairAutoRotationEnabled(shoot)
+		observabilityPasswordsRotationEnabled = v1beta1helper.IsObservabilityAutoRotationEnabled(shoot)
+		etcdEncryptionKeyRotationEnabled      = v1beta1helper.IsETCDEncryptionKeyAutoRotationEnabled(shoot)
+		etcdEncryptionKeyRotationPhase        = v1beta1helper.GetShootETCDEncryptionKeyRotationPhase(shoot.Status.Credentials)
+	)
+
+	if sshKeypairRotationEnabled && v1beta1helper.ShootEnablesSSHAccess(shoot) &&
+		sshKeypairRotationPassedRotationPeriod(shoot, now.Time, *shoot.Spec.Maintenance.AutoRotation.Credentials.SSHKeypair.RotationPeriod) {
+		reason := "Automatic rotation of SSH keypair configured"
+		log.Info("SSH keypair for workers will be rotated", "reason", reason)
+		maintenanceResults[v1beta1constants.ShootOperationRotateSSHKeypair] = updateResult{
+			description:  "SSH keypair rotation started",
+			reason:       reason,
+			isSuccessful: true,
+		}
+	}
+
+	if observabilityPasswordsRotationEnabled &&
+		observabilityPasswordsRotationPassedRotationPeriod(shoot, now.Time, *shoot.Spec.Maintenance.AutoRotation.Credentials.Observability.RotationPeriod) {
+		reason := "Automatic rotation of observability passwords configured"
+		log.Info("Observability passwords will be rotated", "reason", reason)
+		maintenanceResults[v1beta1constants.OperationRotateObservabilityCredentials] = updateResult{
+			description:  "Observability passwords rotation started",
+			reason:       reason,
+			isSuccessful: true,
+		}
+	}
+
+	if etcdEncryptionKeyRotationEnabled &&
+		etcdEncryptionKeyRotationPassedRotationPeriod(shoot, now.Time, *shoot.Spec.Maintenance.AutoRotation.Credentials.ETCDEncryptionKey.RotationPeriod) {
+		if len(etcdEncryptionKeyRotationPhase) == 0 || etcdEncryptionKeyRotationPhase == gardencorev1beta1.RotationCompleted {
+			reason := "Automatic rotation of etcd encryption key configured"
+			log.Info("ETCD Encryption key will be rotated", "reason", reason)
+			maintenanceResults[v1beta1constants.OperationRotateETCDEncryptionKey] = updateResult{
+				description:  "ETCD Encryption key rotation started",
+				reason:       reason,
+				isSuccessful: true,
+			}
+		} else {
+			reason := "ETCD encryption key rotation is already in progress"
+			maintenanceResults[v1beta1constants.OperationRotateETCDEncryptionKey] = updateResult{
+				description:  "Could not start ETCD encryption key rotation",
+				reason:       reason,
+				isSuccessful: false,
+			}
+		}
+	}
+
+	return maintenanceResults
+}
+
+// sshKeypairRotationPassedRotationPeriod checks if the rotation period for ssh keypair has passed.
+func sshKeypairRotationPassedRotationPeriod(shoot *gardencorev1beta1.Shoot, now time.Time, period metav1.Duration) bool {
+	// If the shoot has just been created or the credentials have never been rotated, use the shoot's creation timestamp to determine whether the rotation period has passed.
+	latestRotationCompletionTime := shoot.CreationTimestamp.Time
+
+	if shoot.Status.Credentials != nil &&
+		shoot.Status.Credentials.Rotation != nil &&
+		shoot.Status.Credentials.Rotation.SSHKeypair != nil &&
+		shoot.Status.Credentials.Rotation.SSHKeypair.LastCompletionTime != nil {
+		latestRotationCompletionTime = shoot.Status.Credentials.Rotation.SSHKeypair.LastCompletionTime.Time
+	}
+
+	return latestRotationCompletionTime.Before(now.Add(-period.Duration))
+}
+
+// observabilityPasswordsRotationPassedRotationPeriod checks if the rotation period for observability passwords has passed.
+func observabilityPasswordsRotationPassedRotationPeriod(shoot *gardencorev1beta1.Shoot, now time.Time, period metav1.Duration) bool {
+	// If the shoot has just been created or the credentials have never been rotated, use the shoot's creation timestamp to determine whether the rotation period has passed.
+	latestRotationCompletionTime := shoot.CreationTimestamp.Time
+
+	if shoot.Status.Credentials != nil &&
+		shoot.Status.Credentials.Rotation != nil &&
+		shoot.Status.Credentials.Rotation.Observability != nil &&
+		shoot.Status.Credentials.Rotation.Observability.LastCompletionTime != nil {
+		latestRotationCompletionTime = shoot.Status.Credentials.Rotation.Observability.LastCompletionTime.Time
+	}
+
+	return latestRotationCompletionTime.Before(now.Add(-period.Duration))
+}
+
+// etcdEncryptionKeyRotationPassedRotationPeriod checks if the rotation period for the etcd encryption key has passed.
+func etcdEncryptionKeyRotationPassedRotationPeriod(shoot *gardencorev1beta1.Shoot, now time.Time, period metav1.Duration) bool {
+	// If the shoot has just been created or the credentials have never been rotated, use the shoot's creation timestamp to determine whether the rotation period has passed.
+	latestRotationCompletionTime := shoot.CreationTimestamp.Time
+
+	if shoot.Status.Credentials != nil &&
+		shoot.Status.Credentials.Rotation != nil &&
+		shoot.Status.Credentials.Rotation.ETCDEncryptionKey != nil &&
+		shoot.Status.Credentials.Rotation.ETCDEncryptionKey.LastCompletionTime != nil {
+		latestRotationCompletionTime = shoot.Status.Credentials.Rotation.ETCDEncryptionKey.LastCompletionTime.Time
+	}
+
+	return latestRotationCompletionTime.Before(now.Add(-period.Duration))
+}
+
 func determineKubernetesVersion(kubernetesVersion string, profile *gardencorev1beta1.CloudProfile, isExpired bool) (string, error) {
 	getHigherVersionAutoUpdate := v1beta1helper.GetLatestVersionForPatchAutoUpdate
 	getHigherVersionForceUpdate := v1beta1helper.GetVersionForForcefulUpdateToConsecutiveMinor
@@ -706,17 +816,28 @@ func needsRetry(shoot *gardencorev1beta1.Shoot) bool {
 	return needsRetryOperation
 }
 
-func getOperation(shoot *gardencorev1beta1.Shoot) string {
-	var (
-		operation            = v1beta1constants.GardenerOperationReconcile
-		maintenanceOperation = shoot.Annotations[v1beta1constants.GardenerMaintenanceOperation]
-	)
+func getOperation(shoot *gardencorev1beta1.Shoot, credentialsToRotationUpdate map[string]updateResult) string {
+	maintenanceOperations := v1beta1helper.GetShootMaintenanceOperations(shoot.Annotations)
 
-	if maintenanceOperation != "" {
-		operation = maintenanceOperation
+	// Always reconcile the Shoot in maintenance cycle.
+	if !slices.Contains(maintenanceOperations, v1beta1constants.GardenerOperationReconcile) {
+		maintenanceOperations = append(maintenanceOperations, v1beta1constants.GardenerOperationReconcile)
 	}
 
-	return operation
+	// Add pending automatic credentials rotations in the current maintenance cycle.
+	for credentials, updateResult := range credentialsToRotationUpdate {
+		switch {
+		case credentials == v1beta1constants.ShootOperationRotateSSHKeypair && updateResult.isSuccessful:
+			maintenanceOperations = append(maintenanceOperations, v1beta1constants.ShootOperationRotateSSHKeypair)
+		case credentials == v1beta1constants.OperationRotateObservabilityCredentials && updateResult.isSuccessful:
+			maintenanceOperations = append(maintenanceOperations, v1beta1constants.OperationRotateObservabilityCredentials)
+		case credentials == v1beta1constants.OperationRotateETCDEncryptionKey && updateResult.isSuccessful &&
+			!slices.Contains(maintenanceOperations, v1beta1constants.OperationRotateETCDEncryptionKeyStart):
+			maintenanceOperations = append(maintenanceOperations, v1beta1constants.OperationRotateETCDEncryptionKey)
+		}
+	}
+
+	return strings.Join(maintenanceOperations, v1beta1constants.GardenerOperationsSeparator)
 }
 
 func shouldMachineImageVersionBeUpdated(shootMachineImage *gardencorev1beta1.ShootMachineImage, machineImage *gardencorev1beta1.MachineImage, autoUpdate bool) (shouldBeUpdated bool, reason string, isExpired bool) {
@@ -739,20 +860,6 @@ func shouldMachineImageVersionBeUpdated(shootMachineImage *gardencorev1beta1.Sho
 	}
 
 	return false, "", false
-}
-
-// setLimitedSwap sets the swap behavior to `LimitedSwap` if it's currently set to `UnlimitedSwap`
-func setLimitedSwap(kubelet *gardencorev1beta1.KubeletConfig, reason string) []string {
-	var reasonsForUpdate []string
-
-	if kubelet.MemorySwap != nil &&
-		kubelet.MemorySwap.SwapBehavior != nil &&
-		*kubelet.MemorySwap.SwapBehavior == gardencorev1beta1.UnlimitedSwap {
-		kubelet.MemorySwap.SwapBehavior = ptr.To(gardencorev1beta1.LimitedSwap)
-		reasonsForUpdate = append(reasonsForUpdate, reason+" is set to 'LimitedSwap'. Reason: 'UnlimitedSwap' cannot be used for Kubernetes version 1.30 and higher.")
-	}
-
-	return reasonsForUpdate
 }
 
 func maintainFeatureGatesForShoot(shoot *gardencorev1beta1.Shoot) []string {

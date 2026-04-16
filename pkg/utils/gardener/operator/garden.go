@@ -15,13 +15,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	operatorv1alpha1helper "github.com/gardener/gardener/pkg/api/operator/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/apis/authentication"
 	gardencore "github.com/gardener/gardener/pkg/apis/core"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/operations"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
-	operatorv1alpha1helper "github.com/gardener/gardener/pkg/apis/operator/v1alpha1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/security"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
@@ -34,20 +34,14 @@ import (
 func IsServedByGardenerAPIServer(resource string) bool {
 	groupResource := schema.ParseGroupResource(resource)
 
-	for _, groupName := range []string{
+	return slices.Contains([]string{
 		authentication.GroupName,
 		gardencore.GroupName,
 		operations.GroupName,
 		security.GroupName,
 		settings.GroupName,
 		seedmanagement.GroupName,
-	} {
-		if groupName == groupResource.Group {
-			return true
-		}
-	}
-
-	return false
+	}, groupResource.Group)
 }
 
 // IsServedByKubeAPIServer returns true if the passed resources is served by the Kube API Server.

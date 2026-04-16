@@ -52,6 +52,7 @@ var _ = Describe("istiod", func() {
 		labels                        map[string]string
 		networkLabels                 map[string]string
 		expectAPIServerTLSTermination bool
+		expectVPARecreateMode         bool
 
 		managedResourceIstioName   string
 		managedResourceIstio       *resourcesv1alpha1.ManagedResource
@@ -148,8 +149,13 @@ var _ = Describe("istiod", func() {
 			return str
 		}
 
-		istioIngressAutoscalerTLSTerminationVPA = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_autoscaler_tls_termination_vpa.yaml")
+		istioIngressAutoscalerVPA = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_autoscaler_vpa.yaml")
+			return string(data)
+		}
+
+		istioIngressAutoscalerVPARecreate = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_autoscaler_vpa_recreate.yaml")
 			return string(data)
 		}
 
@@ -259,33 +265,23 @@ var _ = Describe("istiod", func() {
 			return string(data)
 		}
 
-		istioIngressMetricsDestinationRule = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_metrics_destinationrule.yaml")
-			return string(data)
-		}
-
-		istioIngressMetricsEnvoyFilter = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_metrics_envoyfilter.yaml")
-			return string(data)
-		}
-
-		istioIngressMetricsGateway = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_metrics_gateway.yaml")
-			return string(data)
-		}
-
-		istioIngressMetricsServiceEntry = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_metrics_serviceentry.yaml")
-			return string(data)
-		}
-
-		istioIngressMetricsVirtualService = func() string {
-			data, _ := os.ReadFile("./test_charts/ingress_metrics_virtualservice.yaml")
-			return string(data)
-		}
-
 		istioIngressNamespace = func() string {
 			data, _ := os.ReadFile("./test_charts/ingress_namespace.yaml")
+			return string(data)
+		}
+
+		istioProxyProtocolEnvoyFilterVPNUnified = func() string {
+			data, _ := os.ReadFile("./test_charts/proxyprotocol_envoyfilter_unified.yaml")
+			return string(data)
+		}
+
+		istioIngressHTTPProxyGatewayUnified = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_http_proxy_gateway_unified.yaml")
+			return string(data)
+		}
+
+		istioIngressEnvoyHTTPProxyFilterUnified = func() string {
+			data, _ := os.ReadFile("./test_charts/ingress_http_proxy_envoy_filter_unified.yaml")
 			return string(data)
 		}
 	)
@@ -296,6 +292,7 @@ var _ = Describe("istiod", func() {
 		labels = map[string]string{"foo": "bar"}
 		networkLabels = map[string]string{"to-target": "allowed"}
 		expectAPIServerTLSTermination = false
+		expectVPARecreateMode = false
 		expectedCPURequests = "300m"
 		expectedMinReplicas = 2
 		expectedMaxReplicas = 9
@@ -377,7 +374,8 @@ var _ = Describe("istiod", func() {
 			))
 		})
 
-		checkSuccessfulDeployment := func(minReplicas, maxReplicas *int) {
+		getAndCheckManagedResourceSecret := func() {
+			GinkgoHelper()
 			Expect(c.Get(ctx, client.ObjectKeyFromObject(managedResourceIstio), managedResourceIstio)).To(Succeed())
 			expectedMr := &resourcesv1alpha1.ManagedResource{
 				ObjectMeta: metav1.ObjectMeta{
@@ -401,6 +399,10 @@ var _ = Describe("istiod", func() {
 			Expect(managedResourceIstioSecret.Type).To(Equal(corev1.SecretTypeOpaque))
 			Expect(managedResourceIstioSecret.Immutable).To(Equal(ptr.To(true)))
 			Expect(managedResourceIstioSecret.Labels["resources.gardener.cloud/garbage-collectable-reference"]).To(Equal("true"))
+		}
+
+		checkSuccessfulDeployment := func(minReplicas, maxReplicas *int) {
+			getAndCheckManagedResourceSecret()
 
 			expectedIstioManifests := []string{
 				istioIngressNamespace(),
@@ -411,19 +413,8 @@ var _ = Describe("istiod", func() {
 				istioIngressServiceAccount(),
 				istioIngressDeployment(minReplicas),
 				istioIngressEnvoyFilter(),
-				istioIngressMetricsDestinationRule(),
-				istioIngressMetricsEnvoyFilter(),
-				istioIngressMetricsGateway(),
-				istioIngressMetricsServiceEntry(),
-				istioIngressMetricsVirtualService(),
-			}
-
-			// TODO(istvanballok): remove this block once the issue: 'Istio metrics leak for deleted shoots' #12699 is resolved
-			if false {
-				expectedIstioManifests = append(expectedIstioManifests,
-					istioIngressServiceMonitor(),
-					istioIngressTelemetry(),
-				)
+				istioIngressServiceMonitor(),
+				istioIngressTelemetry(),
 			}
 
 			expectedIstioSystemManifests := []string{
@@ -448,21 +439,38 @@ var _ = Describe("istiod", func() {
 			expectedIstioManifests = append(expectedIstioManifests, istioIngressPodDisruptionBudget())
 			expectedIstioSystemManifests = append(expectedIstioSystemManifests, istiodPodDisruptionBudget())
 
+			if expectVPARecreateMode {
+				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscalerVPARecreate())
+			} else {
+				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscalerVPA())
+			}
+
 			if expectAPIServerTLSTermination {
-				expectedIstioManifests = append(expectedIstioManifests, istioAPIServerTLSTerminationEnvoyFilter())
-				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscalerTLSTerminationHPA(minReplicas, maxReplicas))
-				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscalerTLSTerminationVPA())
-				expectedIstioManifests = append(expectedIstioManifests, istioStripTrailingDotEnvoyFilter())
+				expectedIstioManifests = append(expectedIstioManifests,
+					istioAPIServerTLSTerminationEnvoyFilter(),
+					istioIngressAutoscalerTLSTerminationHPA(minReplicas, maxReplicas),
+					istioStripTrailingDotEnvoyFilter(),
+				)
 			} else {
 				expectedIstioManifests = append(expectedIstioManifests, istioIngressAutoscaler(minReplicas, maxReplicas))
 			}
 
 			if igw[0].TerminateLoadBalancerProxyProtocol {
-				expectedIstioManifests = append(expectedIstioManifests, istioProxyProtocolEnvoyFilterSNI(), istioProxyProtocolEnvoyFilterVPN())
+				expectedIstioManifests = append(expectedIstioManifests,
+					istioProxyProtocolEnvoyFilterSNI(),
+					istioProxyProtocolEnvoyFilterVPN(),
+					istioProxyProtocolEnvoyFilterVPNUnified(),
+				)
 			}
 
 			if igw[0].VPNEnabled {
-				expectedIstioManifests = append(expectedIstioManifests, istioIngressHTTPConnectGateway(), istioIngressEnvoyVPNFilter(0), istioIngressEnvoyVPNFilter(1))
+				expectedIstioManifests = append(expectedIstioManifests,
+					istioIngressHTTPConnectGateway(),
+					istioIngressEnvoyVPNFilter(0),
+					istioIngressEnvoyVPNFilter(1),
+					istioIngressHTTPProxyGatewayUnified(),
+					istioIngressEnvoyHTTPProxyFilterUnified(),
+				)
 			}
 
 			By("Verify istio resources")
@@ -780,7 +788,7 @@ var _ = Describe("istiod", func() {
 		Context("With IstioTLSTermination feature gate enabled", func() {
 			BeforeEach(func() {
 				expectAPIServerTLSTermination = true
-				expectedCPURequests = "450m"
+				expectedCPURequests = "1"
 				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.IstioTLSTermination, true))
 			})
 
@@ -792,7 +800,7 @@ var _ = Describe("istiod", func() {
 		Context("With IstioTLSTermination feature gate disabled but with shoots still using the feature", func() {
 			BeforeEach(func() {
 				expectAPIServerTLSTermination = true
-				expectedCPURequests = "450m"
+				expectedCPURequests = "1"
 
 				envoyFilter := istionetworkingv1alpha3.EnvoyFilter{
 					ObjectMeta: metav1.ObjectMeta{
@@ -805,6 +813,17 @@ var _ = Describe("istiod", func() {
 			})
 
 			It("should successfully deploy all resources", func() {
+				checkSuccessfulDeployment(nil, nil)
+			})
+		})
+
+		Context("With VPAInPlaceUpdates feature gate disabled", func() {
+			BeforeEach(func() {
+				expectVPARecreateMode = true
+				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.VPAInPlaceUpdates, false))
+			})
+
+			It("should successfully deploy all resources with VPA Recreate mode", func() {
 				checkSuccessfulDeployment(nil, nil)
 			})
 		})
@@ -1025,7 +1044,7 @@ func makeIngressGateway(namespace string, annotations, labels map[string]string,
 			PriorityClassName:                  v1beta1constants.PriorityClassNameSeedSystemCritical,
 			TerminateLoadBalancerProxyProtocol: false,
 			VPNEnabled:                         true,
-			KubernetesVersion:                  "1.30.0",
+			KubernetesVersion:                  "1.35.0",
 		},
 	}
 }

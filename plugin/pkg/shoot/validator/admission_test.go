@@ -648,6 +648,108 @@ var _ = Describe("validator", func() {
 			})
 		})
 
+		Context("handling spec.seedSelector", func() {
+			BeforeEach(func() {
+				seed.Labels = map[string]string{
+					"provider": "local",
+					"purpose":  "test",
+				}
+				seed.Spec.Provider.Type = "local"
+
+				auth = mockauthorizer.NewMockAuthorizer(ctrl)
+				Expect(coreInformerFactory.Core().V1beta1().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
+				Expect(coreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
+				Expect(coreInformerFactory.Core().V1beta1().Projects().Informer().GetStore().Add(&project)).To(Succeed())
+				Expect(coreInformerFactory.Core().V1beta1().SecretBindings().Informer().GetStore().Add(&secretBinding)).To(Succeed())
+				Expect(securityInformerFactory.Security().V1alpha1().CredentialsBindings().Informer().GetStore().Add(&credentialsBinding)).To(Succeed())
+				auth.EXPECT().Authorize(ctx, authorizeAttributes).Return(authorizer.DecisionAllow, "", nil).AnyTimes()
+			})
+
+			It("should allow setting the seedSelector on create", func() {
+				shoot.Spec.SeedName = nil
+				shoot.Spec.SeedSelector = &core.SeedSelector{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"provider": "local",
+						},
+					},
+					ProviderTypes: []string{"local"},
+				}
+
+				attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
+				err := admissionHandler.Validate(ctx, attrs, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should allow changing the seedSelector on update when no seed is assigned", func() {
+				shoot.Spec.SeedName = nil
+				oldShoot := shoot.DeepCopy()
+				shoot.Spec.SeedSelector = &core.SeedSelector{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"provider": "local",
+						},
+					},
+				}
+
+				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
+				err := admissionHandler.Validate(ctx, attrs, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should allow changing a matching seedSelector on update when seed is assigned", func() {
+				oldShoot := shoot.DeepCopy()
+				shoot.Spec.SeedSelector = &core.SeedSelector{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"provider": "local",
+						},
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{Key: "purpose", Operator: metav1.LabelSelectorOpIn, Values: []string{"test"}},
+						},
+					},
+				}
+
+				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
+				err := admissionHandler.Validate(ctx, attrs, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should deny changing a seedSelector on update when the assigned seed does not match the new selector", func() {
+				oldShoot := shoot.DeepCopy()
+				shoot.Spec.SeedSelector = &core.SeedSelector{
+					LabelSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"provider": "local",
+						},
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{Key: "purpose", Operator: metav1.LabelSelectorOpIn, Values: []string{"production"}},
+						},
+					},
+				}
+
+				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
+				err := admissionHandler.Validate(ctx, attrs, nil)
+
+				Expect(err).To(MatchError(ContainSubstring("cannot change seedSelector to not match the labels of the already selected seed")))
+			})
+
+			It("should deny changing the seedSelector provider type on update when the assigned seed does not match the new type", func() {
+				oldShoot := shoot.DeepCopy()
+				shoot.Spec.SeedSelector = &core.SeedSelector{
+					ProviderTypes: []string{"unknown"},
+				}
+
+				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, userInfo)
+				err := admissionHandler.Validate(ctx, attrs, nil)
+
+				Expect(err).To(MatchError(ContainSubstring("cannot change seedSelector to not match the provider type of the already selected seed")))
+			})
+		})
+
 		Context("seedName change", func() {
 			var (
 				oldShoot core.Shoot
@@ -2140,55 +2242,6 @@ var _ = Describe("validator", func() {
 			})
 		})
 
-		Context("oidc config check", func() {
-			BeforeEach(func() {
-				shoot.Spec.Kubernetes.KubeAPIServer = &core.KubeAPIServerConfig{}
-			})
-
-			DescribeTable("validate oidc config on shoot create", func(clientID, issuerURL *string, errorMatcher types.GomegaMatcher) {
-				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig = &core.OIDCConfig{
-					ClientID:  clientID,
-					IssuerURL: issuerURL,
-				}
-
-				Expect(coreInformerFactory.Core().V1beta1().Projects().Informer().GetStore().Add(&project)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().SecretBindings().Informer().GetStore().Add(&secretBinding)).To(Succeed())
-				Expect(securityInformerFactory.Security().V1alpha1().CredentialsBindings().Informer().GetStore().Add(&credentialsBinding)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-				err := admissionHandler.Validate(ctx, attrs, nil)
-
-				Expect(err).To(errorMatcher)
-			},
-				Entry("should allow when oidcConfig is valid", ptr.To("someClientID"), ptr.To("https://issuer.com"), BeNil()),
-				Entry("should forbid when oidcConfig clientID is nil", nil, ptr.To("https://issuer.com"), BeForbiddenError()),
-				Entry("should forbid when oidcConfig clientID is empty string", ptr.To(""), ptr.To("https://issuer.com"), BeForbiddenError()),
-				Entry("should forbid when oidcConfig issuerURL is nil", ptr.To("someClientID"), nil, BeForbiddenError()),
-				Entry("should forbid when oidcConfig issuerURL is empty string", ptr.To("someClientID"), ptr.To(""), BeForbiddenError()),
-			)
-
-			DescribeTable("do not validate oidc config when operation is not create", func(admissionOperation admission.Operation, operationOptions runtime.Object) {
-				oldShoot := shoot.DeepCopy()
-				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig = &core.OIDCConfig{}
-
-				Expect(coreInformerFactory.Core().V1beta1().Projects().Informer().GetStore().Add(&project)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-				Expect(coreInformerFactory.Core().V1beta1().SecretBindings().Informer().GetStore().Add(&secretBinding)).To(Succeed())
-				Expect(securityInformerFactory.Security().V1alpha1().CredentialsBindings().Informer().GetStore().Add(&credentialsBinding)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admissionOperation, operationOptions, false, nil)
-				err := admissionHandler.Validate(ctx, attrs, nil)
-
-				Expect(err).ToNot(HaveOccurred())
-			},
-				Entry("should allow invalid oidcConfig on shoot update", admission.Update, &metav1.UpdateOptions{}),
-				Entry("should allow invalid oidcConfig on shoot delete", admission.Delete, &metav1.DeleteOptions{}),
-			)
-		})
-
 		Context("networking settings checks", func() {
 			var (
 				oldShoot *core.Shoot
@@ -2913,9 +2966,9 @@ var _ = Describe("validator", func() {
 			var (
 				worker          core.Worker
 				resourceCPU1    = resource.MustParse("2")
-				resourceCPU2    = resource.MustParse("3")
+				resourceCPU2    = resource.MustParse("6")
 				resourceMemory1 = resource.MustParse("2Gi")
-				resourceMemory2 = resource.MustParse("3Gi")
+				resourceMemory2 = resource.MustParse("6Gi")
 				kubeletConfig   *core.KubeletConfig
 			)
 
@@ -2943,10 +2996,6 @@ var _ = Describe("validator", func() {
 								CPU:    &resourceCPU1,
 								Memory: &resourceMemory1,
 							},
-							SystemReserved: &core.KubeletConfigReserved{
-								CPU:    &resourceCPU1,
-								Memory: &resourceMemory1,
-							},
 						},
 					},
 				}
@@ -2961,8 +3010,7 @@ var _ = Describe("validator", func() {
 				}
 
 				kubeletConfig = &core.KubeletConfig{
-					KubeReserved:   &core.KubeletConfigReserved{},
-					SystemReserved: &core.KubeletConfigReserved{},
+					KubeReserved: &core.KubeletConfigReserved{},
 				}
 
 				cloudProfile.Spec.MachineTypes = append(cloudProfile.Spec.MachineTypes, machineType)
@@ -2995,7 +3043,6 @@ var _ = Describe("validator", func() {
 
 			It("should not allow creation of Shoot if reserved CPU in the global kubeletConfig is more than CPU capacity and worker kubeletConfig is nil", func() {
 				kubeletConfig.KubeReserved.CPU = &resourceCPU2
-				kubeletConfig.SystemReserved.CPU = &resourceCPU2
 				shoot.Spec.Kubernetes.Kubelet = kubeletConfig
 
 				worker.Kubernetes.Kubelet = nil
@@ -3005,12 +3052,11 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved) cannot be more than the Node's CPU capacity"))
 			})
 
 			It("should allow creation of Shoot if reserved CPU in the global kubeletConfig is more than CPU capacity but the worker kubeletConfig has lesser reserved CPU", func() {
 				kubeletConfig.KubeReserved.CPU = &resourceCPU2
-				kubeletConfig.SystemReserved.CPU = &resourceCPU2
 				shoot.Spec.Kubernetes.Kubelet = kubeletConfig
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
@@ -3023,24 +3069,21 @@ var _ = Describe("validator", func() {
 
 			It("should not allow creation of Shoot if reserved CPU in the global kubeletConfig is less than CPU capacity but the worker kubeletConfig has more reserved CPU", func() {
 				kubeletConfig.KubeReserved.CPU = &resourceCPU1
-				kubeletConfig.SystemReserved.CPU = &resourceCPU1
 				shoot.Spec.Kubernetes.Kubelet = kubeletConfig
 
 				worker.Kubernetes.Kubelet.KubeReserved.CPU = &resourceCPU2
-				worker.Kubernetes.Kubelet.SystemReserved.CPU = &resourceCPU2
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
 
 				attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved) cannot be more than the Node's CPU capacity"))
 			})
 
 			It("should not allow creation of Shoot if kubeReserved CPU is more than CPU capacity", func() {
 				resource := resourceCPU2
 				resource.Add(resourceCPU2)
-				worker.Kubernetes.Kubelet.SystemReserved = nil
 				worker.Kubernetes.Kubelet.KubeReserved.CPU = &resource
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
@@ -3049,27 +3092,11 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity"))
-			})
-
-			It("should not allow creation of Shoot if systemReserved CPU is more than CPU capacity", func() {
-				resource := resourceCPU2
-				resource.Add(resourceCPU2)
-				worker.Kubernetes.Kubelet.KubeReserved = nil
-				worker.Kubernetes.Kubelet.SystemReserved.CPU = &resource
-
-				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
-
-				attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-				err := admissionHandler.Validate(ctx, attrs, nil)
-
-				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved) cannot be more than the Node's CPU capacity"))
 			})
 
 			It("should not allow creation of Shoot if sum of kubeReserved and systemReserved CPU is more than CPU capacity", func() {
 				worker.Kubernetes.Kubelet.KubeReserved.CPU = &resourceCPU2
-				worker.Kubernetes.Kubelet.SystemReserved.CPU = &resourceCPU2
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
 
@@ -3077,12 +3104,11 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved) cannot be more than the Node's CPU capacity"))
 			})
 
 			It("should not allow creation of Shoot if reserved memory in the global kubeletConfig is more than memory capacity and worker kubeletConfig is nil", func() {
 				kubeletConfig.KubeReserved.Memory = &resourceMemory2
-				kubeletConfig.SystemReserved.Memory = &resourceMemory2
 				shoot.Spec.Kubernetes.Kubelet = kubeletConfig
 
 				worker.Kubernetes.Kubelet = nil
@@ -3092,12 +3118,11 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved) cannot be more than the Node's memory capacity"))
 			})
 
 			It("should allow creation of Shoot if reserved memory in the global kubeletConfig is more than memory capacity but the worker kubeletConfig have lesser reserved memory", func() {
 				kubeletConfig.KubeReserved.Memory = &resourceMemory2
-				kubeletConfig.SystemReserved.Memory = &resourceMemory2
 				shoot.Spec.Kubernetes.Kubelet = kubeletConfig
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
@@ -3110,24 +3135,21 @@ var _ = Describe("validator", func() {
 
 			It("should not allow creation of Shoot if reserved memory in the global kubeletConfig is less than memory capacity but the worker kubeletConfig has more reserved memory", func() {
 				kubeletConfig.KubeReserved.Memory = &resourceMemory1
-				kubeletConfig.SystemReserved.Memory = &resourceMemory1
 				shoot.Spec.Kubernetes.Kubelet = kubeletConfig
 
 				worker.Kubernetes.Kubelet.KubeReserved.Memory = &resourceMemory2
-				worker.Kubernetes.Kubelet.SystemReserved.Memory = &resourceMemory2
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
 
 				attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved) cannot be more than the Node's memory capacity"))
 			})
 
 			It("should not allow creation of Shoot if kubeReserved memory is more than memory capacity", func() {
 				resource := resourceMemory2
 				resource.Add(resourceMemory2)
-				worker.Kubernetes.Kubelet.SystemReserved = nil
 				worker.Kubernetes.Kubelet.KubeReserved.Memory = &resource
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
@@ -3136,27 +3158,11 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity"))
-			})
-
-			It("should not allow creation of Shoot if systemReserved memory is more than memory capacity", func() {
-				resource := resourceMemory2
-				resource.Add(resourceMemory2)
-				worker.Kubernetes.Kubelet.KubeReserved = nil
-				worker.Kubernetes.Kubelet.SystemReserved.Memory = &resource
-
-				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
-
-				attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-				err := admissionHandler.Validate(ctx, attrs, nil)
-
-				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved) cannot be more than the Node's memory capacity"))
 			})
 
 			It("should not allow creation of Shoot if sum of kubeReserved and systemReserved memory is more than memory capacity", func() {
 				worker.Kubernetes.Kubelet.KubeReserved.Memory = &resourceMemory2
-				worker.Kubernetes.Kubelet.SystemReserved.Memory = &resourceMemory2
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
 
@@ -3164,13 +3170,12 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved) cannot be more than the Node's memory capacity"))
 			})
 
 			It("should not allow update of Shoot if reserved CPU is more than CPU capacity", func() {
 				oldShoot := shoot.DeepCopy()
 				worker.Kubernetes.Kubelet.KubeReserved.CPU = &resourceCPU2
-				worker.Kubernetes.Kubelet.SystemReserved.CPU = &resourceCPU2
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
 
@@ -3178,13 +3183,12 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved + systemReserved) cannot be more than the Node's CPU capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved CPU (kubeReserved) cannot be more than the Node's CPU capacity"))
 			})
 
 			It("should not allow update of Shoot if reserved memory is more than memory capacity", func() {
 				oldShoot := shoot.DeepCopy()
 				worker.Kubernetes.Kubelet.KubeReserved.Memory = &resourceMemory2
-				worker.Kubernetes.Kubelet.SystemReserved.Memory = &resourceMemory2
 
 				shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, worker)
 
@@ -3192,7 +3196,7 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Validate(ctx, attrs, nil)
 
 				Expect(err).To(BeForbiddenError())
-				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved + systemReserved) cannot be more than the Node's memory capacity"))
+				Expect(err.Error()).To(ContainSubstring("total reserved memory (kubeReserved) cannot be more than the Node's memory capacity"))
 			})
 		})
 
@@ -6306,22 +6310,14 @@ var _ = Describe("validator", func() {
 					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
 				})
 
-				It("should forbid shoots with individual maximum over the limit", func() {
+				It("should allow shoots with individual maximum over the limit", func() {
 					shoot.Spec.Provider.Workers[0].Minimum = 1
 					shoot.Spec.Provider.Workers[0].Maximum = limit + 1
 					shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, *shoot.Spec.Provider.Workers[0].DeepCopy())
 
 					attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
 
-					err := admissionHandler.Validate(ctx, attrs, nil)
-					Expect(err).To(BeForbiddenError())
-					Expect(err).To(MatchError(And(
-						ContainSubstring("spec.provider.workers[0].maximum"),
-						ContainSubstring("the maximum node count of a worker pool must not exceed the limit of %d configured in the CloudProfile", limit),
-						ContainSubstring("spec.provider.workers[1].maximum"),
-						ContainSubstring("the maximum node count of a worker pool must not exceed the limit of %d configured in the CloudProfile", limit),
-						Not(ContainSubstring("total minimum node count")),
-					)))
+					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
 				})
 
 				It("should forbid shoots with total minimum over the limit", func() {
@@ -6335,26 +6331,6 @@ var _ = Describe("validator", func() {
 					err := admissionHandler.Validate(ctx, attrs, nil)
 					Expect(err).To(BeForbiddenError())
 					Expect(err).To(MatchError(And(
-						ContainSubstring("spec.provider.workers"),
-						ContainSubstring("total minimum node count"),
-						Not(ContainSubstring("maximum node count of a worker pool")),
-					)))
-				})
-
-				It("should forbid shoots with individual maximum and total minimum over the limit", func() {
-					shoot.Spec.Provider.Workers[0].Minimum = limit
-					shoot.Spec.Provider.Workers[0].Maximum = limit + 1
-					shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, *shoot.Spec.Provider.Workers[0].DeepCopy())
-
-					attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, userInfo)
-
-					err := admissionHandler.Validate(ctx, attrs, nil)
-					Expect(err).To(BeForbiddenError())
-					Expect(err).To(MatchError(And(
-						ContainSubstring("spec.provider.workers[0].maximum"),
-						ContainSubstring("the maximum node count of a worker pool must not exceed the limit of %d configured in the CloudProfile", limit),
-						ContainSubstring("spec.provider.workers[1].maximum"),
-						ContainSubstring("the maximum node count of a worker pool must not exceed the limit of %d configured in the CloudProfile", limit),
 						ContainSubstring("spec.provider.workers"),
 						ContainSubstring("total minimum node count"),
 					)))

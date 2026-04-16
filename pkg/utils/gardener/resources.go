@@ -7,20 +7,41 @@ package gardener
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	securityv1alpha1constants "github.com/gardener/gardener/pkg/apis/security/v1alpha1/constants"
+	"github.com/gardener/gardener/pkg/utils/flow"
 	unstructuredutils "github.com/gardener/gardener/pkg/utils/kubernetes/unstructured"
+	"github.com/gardener/gardener/pkg/utils/workloadidentity"
 )
 
+// labelWorkloadIdentityReferencedSecretKey is a label key used to indicate that the secret is referenced
+// by a resource reference in a Shoot/Seed specification.
+const labelWorkloadIdentityReferencedSecretKey = securityv1alpha1constants.WorkloadIdentityPrefix + "referenced"
+
+// referencedWorkloadIdentitySecretLabels are the labels set on workload identity secrets created for referenced resources.
+var referencedWorkloadIdentitySecretLabels = map[string]string{labelWorkloadIdentityReferencedSecretKey: "true"}
+
 // PrepareReferencedResourcesForSeedCopy reads referenced objects prepares them for deployment to the seed cluster.
+// Only resources of kind Secret and ConfigMap are considered.
 func PrepareReferencedResourcesForSeedCopy(ctx context.Context, cl client.Client, resources []gardencorev1beta1.NamedResourceReference, sourceNamespace, targetNamespace string) ([]*unstructured.Unstructured, error) {
 	var unstructuredObjs []*unstructured.Unstructured
 
 	for _, resource := range resources {
+		if resource.ResourceRef.APIVersion != corev1.SchemeGroupVersion.String() || !slices.Contains([]string{"Secret", "ConfigMap"}, resource.ResourceRef.Kind) {
+			continue
+		}
+
 		// Read the resource from the Garden cluster
 		obj, err := unstructuredutils.GetObjectByRef(ctx, cl, &resource.ResourceRef, sourceNamespace)
 		if err != nil {
@@ -38,11 +59,96 @@ func PrepareReferencedResourcesForSeedCopy(ctx context.Context, cl client.Client
 		unstructuredObj.SetName(v1beta1constants.ReferencedResourcesPrefix + unstructuredObj.GetName())
 
 		// We don't want to keep user-defined annotations or labels when copying the resource to the seed.
-		unstructuredObj.SetAnnotations(nil)
+		// Set the annotation to trigger deletion of the resource in case an invalid update is applied, such as changing an immutable field of a Secret or ConfigMap while keeping the resource name the same.
+		// Users can do this by deleting and re-creating the resource with the same name; therefore, the resource will be deleted and re-created.
+		unstructuredObj.SetAnnotations(map[string]string{
+			resourcesv1alpha1.DeleteOnInvalidUpdate: "true",
+		})
 		unstructuredObj.SetLabels(nil)
 
 		unstructuredObjs = append(unstructuredObjs, unstructuredObj)
 	}
 
 	return unstructuredObjs, nil
+}
+
+// ReconcileWorkloadIdentityReferencedResources creates workload identity Secrets in the target namespace for every WorkloadIdentity reference.
+// It also cleans up unreferenced workload identity Secrets in the target namespace.
+// The secrets are named <[v1beta1constants.ReferencedWorkloadIdentityPrefix]> + <workload identity name>.
+func ReconcileWorkloadIdentityReferencedResources(ctx context.Context, gardenClient, seedClient client.Client, resources []gardencorev1beta1.NamedResourceReference, sourceNamespace, targetNamespace string, referringObj client.Object) error {
+	var (
+		tasks           = []flow.TaskFn{}
+		secretsToRetain = sets.New[string]()
+	)
+
+	for _, resource := range resources {
+		if resource.ResourceRef.APIVersion != securityv1alpha1.SchemeGroupVersion.String() || resource.ResourceRef.Kind != "WorkloadIdentity" {
+			continue
+		}
+
+		targetSecret := v1beta1constants.ReferencedWorkloadIdentityPrefix + resource.ResourceRef.Name
+		secretsToRetain.Insert(targetSecret)
+		tasks = append(tasks, func(ctx context.Context) error {
+			return createSecretForWorkloadIdentity(ctx, gardenClient, seedClient, resource.ResourceRef.Name, sourceNamespace, targetSecret, targetNamespace, referringObj)
+		})
+	}
+
+	if err := flow.Parallel(tasks...)(ctx); err != nil {
+		return fmt.Errorf("failed to deploy referenced workload identity secrets: %w", err)
+	}
+
+	if err := deleteUnreferencedWorkloadIdentitySecrets(ctx, seedClient, targetNamespace, secretsToRetain); err != nil {
+		return fmt.Errorf("failed to delete unreferenced workload identity secrets: %w", err)
+	}
+
+	return nil
+}
+
+// createSecretForWorkloadIdentity creates a Secret in the target namespace in the seed for the given WorkloadIdentity.
+// The secret name is added to the secretsToRetain parameter.
+func createSecretForWorkloadIdentity(ctx context.Context, gardenClient, seedClient client.Client, workloadIdentityName, sourceNamespace, targetSecret, targetNamespace string, referringObj client.Object) error {
+	workloadIdentity := &securityv1alpha1.WorkloadIdentity{}
+	if err := gardenClient.Get(ctx, client.ObjectKey{Namespace: sourceNamespace, Name: workloadIdentityName}, workloadIdentity); err != nil {
+		return fmt.Errorf("failed to get WorkloadIdentity: %w", err)
+	}
+
+	return workloadidentity.Deploy(ctx, seedClient, workloadIdentity, targetSecret, targetNamespace, nil, referencedWorkloadIdentitySecretLabels, referringObj)
+}
+
+func deleteUnreferencedWorkloadIdentitySecrets(ctx context.Context, c client.Client, namespace string, secretsToRetain sets.Set[string]) error {
+	secrets := &corev1.SecretList{}
+	if err := c.List(ctx, secrets,
+		client.InNamespace(namespace),
+		client.MatchingLabels(referencedWorkloadIdentitySecretLabels),
+	); err != nil {
+		return fmt.Errorf("failed to list referenced workload identity secrets in namespace %s: %w", namespace, err)
+	}
+
+	tasks := []flow.TaskFn{}
+	for _, secret := range secrets.Items {
+		if secretsToRetain.Has(secret.Name) {
+			continue
+		}
+		if !strings.HasPrefix(secret.Name, v1beta1constants.ReferencedWorkloadIdentityPrefix) {
+			continue
+		}
+
+		tasks = append(tasks, func(ctx context.Context) error {
+			return c.Delete(ctx, &secret)
+		})
+	}
+
+	return flow.Parallel(tasks...)(ctx)
+}
+
+// DestroyWorkloadIdentityReferencedResources deletes the referenced workload identity Secrets in the target namespace.
+func DestroyWorkloadIdentityReferencedResources(ctx context.Context, seedClient client.Client, targetNamespace string) error {
+	if err := seedClient.DeleteAllOf(ctx, &corev1.Secret{},
+		client.InNamespace(targetNamespace),
+		client.MatchingLabels(referencedWorkloadIdentitySecretLabels),
+	); err != nil {
+		return fmt.Errorf("failed to destroy referenced workload identity secrets in namespace %s: %w", targetNamespace, err)
+	}
+
+	return nil
 }

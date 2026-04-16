@@ -10,6 +10,7 @@ WHAT="protobuf codegen manifests logcheck"
 CODEGEN_GROUPS=""
 MANIFESTS_DIRS=""
 MODE=""
+MAX_PARALLEL_WORKERS="4"
 DEFAULT_MANIFESTS_DIRS=(
   "charts"
   "cmd"
@@ -43,6 +44,10 @@ parse_flags() {
         shift
         MANIFESTS_DIRS="${1:-$MANIFESTS_DIRS}"
         ;;
+      --max-parallel-workers)
+        shift
+        export MAX_PARALLEL_WORKERS=${1:-$MAX_PARALLEL_WORKERS}
+        ;;
       *)
         echo "Unknown argument: $1"
         exit 1
@@ -52,11 +57,12 @@ parse_flags() {
   done
 }
 
+root_module=$(cd "$REPO_ROOT"; go list -m)
 overwrite_paths() {
   local updated_paths=()
 
   for option in "${@}"; do
-    updated_paths+=("./$option/...")
+    updated_paths+=("$root_module/$option/...")
   done
 
   echo "${updated_paths[@]}"
@@ -69,7 +75,18 @@ run_target() {
       $REPO_ROOT/hack/update-protobuf.sh
       ;;
     codegen)
-      local mode="${MODE:-sequential}"
+      # Default to sequential mode in CI to avoid race conditions with go install.
+      # kube_codegen.sh functions (gen_helpers, gen_client) internally run 'go install'
+      # for code generators. When running in parallel, multiple processes race to write
+      # the same binaries, causing "already exists and is not an object file" errors.
+      local mode="$MODE"
+      if [[ -z "$mode" ]]; then
+        if [[ -n "${CI:-}" ]]; then
+          mode="sequential"
+        else
+          mode="parallel"
+        fi
+      fi
       $REPO_ROOT/hack/update-codegen.sh --groups "$CODEGEN_GROUPS" --mode "$mode"
       ;;
     manifests)

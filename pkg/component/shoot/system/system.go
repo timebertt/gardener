@@ -375,6 +375,8 @@ func (s *shootSystem) shootInfoData() map[string]string {
 		"serviceNetwork":    s.values.ServiceNetworkCIDRs[0].String(),
 		"maintenanceBegin":  s.values.Object.Spec.Maintenance.TimeWindow.Begin,
 		"maintenanceEnd":    s.values.Object.Spec.Maintenance.TimeWindow.End,
+		"uid":               string(s.values.Object.UID),
+		"statusUID":         string(s.values.Object.Status.UID),
 	}
 
 	if domain := s.values.ExternalClusterDomain; domain != nil {
@@ -498,6 +500,16 @@ func (s *shootSystem) selfHostedShootResources() []client.Object {
 					Verbs:         []string{"get"},
 					ResourceNames: []string{metav1.NamespaceSystem},
 				},
+				{
+					APIGroups: []string{corev1.SchemeGroupVersion.Group},
+					Resources: []string{"nodes"},
+					Verbs:     []string{"get", "list", "watch"},
+				},
+				{
+					APIGroups: []string{corev1.SchemeGroupVersion.Group},
+					Resources: []string{"secrets"},
+					Verbs:     []string{"get", "list", "watch", "create", "patch", "update"},
+				},
 			},
 		}
 		clusterRoleBinding = &rbacv1.ClusterRoleBinding{
@@ -515,37 +527,7 @@ func (s *shootSystem) selfHostedShootResources() []client.Object {
 				Name:     v1beta1constants.ShootsGroup,
 			}},
 		}
-
-		role = &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rbacName,
-				Namespace: metav1.NamespaceSystem,
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{corev1.GroupName},
-					Resources: []string{"secrets"},
-					Verbs:     []string{"get", "list", "watch"},
-				},
-			},
-		}
-		roleBinding = &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rbacName,
-				Namespace: metav1.NamespaceSystem,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     role.Name,
-			},
-			Subjects: []rbacv1.Subject{{
-				APIGroup: rbacv1.GroupName,
-				Kind:     "Group",
-				Name:     v1beta1constants.ShootsGroup,
-			}},
-		}
 	)
 
-	return []client.Object{clusterRole, clusterRoleBinding, role, roleBinding}
+	return []client.Object{clusterRole, clusterRoleBinding}
 }

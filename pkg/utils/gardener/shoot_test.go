@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 	gomegatypes "github.com/onsi/gomega/types"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,9 +34,10 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
 	. "github.com/gardener/gardener/pkg/utils/gardener"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
 )
 
 var _ = Describe("Shoot", func() {
@@ -290,7 +292,7 @@ var _ = Describe("Shoot", func() {
 		})
 
 		It("should maintain the common labels", func() {
-			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key")).To(And(
+			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key", "test")).To(And(
 				HaveKeyWithValue("node.kubernetes.io/role", "node"),
 				HaveKeyWithValue("kubernetes.io/arch", "arm64"),
 				HaveKeyWithValue("networking.gardener.cloud/node-local-dns-enabled", "false"),
@@ -298,6 +300,7 @@ var _ = Describe("Shoot", func() {
 				HaveKeyWithValue("worker.gardener.cloud/pool", "worker"),
 				HaveKeyWithValue("worker.garden.sapcloud.io/group", "worker"),
 				HaveKeyWithValue("worker.gardener.cloud/gardener-node-agent-secret-name", "osc-key"),
+				HaveKeyWithValue("topology.kubernetes.io/region", "test"),
 			))
 		})
 
@@ -306,7 +309,7 @@ var _ = Describe("Shoot", func() {
 				"test": "foo",
 				"bar":  "baz",
 			}
-			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key")).To(And(
+			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key", "")).To(And(
 				HaveKeyWithValue("test", "foo"),
 				HaveKeyWithValue("bar", "baz"),
 			))
@@ -314,16 +317,16 @@ var _ = Describe("Shoot", func() {
 
 		It("should not add system components label if they are not allowed", func() {
 			workerPool.SystemComponents.Allow = false
-			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key")).NotTo(
+			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key", "")).NotTo(
 				HaveKey("worker.gardener.cloud/system-components"),
 			)
 		})
 
 		It("should correctly handle the node-local-dns label", func() {
-			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key")).To(
+			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key", "")).To(
 				HaveKeyWithValue("networking.gardener.cloud/node-local-dns-enabled", "false"),
 			)
-			Expect(NodeLabelsForWorkerPool(workerPool, true, "osc-key")).To(
+			Expect(NodeLabelsForWorkerPool(workerPool, true, "osc-key", "")).To(
 				HaveKeyWithValue("networking.gardener.cloud/node-local-dns-enabled", "true"),
 			)
 		})
@@ -340,11 +343,17 @@ var _ = Describe("Shoot", func() {
 					},
 				},
 			}
-			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key")).To(And(
+			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key", "")).To(And(
 				HaveKeyWithValue("worker.gardener.cloud/cri-name", "containerd"),
 				HaveKeyWithValue("containerruntime.worker.gardener.cloud/gvisor", "true"),
 				HaveKeyWithValue("containerruntime.worker.gardener.cloud/kata", "true"),
 			))
+		})
+
+		It("should not add region label if it's an empty string", func() {
+			Expect(NodeLabelsForWorkerPool(workerPool, false, "osc-key", "")).NotTo(
+				HaveKey("topology.kubernetes.io/region"),
+			)
 		})
 	})
 
@@ -526,6 +535,17 @@ var _ = Describe("Shoot", func() {
 					accessSecret.WithServiceAccountLabels(map[string]string{"foo": "bar"})
 					validate()
 					Expect(accessSecret.Secret.Annotations).To(HaveKeyWithValue("serviceaccount.resources.gardener.cloud/labels", `{"foo":"bar"}`))
+				})
+
+				It("should set ServiceAccount namespace from WithServiceAccountNamespace for garden class", func() {
+					accessSecret.WithServiceAccountNamespace("garden-my-project")
+					validate()
+					Expect(accessSecret.Secret.Annotations).To(HaveKeyWithValue("serviceaccount.resources.gardener.cloud/namespace", "garden-my-project"))
+				})
+
+				It("should not set ServiceAccount namespace annotation when WithServiceAccountNamespace is not called for garden class", func() {
+					validate()
+					Expect(accessSecret.Secret.Annotations).NotTo(HaveKey("serviceaccount.resources.gardener.cloud/namespace"))
 				})
 			})
 
@@ -998,14 +1018,17 @@ var _ = Describe("Shoot", func() {
 		defaultDomainProvider   = "default-domain-provider"
 		defaultDomainSecretData = map[string][]byte{"default": []byte("domain")}
 		defaultDomain           = &Domain{
-			Domain:     "bar.com",
-			Provider:   defaultDomainProvider,
-			SecretData: defaultDomainSecretData,
+			Domain:   "bar.com",
+			Provider: defaultDomainProvider,
+			Credentials: &corev1.Secret{
+				Data: defaultDomainSecretData,
+			},
 		}
 	)
 
 	Describe("#ConstructExternalDomain", func() {
 		var (
+			ctx       context.Context
 			namespace = "default"
 			provider  = "my-dns-provider"
 			domain    = "foo.bar.com"
@@ -1014,25 +1037,23 @@ var _ = Describe("Shoot", func() {
 		)
 
 		BeforeEach(func() {
-			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetesscheme.Scheme).Build()
+			ctx = context.Background()
+			fakeClient = fakeclient.NewClientBuilder().WithScheme(kubernetes.GardenScheme).Build()
 		})
 
 		It("returns nil because no external domain is used", func() {
 			var (
-				ctx   = context.TODO()
 				shoot = &gardencorev1beta1.Shoot{}
 			)
 
 			externalDomain, err := ConstructExternalDomain(ctx, fakeClient, shoot, nil, nil)
 
-			Expect(externalDomain).To(BeNil())
 			Expect(err).NotTo(HaveOccurred())
+			Expect(externalDomain).To(BeNil())
 		})
 
 		It("returns the referenced secret", func() {
 			var (
-				ctx = context.TODO()
-
 				dnsSecretName = "my-secret"
 				dnsSecretData = map[string][]byte{"foo": []byte("bar")}
 
@@ -1045,29 +1066,33 @@ var _ = Describe("Shoot", func() {
 							Domain: &domain,
 							Providers: []gardencorev1beta1.DNSProvider{
 								{
-									Type:       &provider,
-									SecretName: &dnsSecretName,
-									Primary:    ptr.To(true),
+									Type: &provider,
+									CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+										APIVersion: "v1",
+										Kind:       "Secret",
+										Name:       dnsSecretName,
+									},
+									Primary: ptr.To(true),
 								},
 							},
 						},
 					},
 				}
 			)
-
-			Expect(fakeClient.Create(ctx, &corev1.Secret{
+			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Name: dnsSecretName, Namespace: namespace},
 				Data:       dnsSecretData,
-			})).To(Succeed())
+			}
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
 
 			externalDomain, err := ConstructExternalDomain(ctx, fakeClient, shoot, nil, nil)
 
-			Expect(externalDomain).To(Equal(&Domain{
-				Domain:     domain,
-				Provider:   provider,
-				SecretData: dnsSecretData,
-			}))
 			Expect(err).NotTo(HaveOccurred())
+			Expect(externalDomain).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    provider,
+				Credentials: secret,
+			}))
 		})
 
 		It("returns the unmanaged external domain for self-hosted shoots", func(ctx SpecContext) {
@@ -1095,8 +1120,6 @@ var _ = Describe("Shoot", func() {
 
 		It("returns the default domain secret", func() {
 			var (
-				ctx = context.TODO()
-
 				shoot = &gardencorev1beta1.Shoot{
 					Spec: gardencorev1beta1.ShootSpec{
 						DNS: &gardencorev1beta1.DNS{
@@ -1113,18 +1136,18 @@ var _ = Describe("Shoot", func() {
 
 			externalDomain, err := ConstructExternalDomain(ctx, fakeClient, shoot, nil, []*Domain{defaultDomain})
 
-			Expect(externalDomain).To(Equal(&Domain{
-				Domain:     domain,
-				Provider:   defaultDomainProvider,
-				SecretData: defaultDomainSecretData,
-			}))
 			Expect(err).NotTo(HaveOccurred())
+			Expect(externalDomain).To(Equal(&Domain{
+				Domain:   domain,
+				Provider: defaultDomainProvider,
+				Credentials: &corev1.Secret{
+					Data: defaultDomainSecretData,
+				},
+			}))
 		})
 
 		It("returns the shoot secret", func() {
 			var (
-				ctx = context.TODO()
-
 				shootSecretData = map[string][]byte{"foo": []byte("bar")}
 				shootSecret     = &corev1.Secret{Data: shootSecretData}
 				shoot           = &gardencorev1beta1.Shoot{
@@ -1144,18 +1167,98 @@ var _ = Describe("Shoot", func() {
 
 			externalDomain, err := ConstructExternalDomain(ctx, fakeClient, shoot, shootSecret, nil)
 
-			Expect(externalDomain).To(Equal(&Domain{
-				Domain:     domain,
-				Provider:   provider,
-				SecretData: shootSecretData,
-			}))
 			Expect(err).NotTo(HaveOccurred())
+			Expect(externalDomain).To(Equal(&Domain{
+				Domain:   domain,
+				Provider: provider,
+				Credentials: &corev1.Secret{
+					Data: shootSecretData,
+				},
+			}))
 		})
 
-		It("returns error because WorkloadIdentity credential is not supported", func() {
+		It("should allow dns credentials of type WorkloadIdentity", func() {
 			var (
-				ctx = context.TODO()
+				workloadIdentityName = "workload-identity-1"
+				shoot                = &gardencorev1beta1.Shoot{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.ShootSpec{
+						DNS: &gardencorev1beta1.DNS{
+							Domain: &domain,
+							Providers: []gardencorev1beta1.DNSProvider{{
+								Type:    &provider,
+								Primary: ptr.To(true),
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "security.gardener.cloud/v1alpha1",
+									Kind:       "WorkloadIdentity",
+									Name:       workloadIdentityName,
+								},
+							}},
+						},
+					},
+				}
+				workloadIdentity = &securityv1alpha1.WorkloadIdentity{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+						Name:      workloadIdentityName,
+					},
+				}
+			)
 
+			Expect(fakeClient.Create(ctx, workloadIdentity)).To(Succeed())
+
+			externalDomain, err := ConstructExternalDomain(ctx, fakeClient, shoot, nil, nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(externalDomain).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    provider,
+				Credentials: workloadIdentity,
+			}))
+		})
+
+		It("should fail because dns credentials of type other than WorkloadIdentity and Secret are not supported", func() {
+			var (
+				configMapName = "config-map-1"
+				shoot         = &gardencorev1beta1.Shoot{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+					},
+					Spec: gardencorev1beta1.ShootSpec{
+						DNS: &gardencorev1beta1.DNS{
+							Domain: &domain,
+							Providers: []gardencorev1beta1.DNSProvider{{
+								Type:    &provider,
+								Primary: ptr.To(true),
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "v1",
+									Kind:       "ConfigMap",
+									Name:       configMapName,
+								},
+							}},
+						},
+					},
+				}
+				configMap = &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespace,
+						Name:      configMapName,
+					},
+				}
+			)
+
+			Expect(fakeClient.Create(ctx, configMap)).To(Succeed())
+
+			_, err := ConstructExternalDomain(ctx, fakeClient, shoot, nil, nil)
+			Expect(err).To(And(
+				MatchError(ContainSubstring(`could not get dns provider credentials from reference "&CrossVersionObjectReference{Kind:ConfigMap,Name:config-map-1,APIVersion:v1,}"`)),
+				MatchError(ContainSubstring("unsupported credentials reference: default/config-map-1, /v1, Kind=ConfigMap")),
+			))
+		})
+
+		It("should allow shoot credentials of type WorkloadIdentity", func() {
+			var (
 				workloadIdentity = &securityv1alpha1.WorkloadIdentity{}
 				shoot            = &gardencorev1beta1.Shoot{
 					Spec: gardencorev1beta1.ShootSpec{
@@ -1172,14 +1275,17 @@ var _ = Describe("Shoot", func() {
 				}
 			)
 
-			_, err := ConstructExternalDomain(ctx, fakeClient, shoot, workloadIdentity, nil)
-			Expect(err).To(MatchError(Equal("shoot credentials of type WorkloadIdentity cannot be used as domain secret")))
+			externalDomain, err := ConstructExternalDomain(ctx, fakeClient, shoot, workloadIdentity, nil)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(externalDomain).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    provider,
+				Credentials: workloadIdentity,
+			}))
 		})
 
 		It("returns error because shoot credential type is not supported", func() {
 			var (
-				ctx = context.TODO()
-
 				pod   = &corev1.Pod{}
 				shoot = &gardencorev1beta1.Shoot{
 					Spec: gardencorev1beta1.ShootSpec{
@@ -1197,7 +1303,258 @@ var _ = Describe("Shoot", func() {
 			)
 
 			_, err := ConstructExternalDomain(ctx, fakeClient, shoot, pod, nil)
-			Expect(err).To(MatchError(Equal("unexpected shoot credentials type")))
+			Expect(err).To(MatchError(Equal("unexpected shoot credentials type *v1.Pod")))
+		})
+	})
+
+	Describe("#ComputeEnabledTypesForKindExtensionShoot", func() {
+		const (
+			extensionType1 = "extension1"
+			extensionType2 = "extension2"
+			extensionType3 = "extension3"
+			extensionType4 = "extension4"
+		)
+
+		var (
+			shoot                      *gardencorev1beta1.Shoot
+			controllerRegistrationList *gardencorev1beta1.ControllerRegistrationList
+		)
+
+		BeforeEach(func() {
+			shoot = &gardencorev1beta1.Shoot{
+				Spec: gardencorev1beta1.ShootSpec{
+					Provider: gardencorev1beta1.Provider{
+						Workers: []gardencorev1beta1.Worker{
+							{
+								Name: "worker1",
+							},
+						},
+					},
+				},
+			}
+			controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{}
+		})
+
+		It("should return empty set when no extensions are configured", func() {
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(BeEmpty())
+		})
+
+		It("should return extensions explicitly enabled in shoot spec", func() {
+			shoot.Spec.Extensions = []gardencorev1beta1.Extension{
+				{Type: extensionType1},
+				{Type: extensionType2},
+			}
+
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+				extensionType1,
+				extensionType2,
+			)))
+		})
+
+		It("should return auto-enabled extensions from controller registrations", func() {
+			controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+				Items: []gardencorev1beta1.ControllerRegistration{
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType1,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+							},
+						},
+					},
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType2,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeSeed},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+				extensionType1,
+			)))
+		})
+
+		It("should not return auto-enabled extensions that are explicitly disabled", func() {
+			shoot.Spec.Extensions = []gardencorev1beta1.Extension{
+				{Type: extensionType1, Disabled: ptr.To(true)},
+			}
+			controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+				Items: []gardencorev1beta1.ControllerRegistration{
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType1,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType2,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+				extensionType2,
+			)))
+		})
+
+		It("should combine explicitly enabled and auto-enabled extensions", func() {
+			shoot.Spec.Extensions = []gardencorev1beta1.Extension{
+				{Type: extensionType1},
+			}
+			controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+				Items: []gardencorev1beta1.ControllerRegistration{
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType2,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+				extensionType1,
+				extensionType2,
+			)))
+		})
+
+		It("should exclude non-extension controller resources", func() {
+			controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+				Items: []gardencorev1beta1.ControllerRegistration{
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType1,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+								{
+									Kind: extensionsv1alpha1.WorkerResource,
+									Type: "some-worker",
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+				extensionType1,
+			)))
+		})
+
+		It("should handle multiple controller registrations with mixed settings", func() {
+			shoot.Spec.Extensions = []gardencorev1beta1.Extension{
+				{Type: extensionType1},
+				{Type: extensionType4, Disabled: ptr.To(true)},
+			}
+			controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+				Items: []gardencorev1beta1.ControllerRegistration{
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType2,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+							},
+						},
+					},
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType3,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeSeed},
+								},
+							},
+						},
+					},
+					{
+						Spec: gardencorev1beta1.ControllerRegistrationSpec{
+							Resources: []gardencorev1beta1.ControllerResource{
+								{
+									Kind:       extensionsv1alpha1.ExtensionResource,
+									Type:       extensionType4,
+									AutoEnable: []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+				extensionType1,
+				extensionType2,
+			)))
+		})
+
+		Context("workerless shoot", func() {
+			BeforeEach(func() {
+				shoot.Spec.Provider.Workers = nil
+			})
+
+			It("should enable extensions with WorkerlessSupported=true and exclude those with false", func() {
+				controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+					Items: []gardencorev1beta1.ControllerRegistration{
+						{
+							Spec: gardencorev1beta1.ControllerRegistrationSpec{
+								Resources: []gardencorev1beta1.ControllerResource{
+									{
+										Kind:                extensionsv1alpha1.ExtensionResource,
+										Type:                extensionType1,
+										AutoEnable:          []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+										WorkerlessSupported: ptr.To(true),
+									},
+									{
+										Kind:                extensionsv1alpha1.ExtensionResource,
+										Type:                extensionType2,
+										AutoEnable:          []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+										WorkerlessSupported: ptr.To(false),
+									},
+									{
+										Kind:                extensionsv1alpha1.ExtensionResource,
+										Type:                extensionType3,
+										AutoEnable:          []gardencorev1beta1.ClusterType{gardencorev1beta1.ClusterTypeShoot},
+										WorkerlessSupported: ptr.To(true),
+									},
+								},
+							},
+						},
+					},
+				}
+
+				Expect(ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList)).To(Equal(sets.New(
+					extensionType1,
+					extensionType3,
+				)))
+			})
 		})
 	})
 
@@ -1393,6 +1750,21 @@ var _ = Describe("Shoot", func() {
 			)))
 		})
 
+		It("should compute the correct list of required extensions and omit the externalDomain with an empty provider", func() {
+			externalDomain = &Domain{}
+			Expect(ComputeRequiredExtensionsForShoot(shoot, nil, controllerRegistrationList, internalDomain, externalDomain)).To(Equal(sets.New(
+				ExtensionsID(extensionsv1alpha1.ControlPlaneResource, shootProvider),
+				ExtensionsID(extensionsv1alpha1.InfrastructureResource, shootProvider),
+				ExtensionsID(extensionsv1alpha1.NetworkResource, networkingType),
+				ExtensionsID(extensionsv1alpha1.WorkerResource, shootProvider),
+				ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType1),
+				ExtensionsID(extensionsv1alpha1.OperatingSystemConfigResource, oscType),
+				ExtensionsID(extensionsv1alpha1.ContainerRuntimeResource, containerRuntimeType),
+				ExtensionsID(extensionsv1alpha1.DNSRecordResource, dnsProviderType1),
+				ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType2),
+			)))
+		})
+
 		It("should compute the correct list of required extensions (workerless Shoot and globally enabled extension)", func() {
 			shoot.Spec.Extensions = []gardencorev1beta1.Extension{}
 			shoot.Spec.Provider.Workers = nil
@@ -1464,6 +1836,33 @@ var _ = Describe("Shoot", func() {
 				ExtensionsID(extensionsv1alpha1.DNSRecordResource, dnsProviderType1),
 				ExtensionsID(extensionsv1alpha1.DNSRecordResource, dnsProviderType2),
 				ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType2),
+			)))
+		})
+
+		It("should compute the correct list of required extensions (self-hosted shoot with exposure)", func() {
+			exposureType := "stackit"
+			shoot.Spec.Provider.Workers = append(shoot.Spec.Provider.Workers, gardencorev1beta1.Worker{
+				ControlPlane: &gardencorev1beta1.WorkerControlPlane{
+					Exposure: &gardencorev1beta1.Exposure{
+						Extension: &gardencorev1beta1.ExtensionExposure{
+							Type: ptr.To(exposureType),
+						},
+					},
+				},
+			})
+
+			Expect(ComputeRequiredExtensionsForShoot(shoot, nil, controllerRegistrationList, internalDomain, externalDomain)).To(Equal(sets.New(
+				ExtensionsID(extensionsv1alpha1.ControlPlaneResource, shootProvider),
+				ExtensionsID(extensionsv1alpha1.InfrastructureResource, shootProvider),
+				ExtensionsID(extensionsv1alpha1.NetworkResource, networkingType),
+				ExtensionsID(extensionsv1alpha1.WorkerResource, shootProvider),
+				ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType1),
+				ExtensionsID(extensionsv1alpha1.OperatingSystemConfigResource, oscType),
+				ExtensionsID(extensionsv1alpha1.ContainerRuntimeResource, containerRuntimeType),
+				ExtensionsID(extensionsv1alpha1.DNSRecordResource, dnsProviderType1),
+				ExtensionsID(extensionsv1alpha1.DNSRecordResource, dnsProviderType2),
+				ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType2),
+				ExtensionsID(extensionsv1alpha1.SelfHostedShootExposureResource, exposureType),
 			)))
 		})
 	})
@@ -1640,12 +2039,6 @@ var _ = Describe("Shoot", func() {
 					NodeFSAvailable:   ptr.To("200Mi"),
 					NodeFSInodesFree:  ptr.To("1k"),
 				},
-				SystemReserved: &gardencorev1beta1.KubeletConfigReserved{
-					CPU:              ptr.To(resource.MustParse("1m")),
-					Memory:           ptr.To(resource.MustParse("1Mi")),
-					PID:              ptr.To(resource.MustParse("1k")),
-					EphemeralStorage: ptr.To(resource.MustParse("100Gi")),
-				},
 				KubeReserved: &gardencorev1beta1.KubeletConfigReserved{
 					CPU:              ptr.To(resource.MustParse("100m")),
 					Memory:           ptr.To(resource.MustParse("2Gi")),
@@ -1655,7 +2048,7 @@ var _ = Describe("Shoot", func() {
 			}
 
 			Expect(CalculateDataStringForKubeletConfiguration(kubeletConfig)).To(ConsistOf(
-				"101m-2049Mi-16k-142Gi",
+				"100m-2Gi-15k-42Gi",
 				"200Mi-1k-200Mi-200Mi-1k",
 				"static",
 			))
@@ -1779,10 +2172,6 @@ var _ = Describe("Shoot", func() {
 				},
 			},
 			semver.MustParse("1.31.0"),
-			BeFalse()),
-		Entry("version is < 1.31",
-			&gardencorev1beta1.KubeAPIServerConfig{},
-			semver.MustParse("1.30.0"),
 			BeFalse()),
 	)
 
@@ -1917,30 +2306,6 @@ var _ = Describe("Shoot", func() {
 
 			It("when changing CPUManagerPolicy", func() {
 				kubeletConfig.CPUManagerPolicy = ptr.To("test")
-			})
-
-			It("when changing systemReserved CPU", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					CPU: ptr.To(resource.MustParse("1m")),
-				}
-			})
-
-			It("when changing systemReserved memory", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					Memory: ptr.To(resource.MustParse("1Mi")),
-				}
-			})
-
-			It("when systemReserved PID", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					PID: ptr.To(resource.MustParse("1k")),
-				}
-			})
-
-			It("when changing systemReserved EphemeralStorage", func() {
-				kubeletConfig.SystemReserved = &gardencorev1beta1.KubeletConfigReserved{
-					EphemeralStorage: ptr.To(resource.MustParse("100Gi")),
-				}
 			})
 		})
 

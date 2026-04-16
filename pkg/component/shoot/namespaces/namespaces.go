@@ -14,9 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
@@ -79,7 +79,7 @@ func (n *namespaces) computeResourcesData() (map[string][]byte, error) {
 	zones := sets.New[string]()
 
 	for _, pool := range n.workerPools {
-		if v1beta1helper.SystemComponentsAllowed(&pool) {
+		if v1beta1helper.SystemComponentsAllowed(&pool) && pool.Maximum > 0 {
 			zones.Insert(pool.Zones...)
 		}
 	}

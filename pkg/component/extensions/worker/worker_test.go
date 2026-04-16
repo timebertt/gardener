@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	machinev1alpha1 "github.com/gardener/machine-controller-manager/pkg/apis/machine/v1alpha1"
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -21,10 +22,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	testclock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -33,10 +36,10 @@ import (
 	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
+	"github.com/gardener/gardener/pkg/utils/gardener/shootstate"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	mockclient "github.com/gardener/gardener/third_party/mock/controller-runtime/client"
-	mocktime "github.com/gardener/gardener/third_party/mock/go/time"
 )
 
 var _ = Describe("Worker", func() {
@@ -44,7 +47,7 @@ var _ = Describe("Worker", func() {
 		ctrl *gomock.Controller
 		c    client.Client
 
-		mockNow   *mocktime.MockNow
+		fakeClock *testclock.FakeClock
 		now       time.Time
 		metav1Now metav1.Time
 
@@ -104,6 +107,36 @@ var _ = Describe("Worker", func() {
 		worker2UserDataSecretName        = "user-data-secret-name-w2"
 		worker2Arch                      = ptr.To("arm64")
 
+		machineTypes []gardencorev1beta1.MachineType
+
+		workerPool1NodeTemplate *extensionsv1alpha1.NodeTemplate
+		workerPool2NodeTemplate *extensionsv1alpha1.NodeTemplate
+
+		w, empty *extensionsv1alpha1.Worker
+		wSpec    extensionsv1alpha1.WorkerSpec
+
+		defaultDepWaiter worker.Interface
+		values           *worker.Values
+
+		emptyAutoscalerOptions = &extensionsv1alpha1.ClusterAutoscalerOptions{}
+		kubeletConfig          = &gardencorev1beta1.KubeletConfig{
+			CPUManagerPolicy: ptr.To("static"),
+		}
+		workerKubeletConfig = &gardencorev1beta1.KubeletConfig{
+			CPUManagerPolicy: ptr.To("none"),
+		}
+	)
+
+	BeforeEach(func() {
+		ctrl = gomock.NewController(GinkgoT())
+		now = time.Unix(60, 0)
+		fakeClock = testclock.NewFakeClock(now)
+		metav1Now = metav1.NewTime(now)
+
+		s := runtime.NewScheme()
+		Expect(extensionsv1alpha1.AddToScheme(s)).NotTo(HaveOccurred())
+		c = fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&extensionsv1alpha1.Worker{}).Build()
+
 		machineTypes = []gardencorev1beta1.MachineType{
 			{
 				Name:   worker1MachineType,
@@ -134,31 +167,6 @@ var _ = Describe("Worker", func() {
 				"memory": machineTypes[1].Memory,
 			},
 		}
-
-		w, empty *extensionsv1alpha1.Worker
-		wSpec    extensionsv1alpha1.WorkerSpec
-
-		defaultDepWaiter worker.Interface
-		values           *worker.Values
-
-		emptyAutoscalerOptions = &extensionsv1alpha1.ClusterAutoscalerOptions{}
-		kubeletConfig          = &gardencorev1beta1.KubeletConfig{
-			CPUManagerPolicy: ptr.To("static"),
-		}
-		workerKubeletConfig = &gardencorev1beta1.KubeletConfig{
-			CPUManagerPolicy: ptr.To("none"),
-		}
-	)
-
-	BeforeEach(func() {
-		ctrl = gomock.NewController(GinkgoT())
-		mockNow = mocktime.NewMockNow(ctrl)
-		now = time.Now()
-		metav1Now = metav1.NewTime(now)
-
-		s := runtime.NewScheme()
-		Expect(extensionsv1alpha1.AddToScheme(s)).NotTo(HaveOccurred())
-		c = fake.NewClientBuilder().WithScheme(s).Build()
 
 		values = &worker.Values{
 			Name:                         name,
@@ -371,8 +379,7 @@ var _ = Describe("Worker", func() {
 
 	Describe("#Deploy", func() {
 		It("should successfully deploy the Worker resource", func() {
-			defer test.WithVars(&worker.TimeNow, mockNow.Do)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+			defer test.WithVars(&worker.TimeNow, fakeClock.Now)()
 
 			defaultDepWaiter = worker.New(log, c, values, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
 			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
@@ -397,8 +404,7 @@ var _ = Describe("Worker", func() {
 		})
 
 		It("should initialize nodeTemplate when it exists for pool in worker resource, but absent in cloudProfile", func() {
-			defer test.WithVars(&worker.TimeNow, mockNow.Do)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+			defer test.WithVars(&worker.TimeNow, fakeClock.Now)()
 
 			newValues := *values
 			newValues.Workers = []gardencorev1beta1.Worker{
@@ -441,8 +447,7 @@ var _ = Describe("Worker", func() {
 		})
 
 		It("should initialize nodeTemplate from cloudProfile, when machineType updated for worker pool", func() {
-			defer test.WithVars(&worker.TimeNow, mockNow.Do)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+			defer test.WithVars(&worker.TimeNow, fakeClock.Now)()
 
 			newValues := *values
 			newValues.Workers = []gardencorev1beta1.Worker{
@@ -483,9 +488,8 @@ var _ = Describe("Worker", func() {
 			}))
 		})
 
-		It("should successfully deploy the Worker resource with cluster autoscaker options when present", func() {
-			defer test.WithVars(&worker.TimeNow, mockNow.Do)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
+		It("should successfully deploy the Worker resource with cluster autoscaler options when present", func() {
+			defer test.WithVars(&worker.TimeNow, fakeClock.Now)()
 
 			newValues := *values
 			newValues.Workers[0].ClusterAutoscaler = &gardencorev1beta1.ClusterAutoscalerOptions{
@@ -539,6 +543,53 @@ var _ = Describe("Worker", func() {
 				Spec: *expectedWorkerSpec,
 			}))
 		})
+
+		It("should use a set machineCreationTimeout in the cloud profile if no value is provided in the worker pool", func() {
+			defer test.WithVars(&worker.TimeNow, fakeClock.Now)()
+
+			newValues := *values
+			workerWithCreationTimeout := values.Workers[0]
+			workerWithCreationTimeout.MachineControllerManagerSettings.MachineCreationTimeout = &metav1.Duration{Duration: 1 * time.Minute}
+			newValues.Workers = []gardencorev1beta1.Worker{
+				workerWithCreationTimeout,
+				values.Workers[1],
+			}
+			machineTypes[0].MachineControllerManager = &gardencorev1beta1.CloudProfileMachineControllerManagerSettings{
+				MachineCreationTimeout: &metav1.Duration{Duration: 15 * time.Minute},
+			}
+			machineTypes[1].MachineControllerManager = &gardencorev1beta1.CloudProfileMachineControllerManagerSettings{
+				MachineCreationTimeout: &metav1.Duration{Duration: 30 * time.Minute},
+			}
+			newValues.MachineTypes = machineTypes
+
+			expectedWorkerSpec := wSpec.DeepCopy()
+			expectedWorkerSpec.Pools = []extensionsv1alpha1.WorkerPool{
+				wSpec.Pools[0],
+				wSpec.Pools[1],
+			}
+			expectedWorkerSpec.Pools[0].MachineControllerManagerSettings.MachineCreationTimeout = &metav1.Duration{Duration: 1 * time.Minute}
+			expectedWorkerSpec.Pools[1].MachineControllerManagerSettings = &gardencorev1beta1.MachineControllerManagerSettings{
+				MachineCreationTimeout: &metav1.Duration{Duration: 30 * time.Minute},
+			}
+
+			defaultDepWaiter = worker.New(log, c, &newValues, time.Millisecond, 250*time.Millisecond, 500*time.Millisecond)
+			Expect(defaultDepWaiter.Deploy(ctx)).To(Succeed())
+
+			obj := &extensionsv1alpha1.Worker{}
+			Expect(c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, obj)).To(Succeed())
+			Expect(obj).To(DeepEqual(&extensionsv1alpha1.Worker{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"gardener.cloud/operation": "reconcile",
+						"gardener.cloud/timestamp": now.UTC().Format(time.RFC3339Nano),
+					},
+					ResourceVersion: "1",
+				},
+				Spec: *expectedWorkerSpec,
+			}))
+		})
 	})
 
 	Describe("#Wait", func() {
@@ -558,9 +609,8 @@ var _ = Describe("Worker", func() {
 
 		It("should return error if we haven't observed the latest timestamp annotation", func() {
 			defer test.WithVars(
-				&worker.TimeNow, mockNow.Do,
+				&worker.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			By("Deploy")
 			// Deploy should fill internal state with the added timestamp annotation
@@ -568,15 +618,18 @@ var _ = Describe("Worker", func() {
 
 			By("Patch object")
 			patch := client.MergeFrom(w.DeepCopy())
-			w.Status.LastError = nil
 			// remove operation annotation, add old timestamp annotation
 			w.Annotations = map[string]string{
 				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().Format(time.RFC3339Nano),
 			}
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+
+			patch = client.MergeFrom(w.DeepCopy())
+			w.Status.LastError = nil
 			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State: gardencorev1beta1.LastOperationStateSucceeded,
 			}
-			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+			Expect(c.Status().Patch(ctx, w, patch)).To(Succeed(), "patching worker status succeeds")
 
 			By("Wait")
 			Expect(defaultDepWaiter.Wait(ctx)).NotTo(Succeed(), "worker indicates error")
@@ -584,9 +637,8 @@ var _ = Describe("Worker", func() {
 
 		It("should return no error when it's ready", func() {
 			defer test.WithVars(
-				&worker.TimeNow, mockNow.Do,
+				&worker.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			By("Deploy")
 			// Deploy should fill internal state with the added timestamp annotation
@@ -594,19 +646,89 @@ var _ = Describe("Worker", func() {
 
 			By("Patch object")
 			patch := client.MergeFrom(w.DeepCopy())
-			w.Status.LastError = nil
 			// remove operation annotation, add up-to-date timestamp annotation
 			w.Annotations = map[string]string{
 				v1beta1constants.GardenerTimestamp: now.UTC().Format(time.RFC3339Nano),
 			}
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+
+			patch = client.MergeFrom(w.DeepCopy())
+			w.Status.LastError = nil
 			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State:          gardencorev1beta1.LastOperationStateSucceeded,
 				LastUpdateTime: metav1.Time{Time: now.UTC().Add(time.Second)},
 			}
-			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+			Expect(c.Status().Patch(ctx, w, patch)).To(Succeed(), "patching worker status succeeds")
 
 			By("Wait")
 			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "worker is ready")
+		})
+
+		It("should remove the state added by Restore", func() {
+			state, err := shootstate.MarshalMachineState(&shootstate.MachineState{
+				MachineDeployments: map[string]*shootstate.MachineDeploymentState{
+					namespace + "-worker-z0": {
+						Replicas: 1,
+						MachineSets: []machinev1alpha1.MachineSet{{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      namespace + "-worker-z0-abcde",
+								Namespace: namespace,
+							},
+						}},
+						Machines: []machinev1alpha1.Machine{{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      namespace + "-worker-z0-abcde-xyz",
+								Namespace: namespace,
+							},
+						}},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			shootState := &gardencorev1beta1.ShootState{
+				Spec: gardencorev1beta1.ShootStateSpec{
+					Gardener: []gardencorev1beta1.GardenerResourceData{{
+						Name: "machine-state",
+						Type: "machine-state",
+						Data: runtime.RawExtension{Raw: state},
+					}},
+				},
+			}
+
+			By("Restore")
+			defer test.WithVars(
+				&worker.TimeNow, fakeClock.Now,
+				&extensions.TimeNow, fakeClock.Now,
+			)()
+
+			Expect(defaultDepWaiter.Restore(ctx, shootState)).To(Succeed(), "restore should succeed")
+
+			By("Verifying Worker.status.state")
+			worker := empty.DeepCopy()
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(worker), worker)).To(Succeed())
+			Expect(worker.Annotations).To(HaveKeyWithValue("gardener.cloud/operation", "restore"))
+			Expect(worker.Status.State).To(Equal(&runtime.RawExtension{Raw: state}), "restore should add the machine state to Worker.status.state")
+
+			By("Patch worker to be ready")
+			patch := client.MergeFrom(worker.DeepCopy())
+			delete(worker.Annotations, "gardener.cloud/operation")
+			Expect(c.Patch(ctx, worker, patch)).To(Succeed(), "patching worker succeeds")
+
+			patch = client.MergeFrom(worker.DeepCopy())
+			worker.Status.ObservedGeneration = worker.Generation
+			worker.Status.LastOperation = &gardencorev1beta1.LastOperation{
+				State:          gardencorev1beta1.LastOperationStateSucceeded,
+				LastUpdateTime: metav1.Time{Time: now.UTC().Add(time.Second)},
+			}
+			Expect(c.Status().Patch(ctx, worker, patch)).To(Succeed(), "patching worker status succeeds")
+
+			By("Wait")
+			Expect(defaultDepWaiter.Wait(ctx)).To(Succeed(), "wait should succeed")
+
+			By("Verifying Worker.status.state")
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(worker), worker)).To(Succeed())
+			Expect(worker.Status.State).To(BeNil())
 		})
 	})
 
@@ -620,17 +742,19 @@ var _ = Describe("Worker", func() {
 			obj.Status.LastError = &gardencorev1beta1.LastError{
 				Description:    "Some error",
 				LastUpdateTime: &metav1.Time{Time: now.UTC()},
+				Codes:          []gardencorev1beta1.ErrorCode{gardencorev1beta1.ErrorInfraUnauthorized},
 			}
 			Expect(c.Create(ctx, obj)).To(Succeed(), "creating worker succeeds")
 
-			Expect(defaultDepWaiter.WaitUntilWorkerStatusMachineDeploymentsUpdated(ctx)).To(HaveOccurred(), "worker indicates error")
+			err := defaultDepWaiter.WaitUntilWorkerStatusMachineDeploymentsUpdated(ctx)
+			Expect(err).To(HaveOccurred(), "worker indicates error")
+			Expect(v1beta1helper.ExtractErrorCodes(err)).To(ConsistOf(gardencorev1beta1.ErrorInfraUnauthorized))
 		})
 
 		It("should return error if we haven't observed the latest timestamp annotation", func() {
 			defer test.WithVars(
-				&worker.TimeNow, mockNow.Do,
+				&worker.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			By("Deploy")
 			// Deploy should fill internal state with the added timestamp annotation
@@ -638,15 +762,18 @@ var _ = Describe("Worker", func() {
 
 			By("Patch object")
 			patch := client.MergeFrom(w.DeepCopy())
-			w.Status.LastError = nil
 			// remove operation annotation, add old timestamp annotation
 			w.Annotations = map[string]string{
 				v1beta1constants.GardenerTimestamp: now.Add(-time.Millisecond).UTC().Format(time.RFC3339Nano),
 			}
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+
+			patch = client.MergeFrom(w.DeepCopy())
+			w.Status.LastError = nil
 			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State: gardencorev1beta1.LastOperationStateSucceeded,
 			}
-			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+			Expect(c.Status().Patch(ctx, w, patch)).To(Succeed(), "patching worker status succeeds")
 
 			By("Wait")
 			Expect(defaultDepWaiter.WaitUntilWorkerStatusMachineDeploymentsUpdated(ctx)).NotTo(Succeed(), "worker indicates error")
@@ -672,9 +799,8 @@ var _ = Describe("Worker", func() {
 
 		It("should return no error when status.machineDeploymentsLastUpdateTime is added for the first time", func() {
 			defer test.WithVars(
-				&worker.TimeNow, mockNow.Do,
+				&worker.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			By("Deploy")
 			// Deploy should fill internal state with the added timestamp annotation
@@ -686,13 +812,16 @@ var _ = Describe("Worker", func() {
 			w.Annotations = map[string]string{
 				v1beta1constants.GardenerTimestamp: now.UTC().Format(time.RFC3339Nano),
 			}
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+
+			patch = client.MergeFrom(w.DeepCopy())
 			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State:          gardencorev1beta1.LastOperationStateSucceeded,
 				LastUpdateTime: metav1.Time{Time: now.UTC().Add(time.Second)},
 			}
 			// update the MachineDeploymentsLastUpdateTime in the worker status
 			w.Status.MachineDeploymentsLastUpdateTime = &metav1Now
-			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+			Expect(c.Status().Patch(ctx, w, patch)).To(Succeed(), "patching worker status succeeds")
 
 			By("WaitUntilWorkerStatusMachineDeploymentsUpdated")
 			Expect(defaultDepWaiter.WaitUntilWorkerStatusMachineDeploymentsUpdated(ctx)).To(Succeed(), "worker status is updated with latest machine deployments")
@@ -700,9 +829,8 @@ var _ = Describe("Worker", func() {
 
 		It("should return no error when status.machineDeploymentsLastUpdateTime is updated", func() {
 			defer test.WithVars(
-				&worker.TimeNow, mockNow.Do,
+				&worker.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			obj := w.DeepCopy()
 			obj.Status.MachineDeploymentsLastUpdateTime = &metav1Now
@@ -718,6 +846,9 @@ var _ = Describe("Worker", func() {
 			w.Annotations = map[string]string{
 				v1beta1constants.GardenerTimestamp: now.UTC().Format(time.RFC3339Nano),
 			}
+			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+
+			patch = client.MergeFrom(w.DeepCopy())
 			w.Status.LastOperation = &gardencorev1beta1.LastOperation{
 				State:          gardencorev1beta1.LastOperationStateSucceeded,
 				LastUpdateTime: metav1.Time{Time: now.UTC().Add(time.Second)},
@@ -725,7 +856,7 @@ var _ = Describe("Worker", func() {
 			// update the MachineDeploymentsLastUpdateTime in the worker status
 			lastUpdateTime := metav1.NewTime(metav1Now.Add(1 * time.Second))
 			w.Status.MachineDeploymentsLastUpdateTime = &lastUpdateTime
-			Expect(c.Patch(ctx, w, patch)).To(Succeed(), "patching worker succeeds")
+			Expect(c.Status().Patch(ctx, w, patch)).To(Succeed(), "patching worker status succeeds")
 
 			By("WaitUntilWorkerStatusMachineDeploymentsUpdated")
 			Expect(defaultDepWaiter.WaitUntilWorkerStatusMachineDeploymentsUpdated(ctx)).To(Succeed(), "worker status is updated with latest machine deployments")
@@ -744,10 +875,9 @@ var _ = Describe("Worker", func() {
 
 		It("should return error if not deleted successfully", func() {
 			defer test.WithVars(
-				&extensions.TimeNow, mockNow.Do,
-				&gardenerutils.TimeNow, mockNow.Do,
+				&extensions.TimeNow, fakeClock.Now,
+				&gardenerutils.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			fakeErr := fmt.Errorf("some random error")
 			obj := w.DeepCopy()
@@ -799,10 +929,9 @@ var _ = Describe("Worker", func() {
 
 		It("should properly restore the worker state if it exists", func() {
 			defer test.WithVars(
-				&worker.TimeNow, mockNow.Do,
-				&extensions.TimeNow, mockNow.Do,
+				&worker.TimeNow, fakeClock.Now,
+				&extensions.TimeNow, fakeClock.Now,
 			)()
-			mockNow.EXPECT().Do().Return(now.UTC()).AnyTimes()
 
 			mc := mockclient.NewMockClient(ctrl)
 			mockStatusWriter := mockclient.NewMockStatusWriter(ctrl)

@@ -49,6 +49,21 @@ func IsIPv6SingleStack(ipFamilies []IPFamily) bool {
 	return len(ipFamilies) == 1 && ipFamilies[0] == IPFamilyIPv6
 }
 
+// IsDualStack determines whether the given list of IP families specifies dual-stack networking (both IPv4 and IPv6).
+func IsDualStack(ipFamilies []IPFamily) bool {
+	hasIPv4 := false
+	hasIPv6 := false
+	for _, family := range ipFamilies {
+		switch family {
+		case IPFamilyIPv4:
+			hasIPv4 = true
+		case IPFamilyIPv6:
+			hasIPv6 = true
+		}
+	}
+	return hasIPv4 && hasIPv6
+}
+
 // AccessRestriction describes an access restriction for a Kubernetes cluster (e.g., EU access-only).
 type AccessRestriction struct {
 	// Name is the name of the restriction.
@@ -82,3 +97,11 @@ type NamedResourceReference struct {
 	// ResourceRef is a reference to a resource.
 	ResourceRef autoscalingv1.CrossVersionObjectReference
 }
+
+// EncryptionProviderType is a type alias for the encryption provider type string.
+type EncryptionProviderType string
+
+const (
+	// EncryptionProviderTypeAESCBC is the aescbc encryption provider type.
+	EncryptionProviderTypeAESCBC EncryptionProviderType = "aescbc"
+)

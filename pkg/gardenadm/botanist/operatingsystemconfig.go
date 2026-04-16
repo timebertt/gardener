@@ -8,14 +8,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"slices"
 	"time"
 
-	systemddbus "github.com/coreos/go-systemd/v22/dbus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/component-base/version"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,15 +21,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gardener/gardener/imagevector"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig"
 	"github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/nodeinit"
 	nodeagentcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/nodeagent"
 	kubeapiserver "github.com/gardener/gardener/pkg/component/kubernetes/apiserver"
 	"github.com/gardener/gardener/pkg/nodeagent"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
+	nodeagentcontainerd "github.com/gardener/gardener/pkg/nodeagent/containerd"
 	operatingsystemconfigcontroller "github.com/gardener/gardener/pkg/nodeagent/controller/operatingsystemconfig"
 	"github.com/gardener/gardener/pkg/nodeagent/registry"
 	"github.com/gardener/gardener/pkg/utils"
@@ -56,7 +55,7 @@ func (b *GardenadmBotanist) DeployOperatingSystemConfigSecretForBootstrap(ctx co
 func (b *GardenadmBotanist) createOperatingSystemConfigSecretForNodeAgent(ctx context.Context, osc *extensionsv1alpha1.OperatingSystemConfig, secretName, poolName string) error {
 	var err error
 
-	b.operatingSystemConfigSecret, err = nodeagentcomponent.OperatingSystemConfigSecret(ctx, b.SeedClientSet.Client(), osc, secretName, poolName)
+	b.operatingSystemConfigSecret, err = nodeagentcomponent.OperatingSystemConfigSecret(ctx, b.SeedClientSet.Client(), osc, secretName, poolName, false)
 	if err != nil {
 		return fmt.Errorf("failed computing the OperatingSystemConfig secret for gardener-node-agent for pool %q: %w", poolName, err)
 	}
@@ -82,7 +81,6 @@ func (b *GardenadmBotanist) deployOperatingSystemConfig(ctx context.Context) (*o
 	if err != nil {
 		return nil, "", fmt.Errorf("failed computing files for static control plane pods: %w", err)
 	}
-	b.staticPodNameToHash = pods.nameToHashMap()
 
 	files, err := b.appendAdminKubeconfigToFiles(pods.allFiles())
 	if err != nil {
@@ -124,16 +122,29 @@ func (b *GardenadmBotanist) ApplyOperatingSystemConfig(ctx context.Context) erro
 		return fmt.Errorf("failed ensuring gardener-node-agent directories exist: %w", err)
 	}
 
+	// Write zone file if zone is configured.
+	if b.Zone != nil {
+		if err := b.FS.WriteFile(nodeagentconfigv1alpha1.ZoneFilePath, []byte(*b.Zone), 0600); err != nil {
+			return fmt.Errorf("failed writing zone file: %w", err)
+		}
+	}
+
 	node, err := nodeagent.FetchNodeByHostName(ctx, b.SeedClientSet.Client(), b.HostName)
 	if err != nil {
 		return fmt.Errorf("failed fetching node object by hostname %q: %w", b.HostName, err)
 	}
 
-	reconcilerCtx, cancelFunc := context.WithCancel(ctx)
+	containerdclient, err := nodeagentcontainerd.NewClient()
+	if err != nil {
+		return fmt.Errorf("failed connecting to containerd: %w", err)
+	}
+
+	reconcilerCtx, cancelFunc := context.WithCancel(ctx) // #nosec: G118 -- cancelFunc is passed to Reconciler.CancelContext.
 	reconcilerCtx = log.IntoContext(reconcilerCtx, b.Logger.WithName("operatingsystemconfig-reconciler").WithValues("secret", client.ObjectKeyFromObject(b.operatingSystemConfigSecret)))
 
 	_, err = (&operatingsystemconfigcontroller.Reconciler{
-		Client: b.SeedClientSet.Client(),
+		APIReader: b.SeedClientSet.APIReader(),
+		Client:    b.SeedClientSet.Client(),
 		Config: nodeagentconfigv1alpha1.OperatingSystemConfigControllerConfig{
 			SyncPeriod:        &metav1.Duration{Duration: time.Minute},
 			SecretName:        b.operatingSystemConfigSecret.Name,
@@ -141,13 +152,14 @@ func (b *GardenadmBotanist) ApplyOperatingSystemConfig(ctx context.Context) erro
 		},
 		ConfigDir:             nodeagentconfigv1alpha1.BaseDir,
 		CancelContext:         cancelFunc,
-		Recorder:              &record.FakeRecorder{},
+		Recorder:              &events.FakeRecorder{},
 		Extractor:             registry.NewExtractor(),
 		HostName:              b.HostName,
 		NodeName:              ptr.Deref(node, corev1.Node{}).Name,
 		DBus:                  b.DBus,
 		FS:                    b.FS,
 		SkipWritingStateFiles: true,
+		ContainerdClient:      containerdclient,
 	}).Reconcile(reconcilerCtx, reconcile.Request{NamespacedName: types.NamespacedName{Name: b.operatingSystemConfigSecret.Name, Namespace: b.operatingSystemConfigSecret.Namespace}})
 	return err
 }
@@ -206,27 +218,6 @@ func (b *GardenadmBotanist) generateGardenerNodeInitOperatingSystemConfig(secret
 	}, nil
 }
 
-// IsGardenerNodeAgentInitialized returns true if the gardener-node-agent systemd unit exists.
-func (b *GardenadmBotanist) IsGardenerNodeAgentInitialized(ctx context.Context) (bool, error) {
-	unitStatuses, err := b.DBus.List(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed listing systemd units: %w", err)
-	}
-
-	if !slices.ContainsFunc(unitStatuses, func(status systemddbus.UnitStatus) bool {
-		return status.Name == nodeagentconfigv1alpha1.UnitName
-	}) {
-		return false, nil
-	}
-
-	exists, err := b.FS.Exists(nodeagentconfigv1alpha1.BootstrapTokenFilePath)
-	if err != nil {
-		return false, fmt.Errorf("failed checking whether bootstrap token file %s still exists: %w", nodeagentconfigv1alpha1.BootstrapTokenFilePath, err)
-	}
-
-	return !exists, nil
-}
-
 // ControlPlaneBootstrapOperatingSystemConfig creates the deployer for the OperatingSystemConfig custom resource that is
 // used for bootstrapping control plane nodes in `gardenadm bootstrap`.
 func (b *GardenadmBotanist) ControlPlaneBootstrapOperatingSystemConfig() (operatingsystemconfig.Interface, error) {
@@ -241,12 +232,17 @@ func (b *GardenadmBotanist) ControlPlaneBootstrapOperatingSystemConfig() (operat
 		return nil, fmt.Errorf("did not find the control plane worker pool of the shoot")
 	}
 
+	values, err := b.OperatingSystemConfigValues()
+	if err != nil {
+		return nil, fmt.Errorf("failed creating operating system config values: %w", err)
+	}
+
 	return operatingsystemconfig.NewControlPlaneBootstrap(
 		b.Logger,
 		b.SeedClientSet.Client(),
 		b.SecretsManager,
 		&operatingsystemconfig.ControlPlaneBootstrapValues{
-			Namespace:      b.Shoot.ControlPlaneNamespace,
+			Values:         values,
 			Worker:         worker,
 			GardenadmImage: image.String(),
 		},

@@ -4,7 +4,7 @@ metadata:
   name: istio-ingressgateway
   namespace: test-ingress
   labels:
-    app.kubernetes.io/version: 1.27.1
+    app.kubernetes.io/version: 1.29.1
     app: istio-ingressgateway
     foo: bar
 spec:
@@ -19,8 +19,8 @@ spec:
     resource:
       name: cpu
       target:
-        averageUtilization: 80
-        type: Utilization
+        type: AverageValue
+        averageValue: "4"
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 1800

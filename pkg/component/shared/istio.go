@@ -23,15 +23,24 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/gardener/gardener/pkg/component/networking/istio"
-	"github.com/gardener/gardener/pkg/component/networking/nginxingress"
+	"github.com/gardener/gardener/pkg/component/networking/istiobasicauthserver"
 	vpnseedserver "github.com/gardener/gardener/pkg/component/networking/vpn/seedserver"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 )
 
 // ImageVector is an alias for imagevector.Containers(). Exposed for testing.
 var ImageVector = imagevector.Containers()
+
+const (
+	// Each availability zone should have at least 2 replicas as on some infrastructures each
+	// zonal load balancer is exposed individually via its own IP address. Therefore, having
+	// just one replica may negatively affect availability.
+	minReplicasPerZone = 2
+	// The maximum is chosen high enough to allow for sufficient scaling headroom during peak
+	// load while still providing a reasonable upper bound to prevent runaway scaling.
+	maxReplicasPerZone = 16
+)
 
 // NewIstio returns a deployer for Istio.
 func NewIstio(
@@ -43,14 +52,14 @@ func NewIstio(
 	priorityClassName string,
 	istiodEnabled bool,
 	labels map[string]string,
-	toKubeAPIServerPolicyLabel string,
+	networkPolicyLabels []string,
 	lbAnnotations map[string]string,
 	loadBalancerClass *string,
 	externalTrafficPolicy *corev1.ServiceExternalTrafficPolicy,
 	serviceExternalIP *string,
 	servicePorts []corev1.ServicePort,
 	terminateLoadBalancerProxyProtocol *bool,
-	vpnEnabled bool,
+	withShoots bool,
 	zones []string,
 	dualStack bool,
 	kubernetesVersion *semver.Version,
@@ -58,11 +67,6 @@ func NewIstio(
 	istio.Interface,
 	error,
 ) {
-	var (
-		minReplicas *int
-		maxReplicas *int
-	)
-
 	istiodImage, err := ImageVector.FindImage(imagevector.ContainerImageNameIstioIstiod)
 	if err != nil {
 		return nil, err
@@ -73,26 +77,13 @@ func NewIstio(
 		return nil, err
 	}
 
-	if len(zones) > 1 {
-		// Each availability zone should have at least 2 replicas as on some infrastructures each
-		// zonal load balancer is exposed individually via its own IP address. Therefore, having
-		// just one replica may negatively affect availability.
-		minReplicas = ptr.To(len(zones) * 2)
-		// The default configuration without availability zones has 9 as the maximum amount of
-		// replicas, which apparently works in all known Gardener scenarios. Reducing it to less
-		// per zone gives some room for autoscaling while it is assumed to never reach the maximum.
-		maxReplicas = ptr.To(len(zones) * 6)
-		if features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) {
-			// When IstioTLSTermination server is enabled, more resources might be required on seeds.
-			maxReplicas = ptr.To(len(zones) * 8)
-		}
-	}
+	minReplicas := ptr.To(max(1, len(zones)) * minReplicasPerZone)
+	maxReplicas := ptr.To(max(1, len(zones)) * maxReplicasPerZone)
 
-	policyLabels := commonIstioIngressNetworkPolicyLabels(vpnEnabled)
-	policyLabels[toKubeAPIServerPolicyLabel] = v1beta1constants.LabelNetworkPolicyAllowed
-	// In case the cluster's API server should be exposed via ingress domain for the dashboard terminal scenario,
-	// istio ingress gateway needs to be able to directly forward traffic to the runtime API server.
-	policyLabels[v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer] = v1beta1constants.LabelNetworkPolicyAllowed
+	policyLabels := commonIstioIngressNetworkPolicyLabels(withShoots)
+	for _, label := range networkPolicyLabels {
+		policyLabels[label] = v1beta1constants.LabelNetworkPolicyAllowed
+	}
 
 	enforceSpreadAcrossHosts, err := ShouldEnforceSpreadAcrossHosts(ctx, cl, zones)
 	if err != nil {
@@ -115,7 +106,7 @@ func NewIstio(
 		Namespace:                          namePrefix + ingressNamespace,
 		PriorityClassName:                  priorityClassName,
 		TerminateLoadBalancerProxyProtocol: ptr.Deref(terminateLoadBalancerProxyProtocol, false),
-		VPNEnabled:                         vpnEnabled,
+		VPNEnabled:                         withShoots,
 		DualStack:                          dualStack,
 		EnforceSpreadAcrossHosts:           enforceSpreadAcrossHosts,
 		KubernetesVersion:                  kubernetesVersion.String(),
@@ -168,27 +159,21 @@ func AddIstioIngressGateway(
 	// Take the first ingress gateway values to create additional gateways
 	templateValues := gatewayValues[0]
 
-	var (
-		zones                    []string
-		minReplicas              *int
-		maxReplicas              *int
-		enforceSpreadAcrossHosts bool
-		err                      error
-	)
+	var zones []string
 
-	if zone == nil {
-		minReplicas = templateValues.MinReplicas
-		maxReplicas = templateValues.MaxReplicas
-		enforceSpreadAcrossHosts = templateValues.EnforceSpreadAcrossHosts
-	} else {
+	minReplicas := templateValues.MinReplicas
+	maxReplicas := templateValues.MaxReplicas
+
+	enforceSpreadAcrossHosts := templateValues.EnforceSpreadAcrossHosts
+
+	if zone != nil {
 		zones = []string{*zone}
 
-		if features.DefaultFeatureGate.Enabled(features.IstioTLSTermination) {
-			// When IstioTLSTermination server is enabled, more resources might be required on seeds.
-			maxReplicas = ptr.To(len(zones) * 12)
-		}
+		minReplicas = ptr.To(minReplicasPerZone)
+		maxReplicas = ptr.To(maxReplicasPerZone)
 
-		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(ctx, cl, []string{*zone})
+		var err error
+		enforceSpreadAcrossHosts, err = ShouldEnforceSpreadAcrossHosts(ctx, cl, zones)
 		if err != nil {
 			return err
 		}
@@ -358,16 +343,19 @@ forNode:
 	return zonesIncomplete == 0 && len(zones) > 0, nil
 }
 
-func commonIstioIngressNetworkPolicyLabels(vpnEnabled bool) map[string]string {
+func commonIstioIngressNetworkPolicyLabels(withShoots bool) map[string]string {
 	labels := map[string]string{
 		v1beta1constants.LabelNetworkPolicyToDNS: v1beta1constants.LabelNetworkPolicyAllowed,
-		gardenerutils.NetworkPolicyLabel(v1beta1constants.IstioSystemNamespace+"-"+istio.IstiodServiceName, istio.IstiodPort):                         v1beta1constants.LabelNetworkPolicyAllowed,
-		gardenerutils.NetworkPolicyLabel(v1beta1constants.GardenNamespace+"-"+nginxingress.GetServiceName(), nginxingress.ServicePortControllerHttps): v1beta1constants.LabelNetworkPolicyAllowed,
+		gardenerutils.NetworkPolicyLabel(v1beta1constants.IstioSystemNamespace+"-"+istio.IstiodServiceName, istio.IstiodPort): v1beta1constants.LabelNetworkPolicyAllowed,
 	}
-	if vpnEnabled {
+	if withShoots {
+		// In case the cluster's API server should be exposed via ingress domain for the dashboard terminal scenario,
+		// istio ingress gateway needs to be able to directly forward traffic to the runtime API server.
+		labels[v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer] = v1beta1constants.LabelNetworkPolicyAllowed
+		labels[gardenerutils.NetworkPolicyLabel(v1beta1constants.LabelNetworkPolicyShootNamespaceAlias+"-"+v1beta1constants.DeploymentNameIstioBasicAuthServer, istiobasicauthserver.Port)] = v1beta1constants.LabelNetworkPolicyAllowed
 		labels[gardenerutils.NetworkPolicyLabel(v1beta1constants.LabelNetworkPolicyShootNamespaceAlias+"-"+v1beta1constants.DeploymentNameVPNSeedServer, vpnseedserver.OpenVPNPort)] = v1beta1constants.LabelNetworkPolicyAllowed
 
-		for i := 0; i < vpnseedserver.HighAvailabilityReplicaCount; i++ {
+		for i := range vpnseedserver.HighAvailabilityReplicaCount {
 			labels[gardenerutils.NetworkPolicyLabel(fmt.Sprintf("%s-%s-%d", v1beta1constants.LabelNetworkPolicyShootNamespaceAlias, v1beta1constants.DeploymentNameVPNSeedServer, i), vpnseedserver.OpenVPNPort)] = v1beta1constants.LabelNetworkPolicyAllowed
 		}
 	}

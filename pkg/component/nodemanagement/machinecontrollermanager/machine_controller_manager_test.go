@@ -17,6 +17,7 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -134,8 +135,13 @@ var _ = Describe("MachineControllerManager", func() {
 				},
 				{
 					APIGroups: []string{corev1.GroupName},
-					Resources: []string{"configmaps", "secrets", "endpoints", "events", "pods"},
+					Resources: []string{"secrets"},
 					Verbs:     []string{"create", "get", "list", "patch", "update", "watch", "delete", "deletecollection"},
+				},
+				{
+					APIGroups: []string{corev1.GroupName, eventsv1.GroupName},
+					Resources: []string{"events"},
+					Verbs:     []string{"get", "list", "create", "patch", "update"},
 				},
 				{
 					APIGroups: []string{coordinationv1.GroupName},
@@ -285,6 +291,7 @@ var _ = Describe("MachineControllerManager", func() {
 						PriorityClassName:             "gardener-system-300",
 						ServiceAccountName:            "machine-controller-manager",
 						TerminationGracePeriodSeconds: ptr.To[int64](5),
+						Tolerations:                   []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists}},
 					},
 				},
 			},
@@ -329,10 +336,16 @@ var _ = Describe("MachineControllerManager", func() {
 					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-						ContainerName:    "machine-controller-manager",
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-					}},
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName:    "machine-controller-manager",
+							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+						},
+					},
 				},
 			},
 		}

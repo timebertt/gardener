@@ -18,7 +18,7 @@ spec:
         kind: nginx
     networking:
       nodes:
-      - 172.18.0.0/16
+      - 172.18.0.0/24
       pods:
       # Subnet for automatic pod IP assignment (calico default IPPool) in the kind cluster.
       - 10.1.0.0/16
@@ -50,7 +50,7 @@ spec:
         storage:
           capacity: 10Gi
     kubernetes:
-      version: 1.32.0
+      version: 1.34.2
     gardener:
       clusterIdentity: gardener-local
       gardenerAPIServer:
@@ -58,7 +58,10 @@ spec:
           CloudProfileCapabilities: true
           InPlaceNodeUpdates: true
       gardenerDashboard: {}
-      gardenerDiscoveryServer: {}
+      gardenerDiscoveryServer:
+        domain:
+          name: discovery.local.gardener.cloud
+          provider: primary
     maintenance:
       timeWindow:
         begin: 220000+0100

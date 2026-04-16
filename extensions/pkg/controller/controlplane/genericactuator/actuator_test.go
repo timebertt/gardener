@@ -26,6 +26,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/utils/clock"
 	testclock "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -106,6 +107,9 @@ var _ = Describe("Actuator", func() {
 			},
 		}
 
+		createdMRSecretForControlPlaneSeedChart *corev1.Secret
+		createdMRForControlPlaneSeedChart       *resourcesv1alpha1.ManagedResource
+
 		cpSecretKey    client.ObjectKey
 		cpConfigMapKey client.ObjectKey
 		cpSecret       *corev1.Secret
@@ -139,13 +143,13 @@ var _ = Describe("Actuator", func() {
 		checksums = map[string]string{
 			v1beta1constants.SecretNameCloudProvider: "8bafb35ff1ac60275d62e1cbd495aceb511fb354f74a20f7d06ecb48b3a68432",
 			cloudProviderConfigName:                  "08a7bc7fe8f59b055f173145e211760a83f02cf89635cef26ebb351378635606",
-			caNameControlPlane:                       "3e6425b85bb75f33df7c16387b6999eb0f2d3c3e0a81afb4739626c69a79887b",
-			"cloud-controller-manager":               "47448ddc1d8c7b02d20125b4f0914acf8402ee9d763d5bdd48634fcbf8d75b1d",
+			caNameControlPlane:                       "4eaacd526bec01da8f0fbf602077712294caffe81f9fb366bb7d5dea91204246",
+			"cloud-controller-manager":               "1dac327f1cd4dd1c108446bb8b414e7a0551f792ad9ff1139b743a0046a1d659",
 		}
 		checksumsNoConfig = map[string]string{
 			v1beta1constants.SecretNameCloudProvider: "8bafb35ff1ac60275d62e1cbd495aceb511fb354f74a20f7d06ecb48b3a68432",
-			caNameControlPlane:                       "3e6425b85bb75f33df7c16387b6999eb0f2d3c3e0a81afb4739626c69a79887b",
-			"cloud-controller-manager":               "47448ddc1d8c7b02d20125b4f0914acf8402ee9d763d5bdd48634fcbf8d75b1d",
+			caNameControlPlane:                       "4eaacd526bec01da8f0fbf602077712294caffe81f9fb366bb7d5dea91204246",
+			"cloud-controller-manager":               "1dac327f1cd4dd1c108446bb8b414e7a0551f792ad9ff1139b743a0046a1d659",
 		}
 
 		configChartValues = map[string]any{
@@ -208,6 +212,21 @@ var _ = Describe("Actuator", func() {
 		cpConfigMap = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: cloudProviderConfigName, Namespace: namespace},
 			Data:       map[string]string{"abc": "xyz"},
+		}
+
+		createdMRSecretForControlPlaneSeedChart = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedChartResourceName, Namespace: namespace},
+			Data:       map[string][]byte{chartName: []byte(renderedContent)},
+			Type:       corev1.SecretTypeOpaque,
+		}
+		createdMRForControlPlaneSeedChart = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedChartResourceName, Namespace: namespace},
+			Spec: resourcesv1alpha1.ManagedResourceSpec{
+				Class: ptr.To(v1beta1constants.SeedResourceManagerClass),
+				SecretRefs: []corev1.LocalObjectReference{
+					{Name: ControlPlaneSeedConfigurationChartResourceName},
+				},
+			},
 		}
 
 		resourceKeyCPShootChart = client.ObjectKey{Namespace: namespace, Name: ControlPlaneShootChartResourceName}
@@ -339,6 +358,18 @@ webhooks:
 				createdMRForShootWebhooks.Spec.SecretRefs = []corev1.LocalObjectReference{{Name: createdMRSecretForShootWebhooks.Name}}
 				utilruntime.Must(references.InjectAnnotations(createdMRForShootWebhooks))
 				c.EXPECT().Create(ctx, createdMRForShootWebhooks).Return(nil)
+				c.EXPECT().Get(ctx, resourceKeyShootWebhooks, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).DoAndReturn(
+					func(_ context.Context, _ client.ObjectKey, obj *resourcesv1alpha1.ManagedResource, _ ...client.GetOption) error {
+						obj.Status = resourcesv1alpha1.ManagedResourceStatus{
+							ObservedGeneration: obj.Generation,
+							Conditions: []gardencorev1beta1.Condition{
+								{Type: resourcesv1alpha1.ResourcesApplied, Status: gardencorev1beta1.ConditionTrue},
+								{Type: resourcesv1alpha1.ResourcesHealthy, Status: gardencorev1beta1.ConditionTrue},
+								{Type: resourcesv1alpha1.ResourcesProgressing, Status: gardencorev1beta1.ConditionFalse},
+							},
+						}
+						return nil
+					})
 			}
 
 			c.EXPECT().Get(ctx, cpSecretKey, &corev1.Secret{}).DoAndReturn(clientGet(cpSecret))
@@ -374,9 +405,7 @@ webhooks:
 
 			// Create mock Gardener clientset and chart applier
 			gardenerClientset := kubernetesmock.NewMockInterface(ctrl)
-			gardenerClientset.EXPECT().Version().Return(seedVersion)
-			chartApplier := kubernetesmock.NewMockChartApplier(ctrl)
-			gardenerClientset.EXPECT().ChartApplier().Return(chartApplier).AnyTimes()
+			gardenerClientset.EXPECT().Version().Return(seedVersion).AnyTimes()
 
 			// Create mock chart renderer and factory
 			chartRenderer := mockchartrenderer.NewMockInterface(ctrl)
@@ -387,11 +416,30 @@ webhooks:
 			var configChart chart.Interface
 			if configName != "" {
 				configChartMock := mockchartutil.NewMockInterface(ctrl)
-				configChartMock.EXPECT().Apply(ctx, chartApplier, namespace, nil, "", "", configChartValues).Return(nil)
+				configChartMock.EXPECT().Render(chartRenderer, namespace, imageVector, seedVersion, shootVersion, configChartValues).Return(chartName, []byte(renderedContent), nil)
 				configChart = configChartMock
+
+				createdMRSecretForConfigurationSeedChart := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedConfigurationChartResourceName, Namespace: namespace},
+					Data:       map[string][]byte{chartName: []byte(renderedContent)},
+					Type:       corev1.SecretTypeOpaque,
+				}
+				createdMRForConfigurationSeedChart := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedConfigurationChartResourceName, Namespace: namespace},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						Class: ptr.To(v1beta1constants.SeedResourceManagerClass),
+						SecretRefs: []corev1.LocalObjectReference{
+							{Name: ControlPlaneSeedConfigurationChartResourceName},
+						},
+					},
+				}
+				setupManagedResourceCreation(ctx, c, createdMRSecretForConfigurationSeedChart, createdMRForConfigurationSeedChart)
 			}
+
 			ccmChart := mockchartutil.NewMockInterface(ctrl)
-			ccmChart.EXPECT().Apply(ctx, chartApplier, namespace, imageVector, seedVersion, shootVersion, controlPlaneChartValues).Return(nil)
+			ccmChart.EXPECT().Render(chartRenderer, namespace, imageVector, seedVersion, shootVersion, controlPlaneChartValues).Return(chartName, []byte(renderedContent), nil)
+			setupManagedResourceCreation(ctx, c, createdMRSecretForControlPlaneSeedChart, createdMRForControlPlaneSeedChart)
+
 			ccmShootChart := mockchartutil.NewMockInterface(ctrl)
 			ccmShootChart.EXPECT().Render(chartRenderer, metav1.NamespaceSystem, imageVector, shootVersion, shootVersion, controlPlaneShootChartValues).Return(chartName, []byte(renderedContent), nil)
 			var cpShootCRDsChart chart.Interface
@@ -468,8 +516,8 @@ webhooks:
 			Expect(err).NotTo(HaveOccurred())
 
 			expectSecretsManagedBySecretsManager(fakeClient, "wanted secrets should get created",
-				"ca-provider-test-controlplane-05334c48", "ca-provider-test-controlplane-bundle-bdc12448",
-				"cloud-controller-manager-bc446deb",
+				"ca-provider-test-controlplane-05334c48", "ca-provider-test-controlplane-bundle-67817cb3",
+				"cloud-controller-manager-c249bd1b",
 			)
 		},
 		Entry("should deploy secrets and apply charts with correct parameters", cloudProviderConfigName, checksums, &admissionregistrationv1.MutatingWebhookConfiguration{Webhooks: []admissionregistrationv1.MutatingWebhook{{}}}, true),
@@ -486,58 +534,95 @@ webhooks:
 				atomicWebhookConfig.Store(&extensionswebhook.Configs{MutatingWebhookConfig: webhookConfig})
 			}
 
+			// Create mock Gardener clientset and chart applier
+			gardenerClientset := kubernetesmock.NewMockInterface(ctrl)
+			gardenerClientset.EXPECT().Version().Return(seedVersion).AnyTimes()
+
 			// Create mock values provider
 			vp := extensionsmockgenericactuator.NewMockValuesProvider(ctrl)
 
-			// Create mock Gardener clientset and chart applier
-			gardenerClientset := kubernetesmock.NewMockInterface(ctrl)
-			chartApplier := kubernetesmock.NewMockChartApplier(ctrl)
-			gardenerClientset.EXPECT().ChartApplier().Return(chartApplier).AnyTimes()
+			// Create mock chart renderer and factory
+			chartRenderer := mockchartrenderer.NewMockInterface(ctrl)
+			crf := extensionsmockcontroller.NewMockChartRendererFactory(ctrl)
+			crf.EXPECT().NewChartRendererForShoot(shootVersion).Return(chartRenderer, nil)
 
 			// Create mock clients
-			client := mockclient.NewMockClient(ctrl)
+			c := mockclient.NewMockClient(ctrl)
 
-			client.EXPECT().Get(gomock.Any(), resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
-			client.EXPECT().Delete(ctx, deletedMRForStorageClassesChart).Return(nil)
-			client.EXPECT().Delete(ctx, deletedMRSecretForStorageClassesChart).Return(nil)
+			c.EXPECT().Get(gomock.Any(), resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
+			c.EXPECT().Delete(ctx, deletedMRForStorageClassesChart).Return(nil)
+			c.EXPECT().Delete(ctx, deletedMRSecretForStorageClassesChart).Return(nil)
 			var cpShootCRDsChart chart.Interface
 			if withShootCRDsChart {
 				cpShootCRDsChartMock := mockchartutil.NewMockInterface(ctrl)
 				cpShootCRDsChart = cpShootCRDsChartMock
-				client.EXPECT().Get(gomock.Any(), resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
-				client.EXPECT().Delete(ctx, deletedMRForCPShootCRDsChart).Return(nil)
-				client.EXPECT().Delete(ctx, deletedMRSecretForCPShootCRDsChart).Return(nil)
-				client.EXPECT().Get(gomock.Any(), resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForCPShootCRDsChart.Name))
+				c.EXPECT().Get(gomock.Any(), resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
+				c.EXPECT().Delete(ctx, deletedMRForCPShootCRDsChart).Return(nil)
+				c.EXPECT().Delete(ctx, deletedMRSecretForCPShootCRDsChart).Return(nil)
+				c.EXPECT().Get(gomock.Any(), resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForCPShootCRDsChart.Name))
 			}
 
-			client.EXPECT().Get(gomock.Any(), resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
-			client.EXPECT().Delete(ctx, deletedMRForCPShootChart).Return(nil)
-			client.EXPECT().Delete(ctx, deletedMRSecretForCPShootChart).Return(nil)
+			c.EXPECT().Get(gomock.Any(), resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
+			c.EXPECT().Delete(ctx, deletedMRForCPShootChart).Return(nil)
+			c.EXPECT().Delete(ctx, deletedMRSecretForCPShootChart).Return(nil)
 
-			client.EXPECT().Get(gomock.Any(), resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForStorageClassesChart.Name))
-			client.EXPECT().Get(gomock.Any(), resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForCPShootChart.Name))
+			c.EXPECT().Get(gomock.Any(), resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForStorageClassesChart.Name))
+			c.EXPECT().Get(gomock.Any(), resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForCPShootChart.Name))
 
 			// Create mock charts
 			var configChart chart.Interface
 			if configName != "" {
 				configChartMock := mockchartutil.NewMockInterface(ctrl)
 				vp.EXPECT().GetConfigChartValues(ctx, cp, cluster).Return(configChartValues, nil)
-				configChartMock.EXPECT().Apply(ctx, chartApplier, namespace, nil, "", "", configChartValues).Return(nil)
-				configChartMock.EXPECT().Delete(ctx, client, namespace).Return(nil)
+				configChartMock.EXPECT().Render(chartRenderer, namespace, imageVector, shootVersion, shootVersion, configChartValues).Return(chartName, []byte(renderedContent), nil)
 				configChart = configChartMock
+
+				createdMRSecretForConfigurationSeedChart := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedConfigurationChartResourceName, Namespace: namespace},
+					Data:       map[string][]byte{chartName: []byte(renderedContent)},
+					Type:       corev1.SecretTypeOpaque,
+				}
+				createdMRForConfigurationSeedChart := &resourcesv1alpha1.ManagedResource{
+					ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedConfigurationChartResourceName, Namespace: namespace},
+					Spec: resourcesv1alpha1.ManagedResourceSpec{
+						Class: ptr.To(v1beta1constants.SeedResourceManagerClass),
+						SecretRefs: []corev1.LocalObjectReference{
+							{Name: ControlPlaneSeedConfigurationChartResourceName},
+						},
+					},
+				}
+				setupManagedResourceCreation(ctx, c, createdMRSecretForConfigurationSeedChart, createdMRForConfigurationSeedChart)
+				c.EXPECT().Get(gomock.Any(), client.ObjectKeyFromObject(createdMRForConfigurationSeedChart), gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).DoAndReturn(
+					func(_ context.Context, _ client.ObjectKey, obj *resourcesv1alpha1.ManagedResource, _ ...client.PatchOption) error {
+						*obj = ptr.Deref(createdMRForConfigurationSeedChart.DeepCopy(), resourcesv1alpha1.ManagedResource{})
+						return nil
+					})
+				c.EXPECT().Delete(ctx, createdMRForConfigurationSeedChart).Return(nil)
+				c.EXPECT().Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: createdMRSecretForConfigurationSeedChart.Name, Namespace: createdMRSecretForConfigurationSeedChart.Namespace}}).Return(nil)
+				c.EXPECT().Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedConfigurationChartResourceName, Namespace: createdMRSecretForConfigurationSeedChart.Namespace}}).Return(nil)
 			}
+
+			// Delete mock controlplane chart
 			ccmChart := mockchartutil.NewMockInterface(ctrl)
-			ccmChart.EXPECT().Delete(ctx, client, namespace).Return(nil)
+			deletedMRForControlPlaneChart := &resourcesv1alpha1.ManagedResource{
+				ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedChartResourceName, Namespace: namespace},
+			}
+			deletedMRSecretForControlPlaneChart := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneSeedChartResourceName, Namespace: namespace},
+			}
+			c.EXPECT().Get(gomock.Any(), client.ObjectKey{Namespace: namespace, Name: ControlPlaneSeedChartResourceName}, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
+			c.EXPECT().Delete(ctx, deletedMRForControlPlaneChart).Return(nil)
+			c.EXPECT().Delete(ctx, deletedMRSecretForControlPlaneChart).Return(nil)
 
 			if webhookConfig != nil {
-				client.EXPECT().Get(gomock.Any(), resourceKeyShootWebhooks, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
-				client.EXPECT().Delete(ctx, deletedMRForShootWebhooks).Return(nil)
-				client.EXPECT().Delete(ctx, deletedMRSecretForShootWebhooks).Return(nil)
-				client.EXPECT().Get(gomock.Any(), resourceKeyShootWebhooks, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForShootWebhooks.Name))
+				c.EXPECT().Get(gomock.Any(), resourceKeyShootWebhooks, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{}))
+				c.EXPECT().Delete(ctx, deletedMRForShootWebhooks).Return(nil)
+				c.EXPECT().Delete(ctx, deletedMRSecretForShootWebhooks).Return(nil)
+				c.EXPECT().Get(gomock.Any(), resourceKeyShootWebhooks, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForShootWebhooks.Name))
 			}
 
 			// Handle shoot access secrets and legacy secret cleanup
-			client.EXPECT().Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: shootAccessSecretsFunc(namespace)[0].Secret.Name, Namespace: namespace}})
+			c.EXPECT().Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: shootAccessSecretsFunc(namespace)[0].Secret.Name, Namespace: namespace}})
 
 			// Create actuator
 			a := &actuator{
@@ -550,14 +635,15 @@ webhooks:
 				controlPlaneShootCRDsChart: cpShootCRDsChart,
 				storageClassesChart:        nil,
 				vp:                         vp,
-				chartRendererFactory:       nil,
-				imageVector:                nil,
 				configName:                 configName,
 				atomicShootWebhookConfig:   atomicWebhookConfig,
 				webhookServerNamespace:     webhookServerNamespace,
 				gardenerClientset:          gardenerClientset,
-				client:                     client,
+				client:                     c,
 				newSecretsManager:          newSecretsManager,
+
+				chartRendererFactory: crf,
+				imageVector:          imageVector,
 			}
 
 			// Call Delete method and check the result
@@ -631,4 +717,15 @@ func expectSecretsManagedBySecretsManager(c client.Reader, description string, s
 	secretList := &corev1.SecretList{}
 	ExpectWithOffset(1, c.List(context.Background(), secretList, client.MatchingLabels{"managed-by": "secrets-manager"})).To(Succeed())
 	ExpectWithOffset(1, secretList.Items).To(consistOfObjects(secretNames...), description)
+}
+
+func setupManagedResourceCreation(ctx context.Context, c *mockclient.MockClient, s *corev1.Secret, r *resourcesv1alpha1.ManagedResource) {
+	errNotFound := &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonNotFound}}
+	utilruntime.Must(kubernetesutils.MakeUnique(s))
+	c.EXPECT().Get(ctx, client.ObjectKeyFromObject(s), gomock.AssignableToTypeOf(&corev1.Secret{})).Return(errNotFound)
+	c.EXPECT().Create(ctx, s).Return(nil)
+	c.EXPECT().Get(ctx, client.ObjectKeyFromObject(r), gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(errNotFound)
+	r.Spec.SecretRefs = []corev1.LocalObjectReference{{Name: s.Name}}
+	utilruntime.Must(references.InjectAnnotations(r))
+	c.EXPECT().Create(ctx, r).Return(nil)
 }

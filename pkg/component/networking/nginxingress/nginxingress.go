@@ -97,8 +97,8 @@ type Values struct {
 	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy
 	// VPAEnabled marks whether VerticalPodAutoscaler is enabled for the shoot.
 	VPAEnabled bool
-	// WildcardIngressDomains are the wildcard domains used by all ingress resources exposed by nginx-ingress.
-	WildcardIngressDomains []string
+	// Domains are the hosts and/or wildcard domains used by all ingress resources exposed by nginx-ingress.
+	Domains []string
 	// IstioIngressGatewayLabels are the labels for identifying the used istio ingress gateway.
 	IstioIngressGatewayLabels map[string]string
 	// SeedIsGarden controls whether only the Istio VirtualService and Gateway resources should be managed.
@@ -603,7 +603,6 @@ func (n *nginxIngress) computeResourcesData() (map[string][]byte, error) {
 			},
 		}
 
-		updateMode          = vpaautoscalingv1.UpdateModeRecreate
 		vpa                 *vpaautoscalingv1.VerticalPodAutoscaler
 		podDisruptionBudget *policyv1.PodDisruptionBudget
 		networkPolicy       *networkingv1.NetworkPolicy
@@ -654,12 +653,12 @@ func (n *nginxIngress) computeResourcesData() (map[string][]byte, error) {
 
 		port := uint32(ServicePortControllerHttps)
 		gateway = &istionetworkingv1beta1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: controllerName + n.nameSuffix(), Namespace: n.values.TargetNamespace}}
-		if err := istio.GatewayWithTLSPassthrough(gateway, n.getLabels(LabelValueController, false), n.values.IstioIngressGatewayLabels, n.values.WildcardIngressDomains, port)(); err != nil {
+		if err := istio.GatewayWithTLSPassthrough(gateway, n.getLabels(LabelValueController, false), n.values.IstioIngressGatewayLabels, n.values.Domains, port)(); err != nil {
 			return nil, err
 		}
 
 		// If multiple domains overlap istio validation may complain => separate virtual services per domain solve this reliably
-		for i, domain := range n.values.WildcardIngressDomains {
+		for i, domain := range n.values.Domains {
 			virtualService := &istionetworkingv1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%d", controllerName+n.nameSuffix(), i), Namespace: n.values.TargetNamespace}}
 			if err := istio.VirtualServiceWithSNIMatch(virtualService, n.getLabels(LabelValueController, false), []string{domain}, gateway.Name, port, destinationHost)(); err != nil {
 				return nil, err
@@ -722,15 +721,19 @@ func (n *nginxIngress) computeResourcesData() (map[string][]byte, error) {
 					Name:       deploymentController.Name,
 				},
 				UpdatePolicy: &vpaautoscalingv1.PodUpdatePolicy{
-					UpdateMode: &updateMode,
+					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							ContainerName: n.getName("Container", false),
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceMemory: resource.MustParse("100Mi"),
 							},
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},

@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 )
 
 const (
@@ -108,4 +108,32 @@ func (f *ClassFilter) Update(e event.UpdateEvent) bool {
 // Generic implements `predicate.Predicate`.
 func (f *ClassFilter) Generic(e event.GenericEvent) bool {
 	return controllerutil.ContainsFinalizer(e.Object, f.objectFinalizer) || f.Responsible(e.Object)
+}
+
+// CleanupCompleted returns a predicate that detects if cleanup was completed after the class of a ManagedResource was changed.
+func (f *ClassFilter) CleanupCompleted() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(_ event.CreateEvent) bool {
+			return false
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldMR, ok := e.ObjectOld.(*resourcesv1alpha1.ManagedResource)
+			if !ok {
+				return false
+			}
+
+			newMR, ok := e.ObjectNew.(*resourcesv1alpha1.ManagedResource)
+			if !ok {
+				return false
+			}
+
+			return f.IsWaitForCleanupRequired(oldMR) && !f.IsWaitForCleanupRequired(newMR)
+		},
+		DeleteFunc: func(_ event.DeleteEvent) bool {
+			return false
+		},
+		GenericFunc: func(_ event.GenericEvent) bool {
+			return false
+		},
+	}
 }

@@ -38,13 +38,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/resourcemanager/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	. "github.com/gardener/gardener/pkg/component/gardener/resourcemanager"
-	resourcemanagerconfigv1alpha1 "github.com/gardener/gardener/pkg/resourcemanager/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/resourcemanager/controller/garbagecollector/references"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
@@ -78,7 +78,6 @@ var _ = Describe("ResourceManager", func() {
 		clusterIdentity                    = "foo"
 		secretNameServer                   = "gardener-resource-manager-server"
 		secretMountPathServer              = "/etc/gardener-resource-manager-tls"
-		secretMountPathRootCA              = "/etc/gardener-resource-manager-root-ca"
 		secretMountPathConfig              = "/etc/gardener-resource-manager-config"
 		secretMountPathAPIAccess           = "/var/run/secrets/kubernetes.io/serviceaccount"
 		secrets                            Secrets
@@ -150,7 +149,7 @@ var _ = Describe("ResourceManager", func() {
 		sm = fakesecretsmanager.New(fakeClient, deployNamespace)
 
 		By("Create secrets managed outside of this package for whose secretsmanager.Get() will be called")
-		Expect(fakeClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: deployNamespace}})).To(Succeed())
+		Expect(fakeClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "server-ca", Namespace: deployNamespace}})).To(Succeed())
 		Expect(fakeClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "generic-token-kubeconfig", Namespace: deployNamespace}})).To(Succeed())
 
 		secrets = Secrets{}
@@ -324,27 +323,28 @@ var _ = Describe("ResourceManager", func() {
 			PriorityClassName:                                priorityClassName,
 			Replicas:                                         &replicas,
 			ResourceClass:                                    &resourceClass,
-			SecretNameServerCA:                               "ca",
+			SecretNameServerCA:                               "server-ca",
 			SystemComponentTolerations: []corev1.Toleration{
 				{Key: "a"},
 				{Key: "b"},
 				{Key: "c"},
 				{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists},
 			},
-			ResponsibilityMode:                        ForTarget,
+			ResponsibilityMode:                        ForShootOrVirtualGarden,
 			TargetDisableCache:                        &targetDisableCache,
 			WatchedNamespace:                          &watchedNamespace,
 			SchedulingProfile:                         &binPackingSchedulingProfile,
 			DefaultSeccompProfileEnabled:              false,
 			EndpointSliceHintsEnabled:                 false,
 			PodTopologySpreadConstraintsEnabled:       true,
-			VPAInPlaceUpdatesEnabled:                  false,
+			VPAInPlaceUpdatesEnabled:                  true,
 			LogLevel:                                  "info",
 			LogFormat:                                 "json",
 			Zones:                                     []string{"a", "b"},
 			ManagedResourceLabels:                     map[string]string{"foo": "bar"},
 			NodeAgentAuthorizerEnabled:                true,
 			NodeAgentAuthorizerAuthorizeWithSelectors: ptr.To(true),
+			MachineNamespace:                          ptr.To(watchedNamespace),
 			PodKubeAPIServerLoadBalancingWebhook: PodKubeAPIServerLoadBalancingWebhook{
 				Enabled: false,
 				Configs: []PodKubeAPIServerLoadBalancingWebhookConfig{
@@ -426,7 +426,7 @@ var _ = Describe("ResourceManager", func() {
 					CSRApprover: resourcemanagerconfigv1alpha1.CSRApproverControllerConfig{
 						Enabled:          !isWorkerless,
 						ConcurrentSyncs:  &maxConcurrentCSRApproverWorkers,
-						MachineNamespace: watchedNamespace,
+						MachineNamespace: cfg.MachineNamespace,
 					},
 					ManagedResource: resourcemanagerconfigv1alpha1.ManagedResourceControllerConfig{
 						ConcurrentSyncs: &concurrentSyncs,
@@ -466,7 +466,10 @@ var _ = Describe("ResourceManager", func() {
 					NodeAgentAuthorizer: resourcemanagerconfigv1alpha1.NodeAgentAuthorizerWebhookConfig{
 						Enabled:                true,
 						AuthorizeWithSelectors: ptr.To(true),
-						MachineNamespace:       watchedNamespace,
+						MachineNamespace:       cfg.MachineNamespace,
+					},
+					VPAInPlaceUpdates: resourcemanagerconfigv1alpha1.VPAInPlaceUpdatesConfig{
+						Enabled: true,
 					},
 				},
 			}
@@ -475,7 +478,7 @@ var _ = Describe("ResourceManager", func() {
 				config.SourceClientConnection.Namespaces = []string{*watchedNamespace}
 			}
 
-			if responsibilityMode == ForTarget {
+			if responsibilityMode == ForShootOrVirtualGarden {
 				config.TargetClientConnection = &resourcemanagerconfigv1alpha1.ClientConnection{
 					ClientConnectionConfiguration: componentbaseconfigv1alpha1.ClientConnectionConfiguration{
 						Kubeconfig: gardenerutils.PathGenericKubeconfig,
@@ -508,12 +511,12 @@ var _ = Describe("ResourceManager", func() {
 				config.Webhooks.VPAInPlaceUpdates.Enabled = true
 			}
 
-			if responsibilityMode == ForSource {
+			if responsibilityMode == ForRuntime {
 				config.Webhooks.EndpointSliceHints.Enabled = true
 				config.Webhooks.PodKubeAPIServerLoadBalancing.Enabled = true
 			}
 
-			if responsibilityMode == ForTarget || responsibilityMode == ForSourceAndTarget {
+			if responsibilityMode == ForShootOrVirtualGarden {
 				config.Webhooks.SystemComponentsConfig = resourcemanagerconfigv1alpha1.SystemComponentsConfigWebhookConfig{
 					Enabled: !isWorkerless,
 					NodeSelector: map[string]string{
@@ -560,6 +563,10 @@ var _ = Describe("ResourceManager", func() {
 						MatchLabels: map[string]string{
 							"app": "gardener-resource-manager",
 						},
+					},
+					Strategy: appsv1.DeploymentStrategy{
+						Type:          appsv1.RollingUpdateDeploymentStrategyType,
+						RollingUpdate: &appsv1.RollingUpdateDeployment{},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
@@ -743,21 +750,6 @@ var _ = Describe("ResourceManager", func() {
 				deployment.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "KUBERNETES_SERVICE_HOST", Value: "localhost"}}
 				deployment.Spec.Template.Spec.HostNetwork = true
 				deployment.Spec.Template.Spec.PriorityClassName = "system-cluster-critical"
-			} else {
-				deployment.Spec.Template.Spec.Containers[0].VolumeMounts = append(deployment.Spec.Template.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
-					MountPath: secretMountPathRootCA,
-					Name:      "root-ca",
-					ReadOnly:  true,
-				})
-				deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, corev1.Volume{
-					Name: "root-ca",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName:  "ca",
-							DefaultMode: ptr.To[int32](420),
-						},
-					},
-				})
 			}
 
 			if secretNameBootstrapKubeconfig != nil {
@@ -875,10 +867,16 @@ var _ = Describe("ResourceManager", func() {
 					UpdateMode: ptr.To(vpaautoscalingv1.UpdateModeRecreate),
 				},
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
-					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{{
-						ContainerName:    vpaautoscalingv1.DefaultContainerResourcePolicy,
-						ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
-					}},
+					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
+						{
+							ContainerName:    "gardener-resource-manager",
+							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
+						},
+						{
+							ContainerName: vpaautoscalingv1.DefaultContainerResourcePolicy,
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
+						},
+					},
 				},
 			},
 		}
@@ -925,30 +923,27 @@ var _ = Describe("ResourceManager", func() {
 			var namespaceSelectorMatchExpressions []metav1.LabelSelectorRequirement
 
 			switch responsibilityMode {
-			case ForSource:
-				namespaceSelectorMatchExpressions = []metav1.LabelSelectorRequirement{{
-					Key:      "kubernetes.io/metadata.name",
-					Operator: metav1.LabelSelectorOpNotIn,
-					Values:   []string{"kube-system", "kubernetes-dashboard"},
-				}}
-			case ForTarget:
+			case ForRuntime:
+				namespaceSelectorMatchExpressions = []metav1.LabelSelectorRequirement{
+					{
+						Key:      "gardener.cloud/role",
+						Operator: metav1.LabelSelectorOpExists,
+					},
+					{
+						Key:      "kubernetes.io/metadata.name",
+						Operator: metav1.LabelSelectorOpNotIn,
+						Values:   []string{"kube-system", "kubernetes-dashboard"},
+					},
+				}
+			case ForShootOrVirtualGarden:
 				namespaceSelectorMatchExpressions = []metav1.LabelSelectorRequirement{{
 					Key:      "kubernetes.io/metadata.name",
 					Operator: metav1.LabelSelectorOpIn,
 					Values:   []string{"kube-system", "kubernetes-dashboard"},
 				}}
-			case ForSourceAndTarget:
-				namespaceSelectorMatchExpressions = []metav1.LabelSelectorRequirement{{
-					Key:      "gardener.cloud/role",
-					Operator: metav1.LabelSelectorOpExists,
-				}}
 			}
 
 			ignoreStaticPods := func(in []metav1.LabelSelectorRequirement) []metav1.LabelSelectorRequirement {
-				if responsibilityMode != ForSourceAndTarget {
-					return in
-				}
-
 				return append(in, metav1.LabelSelectorRequirement{
 					Key:      "static-pod",
 					Operator: metav1.LabelSelectorOpNotIn,
@@ -1137,7 +1132,7 @@ var _ = Describe("ResourceManager", func() {
 			)
 
 			switch responsibilityMode {
-			case ForSource:
+			case ForRuntime:
 				obj.Webhooks = append(obj.Webhooks,
 					admissionregistrationv1.MutatingWebhook{
 						Name: "pod-kube-apiserver-load-balancing.resources.gardener.cloud",
@@ -1151,6 +1146,9 @@ var _ = Describe("ResourceManager", func() {
 						}},
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"foobar": "barfoo"},
+						},
+						ObjectSelector: &metav1.LabelSelector{
+							MatchExpressions: ignoreStaticPods(nil),
 						},
 						ClientConfig: admissionregistrationv1.WebhookClientConfig{
 							Service: &admissionregistrationv1.ServiceReference{
@@ -1179,13 +1177,13 @@ var _ = Describe("ResourceManager", func() {
 							MatchLabels: map[string]string{"barbaz": "bazbar"},
 						},
 						ObjectSelector: &metav1.LabelSelector{
-							MatchExpressions: []metav1.LabelSelectorRequirement{
+							MatchExpressions: ignoreStaticPods([]metav1.LabelSelectorRequirement{
 								{
 									Key:      v1beta1constants.LabelApp,
 									Operator: metav1.LabelSelectorOpNotIn,
 									Values:   []string{"gardener-resource-manager"},
 								},
-							},
+							}),
 						},
 						ClientConfig: admissionregistrationv1.WebhookClientConfig{
 							Service: &admissionregistrationv1.ServiceReference{
@@ -1226,39 +1224,6 @@ var _ = Describe("ResourceManager", func() {
 						AdmissionReviewVersions: []string{"v1beta1", "v1"},
 						FailurePolicy:           &failurePolicyFail,
 						MatchPolicy:             &matchPolicyEquivalent,
-						SideEffects:             &sideEffect,
-						TimeoutSeconds:          ptr.To[int32](10),
-					},
-				)
-			case ForSourceAndTarget:
-				obj.Webhooks = append(obj.Webhooks,
-					admissionregistrationv1.MutatingWebhook{
-						Name: "system-components-config.resources.gardener.cloud",
-						Rules: []admissionregistrationv1.RuleWithOperations{{
-							Rule: admissionregistrationv1.Rule{
-								APIGroups:   []string{""},
-								APIVersions: []string{"v1"},
-								Resources:   []string{"pods"},
-							},
-							Operations: []admissionregistrationv1.OperationType{"CREATE"},
-						}},
-						NamespaceSelector: &metav1.LabelSelector{MatchExpressions: namespaceSelectorMatchExpressions},
-						ObjectSelector: &metav1.LabelSelector{
-							MatchExpressions: ignoreStaticPods([]metav1.LabelSelectorRequirement{{
-								Key:      "system-components-config.resources.gardener.cloud/skip",
-								Operator: metav1.LabelSelectorOpDoesNotExist,
-							}}),
-						},
-						ClientConfig: admissionregistrationv1.WebhookClientConfig{
-							Service: &admissionregistrationv1.ServiceReference{
-								Name:      "gardener-resource-manager",
-								Namespace: deployNamespace,
-								Path:      ptr.To("/webhooks/system-components-config"),
-							},
-						},
-						AdmissionReviewVersions: []string{"v1beta1", "v1"},
-						FailurePolicy:           &failurePolicyFail,
-						MatchPolicy:             &matchPolicyExact,
 						SideEffects:             &sideEffect,
 						TimeoutSeconds:          ptr.To[int32](10),
 					},
@@ -1372,6 +1337,10 @@ webhooks:
       operator: NotIn
       values:
       - gardener-resource-manager
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
   rules:
   - apiGroups:
     - ""
@@ -1438,7 +1407,12 @@ webhooks:
   matchPolicy: Exact
   name: pod-scheduler-name.resources.gardener.cloud
   namespaceSelector: {}
-  objectSelector: {}
+  objectSelector:
+    matchExpressions:
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
   rules:
   - apiGroups:
     - ""
@@ -1470,6 +1444,10 @@ webhooks:
       operator: NotIn
       values:
       - disable
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
   reinvocationPolicy: Never
   rules:
   - apiGroups:
@@ -1496,6 +1474,11 @@ webhooks:
     matchLabels:
       foobar: barfoo
   objectSelector:
+    matchExpressions:
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
     matchLabels:
       networking.resources.gardener.cloud/to-kube-apiserver-tcp-443: allowed
   rules:
@@ -1526,6 +1509,10 @@ webhooks:
 	  operator: NotIn
 	  values:
 	  - gardener-resource-manager
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
   rules:
   - apiGroups:
     - ""
@@ -1558,6 +1545,10 @@ webhooks:
     matchExpressions:
     - key: system-components-config.resources.gardener.cloud/skip
       operator: DoesNotExist
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
     matchLabels:
       resources.gardener.cloud/managed-by: gardener
   rules:
@@ -1596,6 +1587,10 @@ webhooks:
       - gardener-resource-manager
     - key: topology-spread-constraints.resources.gardener.cloud/skip
       operator: DoesNotExist
+    - key: static-pod
+      operator: NotIn
+      values:
+      - "true"
     matchLabels:
       resources.gardener.cloud/managed-by: gardener
   rules:
@@ -1608,10 +1603,42 @@ webhooks:
     resources:
     - pods
   sideEffects: None
+  timeoutSeconds: 10`
+			}
+			out += `
+- admissionReviewVersions:
+  - v1beta1
+  - v1
+  clientConfig:
+    url: https://gardener-resource-manager.` + deployNamespace + `:443/webhooks/vpa-in-place-updates
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: vpa-in-place-updates.resources.gardener.cloud
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: In
+      values:
+      - kube-system
+      - kubernetes-dashboard
+  objectSelector:
+    matchExpressions:
+    - key: vpa-in-place-updates.resources.gardener.cloud/skip
+      operator: DoesNotExist
+  reinvocationPolicy: Never
+  rules:
+  - apiGroups:
+    - autoscaling.k8s.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - verticalpodautoscalers
+  sideEffects: None
   timeoutSeconds: 10
 `
-			}
-
 			return out
 		}
 
@@ -1694,6 +1721,7 @@ subjects:
 									"infrastructures",
 									"networks",
 									"operatingsystemconfigs",
+									"selfhostedshootexposures",
 									"workers",
 								},
 							},
@@ -2001,6 +2029,32 @@ subjects:
 					TimeoutSeconds:          ptr.To[int32](10),
 				},
 				{
+					Name: "validation.extensions.selfhostedshootexposures.resources.gardener.cloud",
+					Rules: []admissionregistrationv1.RuleWithOperations{
+						{
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{"extensions.gardener.cloud"},
+								APIVersions: []string{"v1alpha1"},
+								Resources:   []string{"selfhostedshootexposures"},
+							},
+							Operations: []admissionregistrationv1.OperationType{"CREATE", "UPDATE"},
+						},
+					},
+					FailurePolicy:     &failurePolicyFail,
+					NamespaceSelector: &metav1.LabelSelector{},
+					ClientConfig: admissionregistrationv1.WebhookClientConfig{
+						Service: &admissionregistrationv1.ServiceReference{
+							Name:      "gardener-resource-manager",
+							Namespace: deployNamespace,
+							Path:      ptr.To("/validate-extensions-gardener-cloud-v1alpha1-selfhostedshootexposure"),
+						},
+					},
+					AdmissionReviewVersions: []string{"v1beta1", "v1"},
+					MatchPolicy:             &matchPolicyExact,
+					SideEffects:             &sideEffect,
+					TimeoutSeconds:          ptr.To[int32](10),
+				},
+				{
 					Name: "validation.extensions.workers.resources.gardener.cloud",
 					Rules: []admissionregistrationv1.RuleWithOperations{
 						{
@@ -2072,7 +2126,7 @@ subjects:
 		Context("target cluster != source cluster; watched namespace is set", func() {
 			JustBeforeEach(func() {
 				role.Namespace = watchedNamespace
-				configMap = configMapFor(&watchedNamespace, ForTarget, false, false)
+				configMap = configMapFor(&watchedNamespace, ForShootOrVirtualGarden, false, false)
 				deployment = deploymentFor(configMap.Name, true, nil, false)
 				cfg.TargetNamespaces = targetNamespaces
 				resourceManager = New(c, deployNamespace, sm, cfg)
@@ -2141,7 +2195,7 @@ subjects:
 					JustBeforeEach(func() {
 						matchLabelKeysInPodTopologySpreadFeatureGateDisabled = true
 						cfg.PodTopologySpreadConstraintsEnabled = true
-						configMap = configMapFor(&watchedNamespace, ForTarget, false, false)
+						configMap = configMapFor(&watchedNamespace, ForShootOrVirtualGarden, false, false)
 						deployment = deploymentFor(configMap.Name, true, nil, false)
 
 						resourceManager = New(c, deployNamespace, sm, cfg)
@@ -2190,7 +2244,7 @@ subjects:
 						matchLabelKeysInPodTopologySpreadFeatureGateDisabled = false
 						cfg.PodTopologySpreadConstraintsEnabled = false
 
-						configMap = configMapFor(&watchedNamespace, ForTarget, false, false)
+						configMap = configMapFor(&watchedNamespace, ForShootOrVirtualGarden, false, false)
 						deployment = deploymentFor(configMap.Name, true, nil, false)
 
 						resourceManager = New(c, deployNamespace, sm, cfg)
@@ -2317,10 +2371,10 @@ subjects:
 		Context("target cluster != source cluster, watched namespace is nil", func() {
 			BeforeEach(func() {
 				clusterRole.Rules = allowManagedResources
-				cfg.ResponsibilityMode = ForTarget
+				cfg.ResponsibilityMode = ForShootOrVirtualGarden
 				cfg.TargetNamespaces = targetNamespaces
 				cfg.WatchedNamespace = nil
-				configMap = configMapFor(nil, ForTarget, false, false)
+				configMap = configMapFor(nil, ForShootOrVirtualGarden, false, false)
 				deployment = deploymentFor(configMap.Name, true, nil, false)
 
 				resourceManager = New(c, deployNamespace, sm, cfg)
@@ -2433,11 +2487,11 @@ subjects:
 		Context("target cluster != source cluster, workerless shoot", func() {
 			JustBeforeEach(func() {
 				clusterRole.Rules = allowManagedResources
-				cfg.ResponsibilityMode = ForTarget
+				cfg.ResponsibilityMode = ForShootOrVirtualGarden
 				cfg.TargetNamespaces = targetNamespaces
 				cfg.WatchedNamespace = nil
 				cfg.IsWorkerless = true
-				configMap = configMapFor(nil, ForTarget, true, false)
+				configMap = configMapFor(nil, ForShootOrVirtualGarden, true, false)
 				deployment = deploymentFor(configMap.Name, true, nil, false)
 
 				resourceManager = New(c, deployNamespace, sm, cfg)
@@ -2518,11 +2572,11 @@ subjects:
 				delete(service.Annotations, "networking.resources.gardener.cloud/from-all-webhook-targets-allowed-ports")
 				service.Annotations["networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports"] = `[{"protocol":"TCP","port":8080}]`
 				service.Annotations["networking.resources.gardener.cloud/from-world-to-ports"] = `[{"protocol":"TCP","port":10250}]`
-				configMap = configMapFor(&watchedNamespace, ForSource, false, false)
+				configMap = configMapFor(&watchedNamespace, ForRuntime, false, false)
 				deployment = deploymentFor(configMap.Name, false, nil, false)
 
-				deployment.Spec.Template.Spec.Volumes = deployment.Spec.Template.Spec.Volumes[:len(deployment.Spec.Template.Spec.Volumes)-2]
-				deployment.Spec.Template.Spec.Containers[0].VolumeMounts = deployment.Spec.Template.Spec.Containers[0].VolumeMounts[:len(deployment.Spec.Template.Spec.Containers[0].VolumeMounts)-2]
+				deployment.Spec.Template.Spec.Volumes = deployment.Spec.Template.Spec.Volumes[:len(deployment.Spec.Template.Spec.Volumes)-1]
+				deployment.Spec.Template.Spec.Containers[0].VolumeMounts = deployment.Spec.Template.Spec.Containers[0].VolumeMounts[:len(deployment.Spec.Template.Spec.Containers[0].VolumeMounts)-1]
 				deployment.Spec.Template.Labels["gardener.cloud/role"] = "seed"
 				pdb.Spec.Selector.MatchLabels["gardener.cloud/role"] = "seed"
 				for i := range deployment.Spec.Template.Spec.TopologySpreadConstraints {
@@ -2545,7 +2599,7 @@ subjects:
 				cfg.DefaultSeccompProfileEnabled = true
 				cfg.EndpointSliceHintsEnabled = true
 				cfg.SchedulingProfile = nil
-				cfg.ResponsibilityMode = ForSource
+				cfg.ResponsibilityMode = ForRuntime
 				cfg.PodKubeAPIServerLoadBalancingWebhook.Enabled = true
 				cfg.VPAInPlaceUpdatesEnabled = true
 				resourceManager = New(c, deployNamespace, sm, cfg)
@@ -2603,7 +2657,7 @@ subjects:
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&admissionregistrationv1.MutatingWebhookConfiguration{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&admissionregistrationv1.MutatingWebhookConfiguration{}), gomock.Any()).
 						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(mutatingWebhookConfigurationFor(ForSource, false)))
+							Expect(obj).To(DeepEqual(mutatingWebhookConfigurationFor(ForRuntime, false)))
 						}),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&admissionregistrationv1.ValidatingWebhookConfiguration{})),
 					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&admissionregistrationv1.ValidatingWebhookConfiguration{}), gomock.Any()).
@@ -2612,191 +2666,6 @@ subjects:
 						}),
 				)
 				Expect(resourceManager.Deploy(ctx)).To(Succeed())
-			})
-		})
-
-		Context("responsibility mode 'source and target'", func() {
-			BeforeEach(func() {
-				clusterRole.Rules = allowAll
-				delete(service.Annotations, "networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports")
-				delete(service.Annotations, "networking.resources.gardener.cloud/from-all-webhook-targets-allowed-ports")
-				service.Annotations["networking.resources.gardener.cloud/from-all-seed-scrape-targets-allowed-ports"] = `[{"protocol":"TCP","port":8080}]`
-				service.Annotations["networking.resources.gardener.cloud/from-world-to-ports"] = `[{"protocol":"TCP","port":10250}]`
-				configMap = configMapFor(&watchedNamespace, ForSourceAndTarget, false, false)
-				deployment = deploymentFor(configMap.Name, false, nil, false)
-
-				deployment.Spec.Template.Spec.Volumes = deployment.Spec.Template.Spec.Volumes[:len(deployment.Spec.Template.Spec.Volumes)-2]
-				deployment.Spec.Template.Spec.Containers[0].VolumeMounts = deployment.Spec.Template.Spec.Containers[0].VolumeMounts[:len(deployment.Spec.Template.Spec.Containers[0].VolumeMounts)-2]
-				deployment.Spec.Template.Labels["gardener.cloud/role"] = "seed"
-				pdb.Spec.Selector.MatchLabels["gardener.cloud/role"] = "seed"
-				for i := range deployment.Spec.Template.Spec.TopologySpreadConstraints {
-					deployment.Spec.Template.Spec.TopologySpreadConstraints[i].LabelSelector.MatchLabels["gardener.cloud/role"] = "seed"
-				}
-
-				// Remove controlplane label from resources
-				delete(serviceAccount.Labels, v1beta1constants.GardenRole)
-				delete(clusterRole.Labels, v1beta1constants.GardenRole)
-				delete(clusterRoleBinding.Labels, v1beta1constants.GardenRole)
-				delete(service.Labels, v1beta1constants.GardenRole)
-				delete(deployment.Labels, v1beta1constants.GardenRole)
-				delete(vpa.Labels, v1beta1constants.GardenRole)
-				delete(pdb.Labels, v1beta1constants.GardenRole)
-				// Remove networking label from deployment template
-				delete(deployment.Spec.Template.Labels, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443")
-
-				utilruntime.Must(references.InjectAnnotations(deployment))
-
-				cfg.DefaultSeccompProfileEnabled = true
-				cfg.VPAInPlaceUpdatesEnabled = true
-				cfg.SchedulingProfile = nil
-				cfg.ResponsibilityMode = ForSourceAndTarget
-				resourceManager = New(c, deployNamespace, sm, cfg)
-				resourceManager.SetSecrets(secrets)
-			})
-
-			It("should deploy the expected resources", func() {
-				gomock.InOrder(
-					c.EXPECT().Get(ctx, client.ObjectKey{Name: "managedresources.resources.gardener.cloud"}, gomock.AssignableToTypeOf(&apiextensionsv1.CustomResourceDefinition{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&apiextensionsv1.CustomResourceDefinition{}), gomock.Any()),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&corev1.ServiceAccount{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&corev1.ServiceAccount{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(serviceAccount))
-						}),
-					c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&corev1.ConfigMap{})).
-						Do(func(_ context.Context, obj *corev1.ConfigMap, _ ...client.CreateOption) {
-							Expect(obj).To(DeepEqual(configMap))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Name: clusterRoleName}, gomock.AssignableToTypeOf(&rbacv1.ClusterRole{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&rbacv1.ClusterRole{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(clusterRole))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Name: clusterRoleName}, gomock.AssignableToTypeOf(&rbacv1.ClusterRoleBinding{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&rbacv1.ClusterRoleBinding{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(clusterRoleBinding))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&corev1.Service{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&corev1.Service{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(service))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&appsv1.Deployment{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&appsv1.Deployment{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(deployment))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: pdb.Name}, gomock.AssignableToTypeOf(&policyv1.PodDisruptionBudget{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&policyv1.PodDisruptionBudget{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(pdb))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager-vpa"}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(vpa))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "seed-gardener-resource-manager"}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(serviceMonitorFor("seed")))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&admissionregistrationv1.MutatingWebhookConfiguration{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&admissionregistrationv1.MutatingWebhookConfiguration{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(mutatingWebhookConfigurationFor(ForSourceAndTarget, false)))
-						}),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&admissionregistrationv1.ValidatingWebhookConfiguration{})),
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&admissionregistrationv1.ValidatingWebhookConfiguration{}), gomock.Any()).
-						Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-							Expect(obj).To(DeepEqual(validatingWebhookConfiguration))
-						}),
-				)
-				Expect(resourceManager.Deploy(ctx)).To(Succeed())
-			})
-
-			When("bootstrap control plane node is set to true", func() {
-				BeforeEach(func() {
-					DeferCleanup(test.WithVar(&SuggestPort, func(string) (int, string, error) {
-						return 10250, "", nil
-					}))
-
-					configMap = configMapFor(&watchedNamespace, ForSourceAndTarget, false, true)
-					resourceManager = New(c, deployNamespace, sm, cfg)
-					resourceManager.SetSecrets(secrets)
-					resourceManager.SetBootstrapControlPlaneNode(true)
-
-					deployment = deploymentFor(configMap.Name, false, nil, true)
-
-					deployment.Spec.Template.Labels["gardener.cloud/role"] = "seed"
-					for i := range deployment.Spec.Template.Spec.TopologySpreadConstraints {
-						deployment.Spec.Template.Spec.TopologySpreadConstraints[i].LabelSelector.MatchLabels["gardener.cloud/role"] = "seed"
-					}
-					delete(deployment.Spec.Template.Labels, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443")
-				})
-
-				It("should deploy the expected resources", func() {
-					gomock.InOrder(
-						c.EXPECT().Get(ctx, client.ObjectKey{Name: "managedresources.resources.gardener.cloud"}, gomock.AssignableToTypeOf(&apiextensionsv1.CustomResourceDefinition{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&apiextensionsv1.CustomResourceDefinition{}), gomock.Any()),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&corev1.ServiceAccount{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&corev1.ServiceAccount{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(serviceAccount))
-							}),
-						c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&corev1.ConfigMap{})).
-							Do(func(_ context.Context, obj *corev1.ConfigMap, _ ...client.CreateOption) {
-								Expect(obj).To(DeepEqual(configMap))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Name: clusterRoleName}, gomock.AssignableToTypeOf(&rbacv1.ClusterRole{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&rbacv1.ClusterRole{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(clusterRole))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Name: clusterRoleName}, gomock.AssignableToTypeOf(&rbacv1.ClusterRoleBinding{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&rbacv1.ClusterRoleBinding{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(clusterRoleBinding))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&corev1.Service{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&corev1.Service{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(service))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&appsv1.Deployment{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&appsv1.Deployment{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(deployment))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: pdb.Name}, gomock.AssignableToTypeOf(&policyv1.PodDisruptionBudget{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&policyv1.PodDisruptionBudget{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(pdb))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager-vpa"}, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&vpaautoscalingv1.VerticalPodAutoscaler{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(vpa))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "seed-gardener-resource-manager"}, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&monitoringv1.ServiceMonitor{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(serviceMonitorFor("seed")))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&admissionregistrationv1.MutatingWebhookConfiguration{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&admissionregistrationv1.MutatingWebhookConfiguration{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(mutatingWebhookConfigurationFor(ForSourceAndTarget, true)))
-							}),
-						c.EXPECT().Get(ctx, client.ObjectKey{Namespace: deployNamespace, Name: "gardener-resource-manager"}, gomock.AssignableToTypeOf(&admissionregistrationv1.ValidatingWebhookConfiguration{})),
-						c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&admissionregistrationv1.ValidatingWebhookConfiguration{}), gomock.Any()).
-							Do(func(_ context.Context, obj runtime.Object, _ client.Patch, _ ...client.PatchOption) {
-								Expect(obj).To(DeepEqual(validatingWebhookConfiguration))
-							}),
-					)
-					Expect(resourceManager.Deploy(ctx)).To(Succeed())
-				})
 			})
 		})
 	})
@@ -2995,35 +2864,8 @@ subjects:
 
 		Context("target equals source cluster", func() {
 			BeforeEach(func() {
-				cfg.ResponsibilityMode = ForSource
+				cfg.ResponsibilityMode = ForRuntime
 				cfg.PodKubeAPIServerLoadBalancingWebhook.Enabled = true
-				cfg.WatchedNamespace = nil
-				resourceManager = New(c, deployNamespace, sm, cfg)
-			})
-
-			It("should delete all created resources", func() {
-				gomock.InOrder(
-					c.EXPECT().Patch(ctx, gomock.AssignableToTypeOf(&apiextensionsv1.CustomResourceDefinition{}), gomock.Any()),
-					c.EXPECT().Delete(ctx, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "managedresources.resources.gardener.cloud"}}),
-					c.EXPECT().Delete(ctx, &admissionregistrationv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager"}}),
-					c.EXPECT().Delete(ctx, &admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager"}}),
-					c.EXPECT().Delete(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: clusterRoleName}}),
-					c.EXPECT().Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: clusterRoleName}}),
-					c.EXPECT().Delete(ctx, &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager"}}),
-					c.EXPECT().Delete(ctx, &vpaautoscalingv1.VerticalPodAutoscaler{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager-vpa"}}),
-					c.EXPECT().Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager"}}),
-					c.EXPECT().Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager"}}),
-					c.EXPECT().Delete(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "gardener-resource-manager"}}),
-					c.EXPECT().Delete(ctx, &monitoringv1.ServiceMonitor{ObjectMeta: metav1.ObjectMeta{Namespace: deployNamespace, Name: "seed-gardener-resource-manager", Labels: map[string]string{"prometheus": "seed"}}}),
-				)
-
-				Expect(resourceManager.Destroy(ctx)).To(Succeed())
-			})
-		})
-
-		Context("responsibility mode 'source and target'", func() {
-			BeforeEach(func() {
-				cfg.ResponsibilityMode = ForSourceAndTarget
 				cfg.WatchedNamespace = nil
 				resourceManager = New(c, deployNamespace, sm, cfg)
 			})
@@ -3057,9 +2899,9 @@ subjects:
 			))
 		})
 
-		Context("responsibility mode is ForTarget", func() {
+		Context("responsibility mode is ForShootOrVirtualGarden", func() {
 			BeforeEach(func() {
-				configMap = configMapFor(&watchedNamespace, ForTarget, false, false)
+				configMap = configMapFor(&watchedNamespace, ForShootOrVirtualGarden, false, false)
 				deployment = deploymentFor(configMap.Name, true, nil, false)
 				resourceManager = New(fakeClient, deployNamespace, nil, cfg)
 			})
@@ -3148,15 +2990,15 @@ subjects:
 			})
 		})
 
-		Context("responsibility mode is != ForTarget", func() {
+		Context("responsibility mode is != ForShootOrVirtualGarden", func() {
 			BeforeEach(func() {
 				DeferCleanup(test.WithVars(
 					&kubernetesutils.IntervalWait, time.Millisecond,
 					&kubernetesutils.WaitTimeout, 10*time.Millisecond,
 				))
 
-				cfg.ResponsibilityMode = ForSource
-				configMap = configMapFor(nil, ForSource, false, false)
+				cfg.ResponsibilityMode = ForRuntime
+				configMap = configMapFor(nil, ForRuntime, false, false)
 				deployment = deploymentFor(configMap.Name, false, nil, false)
 				resourceManager = New(fakeClient, deployNamespace, nil, cfg)
 

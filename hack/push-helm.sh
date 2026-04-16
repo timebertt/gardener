@@ -6,7 +6,7 @@
 
 set -e
 
-# IMAGE is set from skaffold, and looks like "localhost:5001/europe-docker_pkg_dev_gardener-project_releases_gardener_extensions_provider-local:v1.95.0-dev-2f85d6a4e-dirty"
+# IMAGE is set from skaffold, and looks like "registry.local.gardener.cloud:5001/europe-docker_pkg_dev_gardener-project_releases_gardener_extensions_provider-local:v1.95.0-dev-2f85d6a4e-dirty"
 # IMG looks the same and comes from requires.alias in the skaffold Config.
 
 chart_path=${1:-./charts/gardener/provider-local}
@@ -32,8 +32,18 @@ yq -i ".name |= \"$name\"" "$chart_dir/Chart.yaml"
 
 helm package "$chart_dir" -d "$chart_dir" --version "$tag"
 
-if echo $registry | grep -q -F "garden.local.gardener.cloud:5001"; then
+if echo $registry | grep -q -F "registry.local.gardener.cloud:5001"; then
     push_http="--plain-http"
 fi 
 
-helm push $push_http "$chart_dir/$name-$tag.tgz" "oci://$registry"
+deadline=$(( $(date +%s) + 30 ))
+attempt=0
+until helm push $push_http "$chart_dir/$name-$tag.tgz" "oci://$registry"; do
+    attempt=$(( attempt + 1 ))
+    if [[ $(date +%s) -ge $deadline ]]; then
+        echo "helm push failed after $attempt attempt(s), giving up" >&2
+        exit 1
+    fi
+    echo "helm push failed (attempt $attempt), retrying..." >&2
+    sleep 3
+done

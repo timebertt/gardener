@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -19,9 +20,7 @@ import (
 	"github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	. "github.com/gardener/gardener/pkg/apiserver/registry/core/shoot"
-	"github.com/gardener/gardener/pkg/features"
 	"github.com/gardener/gardener/pkg/utils"
-	"github.com/gardener/gardener/pkg/utils/test"
 )
 
 var _ = Describe("Strategy", func() {
@@ -126,23 +125,46 @@ var _ = Describe("Strategy", func() {
 					Name: "bar",
 				}))
 			})
+		})
 
-			It("should remove CredentialsBindingName field if ShootCredentialsBinding feature gate is disabled", func() {
-				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.ShootCredentialsBinding, false))
+		Context("DNS Provider Credentials", func() {
+			// TODO(vpnachev): Remove this context once support for Kubernetes 1.34 is dropped.
+			It("should sync Secret credentialsRef to secretName", func() {
+				shoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "v1",
+									Kind:       "Secret",
+									Name:       "secret-1",
+								},
+							}},
+						},
+					},
+				}
 
-				shoot.Spec.CredentialsBindingName = ptr.To("binding")
 				strategy.PrepareForCreate(ctx, shoot)
-
-				Expect(shoot.Spec.CredentialsBindingName).To(BeNil())
+				Expect(shoot.Spec.DNS.Providers[0].SecretName).To(Equal(ptr.To("secret-1")))
 			})
 
-			It("should not remove CredentialsBindingName field if ShootCredentialsBinding feature gate is enabled", func() {
-				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.ShootCredentialsBinding, true))
+			It("should not sync WorkloadIdentity credentialsRef to secretName", func() {
+				shoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "security.gardener.cloud/v1alpha1",
+									Kind:       "WorkloadIdentity",
+									Name:       "workload-identity-1",
+								},
+							}},
+						},
+					},
+				}
 
-				shoot.Spec.CredentialsBindingName = ptr.To("binding")
 				strategy.PrepareForCreate(ctx, shoot)
-
-				Expect(shoot.Spec.CredentialsBindingName).To(Equal(ptr.To("binding")))
+				Expect(shoot.Spec.DNS.Providers[0].SecretName).To(BeNil())
 			})
 		})
 	})
@@ -214,35 +236,6 @@ var _ = Describe("Strategy", func() {
 				}))
 			})
 
-			It("should remove CredentialsBindingName field if ShootCredentialsBinding feature gate is disabled", func() {
-				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.ShootCredentialsBinding, false))
-
-				newShoot.Spec.CredentialsBindingName = ptr.To("binding")
-				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
-
-				Expect(newShoot.Spec.CredentialsBindingName).To(BeNil())
-			})
-
-			It("should not remove CredentialsBindingName field if ShootCredentialsBinding feature gate is enabled", func() {
-				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.ShootCredentialsBinding, true))
-
-				newShoot.Spec.CredentialsBindingName = ptr.To("binding")
-				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
-
-				Expect(newShoot.Spec.CredentialsBindingName).To(Equal(ptr.To("binding")))
-			})
-
-			It("should not remove CredentialsBindingName field if ShootCredentialsBinding feature gate is disabled but the CredentialsBindingName field is present in the old Shoot", func() {
-				DeferCleanup(test.WithFeatureGate(features.DefaultFeatureGate, features.ShootCredentialsBinding, false))
-
-				bindingName := ptr.To("binding")
-				oldShoot.Spec.CredentialsBindingName = bindingName
-				newShoot.Spec.CredentialsBindingName = bindingName
-				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
-
-				Expect(newShoot.Spec.CredentialsBindingName).To(Equal(ptr.To("binding")))
-			})
-
 			It("should not mutate shoots being deleted (cloud profile sync)", func() {
 				oldShoot.Spec.CloudProfileName = ptr.To("profile")
 				oldShoot.DeletionTimestamp = ptr.To(metav1.Now())
@@ -254,46 +247,61 @@ var _ = Describe("Strategy", func() {
 			})
 		})
 
-		DescribeTable("should sync encrypted resources from status.encryptedResources to status.credentials.encryptionAtRest.resources",
-			func(status core.ShootStatus, expected core.ShootStatus) {
-				oldShoot.Status = status
-				newShoot.Status = status
+		DescribeTable("should sync encryption provider in status.credentials.encryptionAtRest.providerType",
+			func(providerType *core.EncryptionProviderType, status core.ShootStatus, expectedStatus core.ShootStatus) {
+				oldShoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						Kubernetes: core.Kubernetes{
+							KubeAPIServer: &core.KubeAPIServerConfig{
+								EncryptionConfig: &core.EncryptionConfig{
+									Provider: core.EncryptionProvider{
+										Type: providerType,
+									},
+								},
+							},
+						},
+					},
+					Status: status,
+				}
+				newShoot := oldShoot.DeepCopy()
 
 				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
 
-				Expect(newShoot.Status).To(Equal(expected))
+				Expect(newShoot.Status).To(Equal(expectedStatus))
 			},
-			Entry("no encrypted resources", core.ShootStatus{}, core.ShootStatus{}),
-			Entry("with encrypted resources",
+			Entry("sync with encryption provider", ptr.To(core.EncryptionProviderTypeAESCBC), core.ShootStatus{},
 				core.ShootStatus{
-					EncryptedResources: []string{"configmaps", "shoots.core.gardener.cloud"},
+					Credentials: &core.ShootCredentials{
+						EncryptionAtRest: &core.EncryptionAtRest{
+							Provider: core.EncryptionProviderStatus{
+								Type: core.EncryptionProviderTypeAESCBC,
+							},
+						},
+					},
+				},
+			),
+			Entry("do not overwrite existing provider in status", ptr.To(core.EncryptionProviderTypeAESCBC),
+				core.ShootStatus{
+					Credentials: &core.ShootCredentials{
+						EncryptionAtRest: &core.EncryptionAtRest{
+							Provider: core.EncryptionProviderStatus{
+								Type: core.EncryptionProviderType("foo"),
+							},
+						},
+					},
 				},
 				core.ShootStatus{
 					Credentials: &core.ShootCredentials{
 						EncryptionAtRest: &core.EncryptionAtRest{
-							Resources: []string{"configmaps", "shoots.core.gardener.cloud"},
+							Provider: core.EncryptionProviderStatus{
+								Type: core.EncryptionProviderType("foo"),
+							},
 						},
 					},
-					EncryptedResources: []string{"configmaps", "shoots.core.gardener.cloud"},
 				},
 			),
-			Entry("should overwrite", core.ShootStatus{
-				Credentials: &core.ShootCredentials{
-					EncryptionAtRest: &core.EncryptionAtRest{
-						Resources: []string{"configmaps", "shoots.core.gardener.cloud"},
-					},
-				},
-				EncryptedResources: []string{"configmaps"},
-			},
-				core.ShootStatus{
-					Credentials: &core.ShootCredentials{
-						EncryptionAtRest: &core.EncryptionAtRest{
-							Resources: []string{"configmaps"},
-						},
-					},
-					EncryptedResources: []string{"configmaps"},
-				},
-			),
+			Entry("do not sync when encryption provider is nil", nil, core.ShootStatus{}, core.ShootStatus{}),
+			Entry("do not sync when encryption provider is empty", ptr.To(core.EncryptionProviderType("")), core.ShootStatus{}, core.ShootStatus{}),
 		)
 
 		Context("seedName change", func() {
@@ -727,6 +735,59 @@ var _ = Describe("Strategy", func() {
 				),
 			)
 		})
+
+		Context("DNS Provider Credentials", func() {
+			// TODO(vpnachev): Remove this context once support for Kubernetes 1.34 is dropped.
+			It("should sync Secret credentialsRef to secretName and increase generation", func() {
+				oldShoot := &core.Shoot{
+					ObjectMeta: metav1.ObjectMeta{
+						Generation: 1,
+					},
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "v1",
+									Kind:       "Secret",
+									Name:       "secret-1",
+								},
+							}},
+						},
+					},
+				}
+
+				newShoot := oldShoot.DeepCopy()
+
+				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
+				Expect(newShoot.Spec.DNS.Providers[0].SecretName).To(Equal(ptr.To("secret-1")))
+				Expect(newShoot.Generation).To(Equal(oldShoot.Generation + 1))
+			})
+
+			It("should not sync WorkloadIdentity credentialsRef to secretName and generation should stay the same", func() {
+				oldShoot := &core.Shoot{
+					ObjectMeta: metav1.ObjectMeta{
+						Generation: 1,
+					},
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "security.gardener.cloud/v1alpha1",
+									Kind:       "WorkloadIdentity",
+									Name:       "workload-identity-1",
+								},
+							}},
+						},
+					},
+				}
+
+				newShoot := oldShoot.DeepCopy()
+
+				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
+				Expect(newShoot.Spec.DNS.Providers[0].SecretName).To(BeNil())
+				Expect(newShoot.Generation).To(Equal(oldShoot.Generation))
+			})
+		})
 	})
 
 	Describe("#Canonicalize", func() {
@@ -758,6 +819,80 @@ var _ = Describe("Strategy", func() {
 				shoot.Spec.Kubernetes.ClusterAutoscaler = &core.ClusterAutoscaler{MaxEmptyBulkDelete: ptr.To[int32](10)}
 				strategy.Canonicalize(shoot)
 				Expect(shoot.Spec.Kubernetes.ClusterAutoscaler.MaxEmptyBulkDelete).To(BeNil())
+			})
+		})
+
+		Context("enableAnonymousAuthentication", func() {
+			It("should set spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication to nil when it is false", func() {
+				shoot.Spec.Kubernetes.KubeAPIServer = &core.KubeAPIServerConfig{EnableAnonymousAuthentication: ptr.To(false)}
+				strategy.Canonicalize(shoot)
+				Expect(shoot.Spec.Kubernetes.KubeAPIServer.EnableAnonymousAuthentication).To(BeNil())
+			})
+
+			It("should not set spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication to nil when it is true", func() {
+				shoot.Spec.Kubernetes.KubeAPIServer = &core.KubeAPIServerConfig{EnableAnonymousAuthentication: ptr.To(true)}
+				strategy.Canonicalize(shoot)
+				Expect(shoot.Spec.Kubernetes.KubeAPIServer.EnableAnonymousAuthentication).To(Equal(ptr.To(true)))
+			})
+
+			It("should not panic when spec.kubernetes.kubeAPIServer is nil", func() {
+				shoot.Spec.Kubernetes.KubeAPIServer = nil
+				Expect(func() { strategy.Canonicalize(shoot) }).NotTo(Panic())
+			})
+
+			It("should not panic when spec.kubernetes.kubeAPIServer.enableAnonymousAuthentication is nil", func() {
+				shoot.Spec.Kubernetes.KubeAPIServer = &core.KubeAPIServerConfig{EnableAnonymousAuthentication: nil}
+				Expect(func() { strategy.Canonicalize(shoot) }).NotTo(Panic())
+				Expect(shoot.Spec.Kubernetes.KubeAPIServer.EnableAnonymousAuthentication).To(BeNil())
+			})
+		})
+
+		Context("addons", func() {
+			It("should set spec.addons to nil when no addons are configured", func() {
+				shoot.Spec.Addons = &core.Addons{
+					KubernetesDashboard: &core.KubernetesDashboard{
+						Addon: core.Addon{
+							Enabled: false,
+						},
+						AuthenticationMode: ptr.To("foo"),
+					},
+				}
+
+				Expect(func() { strategy.Canonicalize(shoot) }).NotTo(Panic())
+				Expect(shoot.Spec.Addons).To(BeNil())
+			})
+
+			It("should not set spec.addons to nil because Nginx is configured", func() {
+				shoot.Spec.Addons = &core.Addons{
+					KubernetesDashboard: &core.KubernetesDashboard{
+						Addon: core.Addon{
+							Enabled: false,
+						},
+						AuthenticationMode: ptr.To("foo"),
+					},
+					NginxIngress: &core.NginxIngress{
+						Addon: core.Addon{
+							Enabled: true,
+						},
+					},
+				}
+
+				Expect(func() { strategy.Canonicalize(shoot) }).NotTo(Panic())
+				Expect(shoot.Spec.Addons).NotTo(BeNil())
+			})
+
+			It("should not set spec.addons to nil because the Kubernetes dashboard is configured", func() {
+				shoot.Spec.Addons = &core.Addons{
+					KubernetesDashboard: &core.KubernetesDashboard{
+						Addon: core.Addon{
+							Enabled: true,
+						},
+						AuthenticationMode: ptr.To("foo"),
+					},
+				}
+
+				Expect(func() { strategy.Canonicalize(shoot) }).NotTo(Panic())
+				Expect(shoot.Spec.Addons).NotTo(BeNil())
 			})
 		})
 
@@ -840,6 +975,51 @@ var _ = Describe("Strategy", func() {
 				Expect(newShoot.Generation).To(Equal(oldShoot.Generation + 1))
 			})
 		})
+
+		Context("DNS Provider Credentials", func() {
+			// TODO(vpnachev): Remove this context once support for Kubernetes 1.34 is dropped.
+			It("should sync Secret credentialsRef to secretName", func() {
+				oldShoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "v1",
+									Kind:       "Secret",
+									Name:       "secret-1",
+								},
+							}},
+						},
+					},
+				}
+
+				newShoot := oldShoot.DeepCopy()
+
+				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
+				Expect(newShoot.Spec.DNS.Providers[0].SecretName).To(Equal(ptr.To("secret-1")))
+			})
+
+			It("should not sync WorkloadIdentity credentialsRef to secretName", func() {
+				oldShoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "security.gardener.cloud/v1alpha1",
+									Kind:       "WorkloadIdentity",
+									Name:       "workload-identity-1",
+								},
+							}},
+						},
+					},
+				}
+
+				newShoot := oldShoot.DeepCopy()
+
+				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
+				Expect(newShoot.Spec.DNS.Providers[0].SecretName).To(BeNil())
+			})
+		})
 	})
 
 	Context("StatusStrategy", func() {
@@ -884,50 +1064,107 @@ var _ = Describe("Strategy", func() {
 			)
 		})
 
-		DescribeTable("should sync encrypted resources from status.encryptedResources to status.credentials.encryptionAtRest.resources",
-			func(status core.ShootStatus, expected core.ShootStatus) {
+		DescribeTable("should sync encryption provider in  status.credentials.encryptionAtRest.providerType",
+			func(providerType *core.EncryptionProviderType, status core.ShootStatus, expectedStatus core.ShootStatus) {
 				oldShoot := &core.Shoot{
-					Spec:   core.ShootSpec{},
+					Spec: core.ShootSpec{
+						Kubernetes: core.Kubernetes{
+							KubeAPIServer: &core.KubeAPIServerConfig{
+								EncryptionConfig: &core.EncryptionConfig{
+									Provider: core.EncryptionProvider{
+										Type: providerType,
+									},
+								},
+							},
+						},
+					},
 					Status: status,
 				}
 				newShoot := oldShoot.DeepCopy()
 
 				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
 
-				Expect(newShoot.Status).To(Equal(expected))
+				Expect(newShoot.Status).To(Equal(expectedStatus))
 			},
-			Entry("no encrypted resources", core.ShootStatus{}, core.ShootStatus{}),
-			Entry("with encrypted resources",
+			Entry("sync with encryption provider", ptr.To(core.EncryptionProviderTypeAESCBC), core.ShootStatus{},
 				core.ShootStatus{
-					EncryptedResources: []string{"configmaps", "shoots.core.gardener.cloud"},
+					Credentials: &core.ShootCredentials{
+						EncryptionAtRest: &core.EncryptionAtRest{
+							Provider: core.EncryptionProviderStatus{
+								Type: core.EncryptionProviderTypeAESCBC,
+							},
+						},
+					},
+				},
+			),
+			Entry("do not overwrite existing provider in status", ptr.To(core.EncryptionProviderTypeAESCBC),
+				core.ShootStatus{
+					Credentials: &core.ShootCredentials{
+						EncryptionAtRest: &core.EncryptionAtRest{
+							Provider: core.EncryptionProviderStatus{
+								Type: core.EncryptionProviderType("foo"),
+							},
+						},
+					},
 				},
 				core.ShootStatus{
 					Credentials: &core.ShootCredentials{
 						EncryptionAtRest: &core.EncryptionAtRest{
-							Resources: []string{"configmaps", "shoots.core.gardener.cloud"},
+							Provider: core.EncryptionProviderStatus{
+								Type: core.EncryptionProviderType("foo"),
+							},
 						},
 					},
-					EncryptedResources: []string{"configmaps", "shoots.core.gardener.cloud"},
 				},
 			),
-			Entry("should overwrite", core.ShootStatus{
-				Credentials: &core.ShootCredentials{
-					EncryptionAtRest: &core.EncryptionAtRest{
-						Resources: []string{"configmaps", "shoots.core.gardener.cloud"},
-					},
-				},
-				EncryptedResources: []string{"configmaps"},
-			},
-				core.ShootStatus{
-					Credentials: &core.ShootCredentials{
-						EncryptionAtRest: &core.EncryptionAtRest{
-							Resources: []string{"configmaps"},
-						},
-					},
-					EncryptedResources: []string{"configmaps"},
-				},
-			),
+			Entry("do not sync when encryption provider is nil", nil, core.ShootStatus{}, core.ShootStatus{}),
+			Entry("do not sync when encryption provider is empty", ptr.To(core.EncryptionProviderType("")), core.ShootStatus{}, core.ShootStatus{}),
 		)
+
+		Context("DNS Provider Credentials", func() {
+			// TODO(vpnachev): Remove this context once support for Kubernetes 1.34 is dropped.
+			It("should sync Secret credentialsRef to secretName", func() {
+				oldShoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "v1",
+									Kind:       "Secret",
+									Name:       "secret-1",
+								},
+							}},
+						},
+					},
+				}
+
+				newShoot := oldShoot.DeepCopy()
+
+				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
+				Expect(newShoot.Spec.DNS.Providers[0].SecretName).To(Equal(ptr.To("secret-1")))
+			})
+
+			It("should not sync WorkloadIdentity credentialsRef to secretName", func() {
+				oldShoot := &core.Shoot{
+					Spec: core.ShootSpec{
+						DNS: &core.DNS{
+							Providers: []core.DNSProvider{{
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "security.gardener.cloud/v1alpha1",
+									Kind:       "WorkloadIdentity",
+									Name:       "workload-identity-1",
+								},
+							}},
+						},
+					},
+				}
+
+				newShoot := oldShoot.DeepCopy()
+
+				strategy.PrepareForUpdate(ctx, newShoot, oldShoot)
+				Expect(newShoot.Spec.DNS.Providers[0].SecretName).To(BeNil())
+			})
+		})
 	})
 })
 
@@ -983,6 +1220,172 @@ var _ = Describe("MatchShoot", func() {
 		Expect(result.Field).To(Equal(fs))
 		Expect(result.IndexFields).To(ConsistOf(core.ShootSeedName))
 	})
+})
+
+var _ = Describe("SyncDNSProviderCredentials", func() {
+	// TODO(vpnachev): Remove entire test node once support for Kubernetes 1.34 is dropped.
+	const (
+		secretName1 string = "secret-1"
+		secretName2 string = "secret-2"
+	)
+
+	var (
+		shoot core.Shoot
+	)
+
+	BeforeEach(func() {
+		shoot = core.Shoot{
+			Spec: core.ShootSpec{
+				DNS: nil,
+			},
+		}
+	})
+
+	It("should not modify shoot if DNS is nil", func() {
+		originalShoot := shoot.DeepCopy()
+
+		SyncDNSProviderCredentials(&shoot)
+
+		Expect(shoot).To(Equal(*originalShoot))
+	})
+
+	It("should not modify shoot if DNS.providers is empty", func() {
+		shoot.Spec.DNS = &core.DNS{
+			Providers: []core.DNSProvider{},
+		}
+		originalShoot := shoot.DeepCopy()
+
+		SyncDNSProviderCredentials(&shoot)
+
+		Expect(shoot).To(Equal(*originalShoot))
+	})
+
+	DescribeTable("should sync secretName and credentialsRef when possible",
+		func(providers, expectedProviders []core.DNSProvider) {
+			shoot.Spec.DNS = &core.DNS{
+				Providers: providers,
+			}
+
+			SyncDNSProviderCredentials(&shoot)
+
+			Expect(shoot.Spec.DNS.Providers).To(Equal(expectedProviders))
+		},
+		Entry("single provider with secretName without credentialsRef",
+			[]core.DNSProvider{
+				{SecretName: ptr.To(secretName1)},
+			},
+			[]core.DNSProvider{
+				{
+					SecretName: ptr.To(secretName1),
+					CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       secretName1,
+					},
+				},
+			},
+		),
+		Entry("multiple providers with secretName and without credentialsRef",
+			[]core.DNSProvider{
+				{SecretName: ptr.To(secretName1)},
+				{SecretName: ptr.To(secretName2)},
+			},
+			[]core.DNSProvider{
+				{
+					SecretName: ptr.To(secretName1),
+					CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       secretName1,
+					},
+				},
+				{
+					SecretName: ptr.To(secretName2),
+					CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       secretName2,
+					},
+				},
+			},
+		),
+		Entry("multiple providers, some with secretName and all without credentialsRef",
+			[]core.DNSProvider{
+				{SecretName: ptr.To(secretName1)},
+				{
+					Domains: &core.DNSIncludeExclude{
+						Include: []string{"example.com"},
+					},
+				},
+			},
+			[]core.DNSProvider{
+				{
+					SecretName: ptr.To(secretName1),
+					CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+						APIVersion: "v1",
+						Kind:       "Secret",
+						Name:       secretName1,
+					},
+				},
+				{
+					Domains: &core.DNSIncludeExclude{
+						Include: []string{"example.com"},
+					},
+				},
+			},
+		),
+		Entry("secretName and credentialsRef are already set",
+			[]core.DNSProvider{{
+				SecretName: ptr.To(secretName1),
+				CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "v1",
+					Kind:       "Secret",
+					Name:       secretName2,
+				},
+			}},
+			[]core.DNSProvider{{
+				SecretName: ptr.To(secretName1),
+				CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "v1",
+					Kind:       "Secret",
+					Name:       secretName2,
+				},
+			}},
+		),
+		Entry("single provider with credentialsRef to secret without secretName",
+			[]core.DNSProvider{{
+				CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "v1",
+					Kind:       "Secret",
+					Name:       secretName2,
+				},
+			}},
+			[]core.DNSProvider{{
+				SecretName: ptr.To(secretName2),
+				CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "v1",
+					Kind:       "Secret",
+					Name:       secretName2,
+				},
+			}},
+		),
+		Entry("single provider with credentialsRef to WorkloadIdentity without secretName",
+			[]core.DNSProvider{{
+				CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "security.gardener.cloud/v1alpha1",
+					Kind:       "WorkloadIdentity",
+					Name:       secretName1,
+				},
+			}},
+			[]core.DNSProvider{{
+				CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+					APIVersion: "security.gardener.cloud/v1alpha1",
+					Kind:       "WorkloadIdentity",
+					Name:       secretName1,
+				},
+			}},
+		),
+	)
 })
 
 func createNewShootObject(seedName string) *core.Shoot {

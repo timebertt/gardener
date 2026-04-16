@@ -36,11 +36,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/gardener/gardener/pkg/api/core/helper"
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
-	"github.com/gardener/gardener/pkg/apis/core/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/security"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
@@ -84,6 +84,7 @@ type ReferenceManager struct {
 	seedLister                   gardencorev1beta1listers.SeedLister
 	shootLister                  gardencorev1beta1listers.ShootLister
 	secretBindingLister          gardencorev1beta1listers.SecretBindingLister
+	internalSecretLister         gardencorev1beta1listers.InternalSecretLister
 	credentialsBindingLister     securityv1alpha1listers.CredentialsBindingLister
 	workloadIdentityLister       securityv1alpha1listers.WorkloadIdentityLister
 	projectLister                gardencorev1beta1listers.ProjectLister
@@ -163,6 +164,9 @@ func (r *ReferenceManager) SetCoreInformerFactory(f gardencoreinformers.SharedIn
 	exposureClassInformer := f.Core().V1beta1().ExposureClasses()
 	r.exposureClassLister = exposureClassInformer.Lister()
 
+	internalSecretInformer := f.Core().V1beta1().InternalSecrets()
+	r.internalSecretLister = internalSecretInformer.Lister()
+
 	readyFuncs = append(readyFuncs,
 		seedInformer.Informer().HasSynced,
 		shootInformer.Informer().HasSynced,
@@ -173,7 +177,9 @@ func (r *ReferenceManager) SetCoreInformerFactory(f gardencoreinformers.SharedIn
 		quotaInformer.Informer().HasSynced,
 		projectInformer.Informer().HasSynced,
 		controllerDeploymentInformer.Informer().HasSynced,
-		exposureClassInformer.Informer().HasSynced)
+		exposureClassInformer.Informer().HasSynced,
+		internalSecretInformer.Informer().HasSynced,
+	)
 }
 
 // SetSeedManagementInformerFactory gets Lister from SharedInformerFactory.
@@ -487,14 +493,14 @@ func (r *ReferenceManager) Validate(ctx context.Context, a admission.Attributes,
 			removedKubernetesVersions := sets.StringKeySet(helper.GetRemovedVersions(oldCloudProfile.Spec.Kubernetes.Versions, cloudProfile.Spec.Kubernetes.Versions))
 
 			// getting Machine image versions that have been removed from or added to the CloudProfile
-			removedMachineImages, removedMachineImageVersions, addedMachineImages, addedMachineImageVersions := helper.GetMachineImageDiff(oldCloudProfile.Spec.MachineImages, cloudProfile.Spec.MachineImages)
+			machineImageDiff := helper.GetMachineImageDiff(oldCloudProfile.Spec.MachineImages, cloudProfile.Spec.MachineImages)
 
 			// getting removed capabilities
 			removedCapabilities := getRemovedMachineCapabilities(oldCloudProfile.Spec.MachineCapabilities, cloudProfile.Spec.MachineCapabilities)
 
 			wasLimitAdded := !apiequality.Semantic.DeepEqual(cloudProfile.Spec.Limits, oldCloudProfile.Spec.Limits)
 
-			if len(removedKubernetesVersions) > 0 || len(removedMachineImageVersions) > 0 || len(addedMachineImageVersions) > 0 || wasLimitAdded || len(removedCapabilities) > 0 {
+			if len(removedKubernetesVersions) > 0 || len(machineImageDiff.RemovedVersions) > 0 || len(machineImageDiff.AddedVersions) > 0 || wasLimitAdded || len(removedCapabilities) > 0 {
 				shootList, err1 := r.shootLister.List(labels.Everything())
 				if err1 != nil {
 					return apierrors.NewInternalError(fmt.Errorf("could not list shoots to verify that Kubernetes and/or Machine image version can be removed: %v", err1))
@@ -537,13 +543,13 @@ func (r *ReferenceManager) Validate(ctx context.Context, a admission.Attributes,
 						}
 
 						for _, machineImage := range nscpfl.Spec.MachineImages {
-							if removedMachineImages.Has(machineImage.Name) {
+							if machineImageDiff.RemovedImages.Has(machineImage.Name) {
 								channel <- fmt.Errorf("unable to delete MachineImage %q from CloudProfile %q - MachineImage is still in use by NamespacedCloudProfile %q", machineImage.Name, cloudProfile.Name, ncpNamespacedName.String())
 							}
-							if addedMachineImages.Has(machineImage.Name) {
+							if machineImageDiff.AddedImages.Has(machineImage.Name) {
 								channel <- fmt.Errorf("unable to add MachineImage %q to CloudProfile %q - MachineImage is already defined by NamespacedCloudProfile %q", machineImage.Name, cloudProfile.Name, ncpNamespacedName.String())
 							}
-							if removedVersions, exists := removedMachineImageVersions[machineImage.Name]; exists {
+							if removedVersions, exists := machineImageDiff.RemovedVersions[machineImage.Name]; exists {
 								for _, imageVersion := range machineImage.Versions {
 									if removedVersions.Has(imageVersion.Version) {
 										channel <- fmt.Errorf("unable to delete MachineImage version '%s/%s' from CloudProfile %q - version is still in use by NamespacedCloudProfile '%s/%s'", machineImage.Name, imageVersion.Version, cloudProfile.Name, nscpfl.Namespace, nscpfl.Name)
@@ -577,11 +583,11 @@ func (r *ReferenceManager) Validate(ctx context.Context, a admission.Attributes,
 								continue
 							}
 							// happens if Shoot runs an image that does not exist in the old CloudProfile - in this case: ignore
-							if _, ok := removedMachineImageVersions[worker.Machine.Image.Name]; !ok {
+							if _, ok := machineImageDiff.RemovedVersions[worker.Machine.Image.Name]; !ok {
 								continue
 							}
 
-							if removedMachineImageVersions[worker.Machine.Image.Name].Has(*worker.Machine.Image.Version) {
+							if machineImageDiff.RemovedVersions[worker.Machine.Image.Name].Has(*worker.Machine.Image.Version) {
 								channel <- fmt.Errorf("unable to delete Machine image version '%s/%s' from CloudProfile %q - version is still in use by shoot '%s/%s' by worker %q", worker.Machine.Image.Name, *worker.Machine.Image.Version, cloudProfile.Name, shoot.Namespace, shoot.Name, worker.Name)
 							}
 						}
@@ -620,9 +626,9 @@ func (r *ReferenceManager) Validate(ctx context.Context, a admission.Attributes,
 			removedKubernetesVersions := getRemovedKubernetesVersions(namespacedCloudProfile, oldNamespacedCloudProfile)
 			removedMachineImageVersions := getRemovedMachineImageVersions(namespacedCloudProfile, oldNamespacedCloudProfile)
 
-			wasLimitAdded := !apiequality.Semantic.DeepEqual(namespacedCloudProfile.Spec.Limits, oldNamespacedCloudProfile.Spec.Limits)
+			wasLimitModified := !apiequality.Semantic.DeepEqual(namespacedCloudProfile.Spec.Limits, oldNamespacedCloudProfile.Spec.Limits)
 
-			if len(removedKubernetesVersions) > 0 || len(removedMachineImageVersions) > 0 || wasLimitAdded {
+			if len(removedKubernetesVersions) > 0 || len(removedMachineImageVersions) > 0 || wasLimitModified {
 				shootList, err1 := r.shootLister.Shoots(namespacedCloudProfile.Namespace).List(labels.Everything())
 				if err1 != nil {
 					return apierrors.NewInternalError(fmt.Errorf("could not list Shoots to validate NamespacedCloudProfile changes: %v", err1))
@@ -659,7 +665,7 @@ func (r *ReferenceManager) Validate(ctx context.Context, a admission.Attributes,
 						defer wg.Done()
 						validateShootForRemovedKubernetesVersions(channel, shoot, removedKubernetesVersions, parentCloudProfileKubernetesVersions, namespacedCloudProfile)
 						validateShootWorkersForRemovedMachineImageVersions(channel, shoot, removedMachineImageVersions, parentCloudProfileMachineImageVersions, namespacedCloudProfile)
-						if wasLimitAdded {
+						if wasLimitModified {
 							validateShootWorkerLimits(channel, shoot, namespacedCloudProfile.Spec.Limits)
 						}
 					}(s)
@@ -824,8 +830,13 @@ func (r *ReferenceManager) ensureBindingReferences(ctx context.Context, attribut
 			credentialsAPIVersion = securityv1alpha1.SchemeGroupVersion.Version
 			credentialsResource = "workloadidentities"
 			credentialsKind = "WorkloadIdentity"
+		} else if b.CredentialsRef.APIVersion == gardencorev1beta1.SchemeGroupVersion.String() {
+			credentialsAPIGroup = gardencorev1beta1.SchemeGroupVersion.Group
+			credentialsAPIVersion = gardencorev1beta1.SchemeGroupVersion.Version
+			credentialsResource = "internalsecrets"
+			credentialsKind = "InternalSecret"
 		} else {
-			return errors.New("unknown credentials ref: CredentialsBinding is referencing neither a Secret nor a WorkloadIdentity")
+			return errors.New("unknown credentials ref: CredentialsBinding is referencing neither a Secret nor an InternalSecret nor a WorkloadIdentity")
 		}
 		credentialsNamespace = b.CredentialsRef.Namespace
 		credentialsName = b.CredentialsRef.Name
@@ -877,6 +888,14 @@ func (r *ReferenceManager) ensureBindingReferences(ctx context.Context, attribut
 			return err
 		}
 		if err := r.sanityCheckProviderSecret(ctx, credentialsNamespace, credentialsName, providerTypes); err != nil {
+			return err
+		}
+
+	case "InternalSecret":
+		if err := r.lookupInternalSecret(ctx, credentialsNamespace, credentialsName); err != nil {
+			return err
+		}
+		if err := r.sanityCheckProviderInternalSecret(ctx, credentialsNamespace, credentialsName, providerTypes); err != nil {
 			return err
 		}
 
@@ -983,11 +1002,19 @@ func (r *ReferenceManager) ensureShootReferences(ctx context.Context, attributes
 
 	if !apiequality.Semantic.DeepEqual(oldShoot.Spec.DNS, shoot.Spec.DNS) && shoot.Spec.DNS != nil && shoot.DeletionTimestamp == nil {
 		for _, dnsProvider := range shoot.Spec.DNS.Providers {
-			if dnsProvider.SecretName == nil {
+			if dnsProvider.CredentialsRef == nil {
 				continue
 			}
-			if err := r.lookupSecret(ctx, shoot.Namespace, *dnsProvider.SecretName); err != nil {
-				return fmt.Errorf("failed to resolve DNS provider secret reference: %w", err)
+
+			switch apiVersion, kind := dnsProvider.CredentialsRef.APIVersion, dnsProvider.CredentialsRef.Kind; {
+			case apiVersion == corev1.SchemeGroupVersion.String() && kind == "Secret":
+				if err := r.lookupSecret(ctx, shoot.Namespace, dnsProvider.CredentialsRef.Name); err != nil {
+					return fmt.Errorf("failed to resolve credentials reference of type Secret: %w", err)
+				}
+			case apiVersion == securityv1alpha1.SchemeGroupVersion.String() && kind == "WorkloadIdentity":
+				if _, err := r.lookupWorkloadIdentity(ctx, shoot.Namespace, dnsProvider.CredentialsRef.Name); err != nil {
+					return fmt.Errorf("failed to resolve credentials reference of type WorkloadIdentity: %w", err)
+				}
 			}
 		}
 	}
@@ -1286,6 +1313,45 @@ func (r *ReferenceManager) lookupSecret(ctx context.Context, namespace, name str
 	return err
 }
 
+func (r *ReferenceManager) lookupInternalSecret(ctx context.Context, namespace, name string) error {
+	internalSecretFromLister := func(_ context.Context, namespace, name string) (runtime.Object, error) {
+		return r.internalSecretLister.InternalSecrets(namespace).Get(name)
+	}
+
+	internalSecretFromClient := func(ctx context.Context, namespace, name string) (runtime.Object, error) {
+		return r.gardenCoreClient.CoreV1beta1().InternalSecrets(namespace).Get(ctx, name, kubernetesclient.DefaultGetOptions())
+	}
+
+	_, err := lookupResource(ctx, namespace, name, internalSecretFromLister, internalSecretFromClient)
+	return err
+}
+
+func (r *ReferenceManager) sanityCheckProviderInternalSecret(ctx context.Context, namespace, name string, providerTypes []string) error {
+	internalSecret, err := r.gardenCoreClient.CoreV1beta1().InternalSecrets(namespace).Get(ctx, name, kubernetesclient.DefaultGetOptions())
+	if err != nil {
+		return err
+	}
+
+	for _, providerType := range providerTypes {
+		dummyInternalSecret := &gardencorev1beta1.InternalSecret{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: name,
+				Namespace:    namespace,
+				Annotations:  internalSecret.Annotations,
+				Labels:       utils.MergeStringMaps(internalSecret.Labels, map[string]string{v1beta1constants.LabelShootProviderPrefix + providerType: "true"}),
+			},
+			Type: internalSecret.Type,
+			Data: internalSecret.Data,
+		}
+
+		if _, err := r.gardenCoreClient.CoreV1beta1().InternalSecrets(dummyInternalSecret.Namespace).Create(ctx, dummyInternalSecret, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+			return fmt.Errorf("%s provider secret sanity check failed: %w", providerType, err)
+		}
+	}
+
+	return nil
+}
+
 func (r *ReferenceManager) lookupConfigMap(ctx context.Context, namespace, name string) error {
 	configMapFromLister := func(_ context.Context, namespace, name string) (runtime.Object, error) {
 		return r.configMapLister.ConfigMaps(namespace).Get(name)
@@ -1344,11 +1410,7 @@ func validateShootWorkerLimits(channel chan error, shoot *gardencorev1beta1.Shoo
 
 	for _, worker := range shoot.Spec.Provider.Workers {
 		totalMinimum += worker.Minimum
-		if worker.Maximum > maxNodesTotal {
-			channel <- fmt.Errorf("the maximum node count of worker pool %q in shoot \"%s/%s\" exceeds the limit of %d total nodes configured in the cloud profile", worker.Name, shoot.Namespace, shoot.Name, maxNodesTotal)
-		}
 	}
-
 	if totalMinimum > maxNodesTotal {
 		channel <- fmt.Errorf("the total minimum node count of all worker pools of shoot \"%s/%s\" must not exceed the limit of %d total nodes configured in the cloud profile", shoot.Namespace, shoot.Name, maxNodesTotal)
 	}

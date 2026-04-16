@@ -6,6 +6,7 @@ package healthcheck
 
 import (
 	"fmt"
+	"slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -22,6 +23,7 @@ import (
 	"github.com/gardener/gardener/pkg/api/extensions"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/controllerutils/mapper"
 	predicateutils "github.com/gardener/gardener/pkg/controllerutils/predicate"
 	"github.com/gardener/gardener/pkg/utils"
@@ -43,8 +45,8 @@ type AddArgs struct {
 	Predicates []predicate.Predicate
 	// Type is the type of the resource considered for reconciliation.
 	Type string
-	// ExtensionClass defines the extension class this extension is responsible for.
-	ExtensionClass extensionsv1alpha1.ExtensionClass
+	// ExtensionClasses defines the extension classes this controller is responsible for.
+	ExtensionClasses []extensionsv1alpha1.ExtensionClass
 	// SyncPeriod is the duration how often the registered extension is being reconciled
 	SyncPeriod metav1.Duration
 	// registeredExtension is the registered extensions that the HealthCheck Controller watches and writes HealthConditions for.
@@ -61,8 +63,8 @@ type DefaultAddArgs struct {
 	Controller controller.Options
 	// HealthCheckConfig contains additional config for the health check controller
 	HealthCheckConfig extensionsconfigv1alpha1.HealthCheckConfig
-	// ExtensionClass defines the extension class this extension is responsible for.
-	ExtensionClass extensionsv1alpha1.ExtensionClass
+	// ExtensionClasses defines the extension classes this controller is responsible for.
+	ExtensionClasses []extensionsv1alpha1.ExtensionClass
 }
 
 // RegisteredExtension is a registered extensions that the HealthCheck Controller watches.
@@ -107,7 +109,7 @@ func DefaultRegistration(
 		ControllerOptions:       opts.Controller,
 		Predicates:              predicates,
 		Type:                    extensionType,
-		ExtensionClass:          opts.ExtensionClass,
+		ExtensionClasses:        opts.ExtensionClasses,
 		SyncPeriod:              opts.HealthCheckConfig.SyncPeriod,
 		GetExtensionObjListFunc: getExtensionObjListFunc,
 	}
@@ -121,7 +123,7 @@ func DefaultRegistration(
 		shootRestOptions = *opts.HealthCheckConfig.ShootRESTOptions
 	}
 
-	healthCheckActuator := NewActuator(mgr, args.Type, args.GetExtensionGroupVersionKind().Kind, getExtensionObjFunc, healthChecks, shootRestOptions)
+	healthCheckActuator := NewActuator(mgr, args.Type, args.GetExtensionGroupVersionKind().Kind, getExtensionObjFunc, healthChecks, shootRestOptions, args.ExtensionClasses)
 	return Register(mgr, args, healthCheckActuator)
 }
 
@@ -182,11 +184,15 @@ func add(mgr manager.Manager, args AddArgs, actuator HealthCheckActuator) error 
 	controllerName := fmt.Sprintf("%s-%s-%s-%s-%s", ControllerName, args.registeredExtension.groupVersionKind.Kind, args.registeredExtension.groupVersionKind.Group, args.registeredExtension.groupVersionKind.Version, str)
 
 	// add type predicate to only watch registered resource (e.g. ControlPlane) with a certain type (e.g. aws)
-	predicates := predicateutils.AddTypeAndClassPredicates(args.Predicates, args.ExtensionClass, args.Type)
+	predicates := predicateutils.AddTypeAndClassPredicates(args.Predicates, args.ExtensionClasses, args.Type)
+
+	if args.ControllerOptions.ReconciliationTimeout == 0 {
+		args.ControllerOptions.ReconciliationTimeout = controllerutils.DefaultReconciliationTimeout
+	}
 
 	log.Log.Info("Registering health check controller", "kind", args.registeredExtension.groupVersionKind.Kind, "type", args.Type, "conditionTypes", args.registeredExtension.healthConditionTypes, "syncPeriod", args.SyncPeriod.Duration.String())
 
-	return builder.
+	builder := builder.
 		ControllerManagedBy(mgr).
 		Named(controllerName).
 		WithOptions(args.ControllerOptions).
@@ -194,14 +200,21 @@ func add(mgr manager.Manager, args AddArgs, actuator HealthCheckActuator) error 
 			args.registeredExtension.getExtensionObjFunc(),
 			&handler.EnqueueRequestForObject{},
 			builder.WithPredicates(predicates...),
-		).
+		)
+
+	if !classesHaveClusterObject(args.ExtensionClasses) {
+		return builder.
+			Complete(NewReconciler(mgr, actuator, *args.registeredExtension, args.SyncPeriod, args.ExtensionClasses))
+	}
+
+	return builder.
 		// watch Cluster of Shoot provider type (e.g. aws)
 		// this is to be notified when the Shoot is being hibernated (stop health checks) and wakes up (start health checks again)
 		Watches(
 			&extensionsv1alpha1.Cluster{},
 			handler.EnqueueRequestsFromMapFunc(mapper.ClusterToObjectMapper(mgr.GetClient(), args.GetExtensionObjListFunc, predicates)),
 		).
-		Complete(NewReconciler(mgr, actuator, *args.registeredExtension, args.SyncPeriod))
+		Complete(NewReconciler(mgr, actuator, *args.registeredExtension, args.SyncPeriod, args.ExtensionClasses))
 }
 
 func getHealthCheckTypes(healthChecks []ConditionTypeToHealthCheck) []string {
@@ -210,4 +223,20 @@ func getHealthCheckTypes(healthChecks []ConditionTypeToHealthCheck) []string {
 		types.Insert(healthCheck.ConditionType)
 	}
 	return types.UnsortedList()
+}
+
+func isGardenExtensionClass(extensionClasses []extensionsv1alpha1.ExtensionClass) bool {
+	return len(extensionClasses) == 1 && extensionClasses[0] == extensionsv1alpha1.ExtensionClassGarden
+}
+
+func isShootExtensionClass(class extensionsv1alpha1.ExtensionClass) bool {
+	return class == extensionsv1alpha1.ExtensionClassShoot
+}
+
+func classesHaveClusterObject(extensionClasses []extensionsv1alpha1.ExtensionClass) bool {
+	// backwards compatibility for shoot extension
+	if len(extensionClasses) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(extensionClasses, isShootExtensionClass)
 }

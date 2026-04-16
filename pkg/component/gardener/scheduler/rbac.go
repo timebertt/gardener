@@ -6,11 +6,12 @@ package scheduler
 
 import (
 	coordinationv1beta1 "k8s.io/api/coordination/v1beta1"
+	eventsv1 "k8s.io/api/events/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/scheduler/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	schedulerconfigv1alpha1 "github.com/gardener/gardener/pkg/scheduler/apis/config/v1alpha1"
 )
 
 const (
@@ -26,7 +27,7 @@ func (g *gardenerScheduler) clusterRole() *rbacv1.ClusterRole {
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
-				APIGroups: []string{""},
+				APIGroups: []string{"", eventsv1.GroupName},
 				Resources: []string{"events"},
 				Verbs:     []string{"create", "patch", "update"},
 			},

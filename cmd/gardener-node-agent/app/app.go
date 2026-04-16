@@ -35,13 +35,13 @@ import (
 
 	"github.com/gardener/gardener/cmd/utils/initrun"
 	"github.com/gardener/gardener/pkg/api/indexer"
+	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/nodeagent/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/controllerutils/routes"
 	"github.com/gardener/gardener/pkg/features"
 	gardenerhealthz "github.com/gardener/gardener/pkg/healthz"
 	"github.com/gardener/gardener/pkg/nodeagent"
-	nodeagentconfigv1alpha1 "github.com/gardener/gardener/pkg/nodeagent/apis/config/v1alpha1"
 	"github.com/gardener/gardener/pkg/nodeagent/bootstrap"
 	"github.com/gardener/gardener/pkg/nodeagent/bootstrappers"
 	"github.com/gardener/gardener/pkg/nodeagent/controller"
@@ -182,7 +182,19 @@ func run(ctx context.Context, cancel context.CancelFunc, log logr.Logger, cfg *n
 	if err := mgr.Add(&controllerutils.ControlledRunner{
 		Manager: mgr,
 		BootstrapRunnables: []manager.Runnable{
-			&bootstrappers.KubeletBootstrapKubeconfig{Log: log.WithName("kubelet-bootstrap-kubeconfig-creator"), FS: fs, APIServerConfig: cfg.APIServer},
+			&bootstrappers.KubeletBootstrapKubeconfig{
+				Log:             log.WithName("kubelet-bootstrap-kubeconfig-creator"),
+				FS:              fs,
+				APIServerConfig: cfg.APIServer,
+			},
+			&bootstrappers.OSCChecker{
+				Log:      log.WithName("osc-checker"),
+				FS:       fs,
+				Client:   mgr.GetClient(),
+				Recorder: mgr.GetEventRecorderFor("osc-checker"),
+				DBus:     dbus.New(log),
+				NodeName: nodeName,
+			},
 		},
 		ActualRunnables: []manager.Runnable{
 			manager.RunnableFunc(func(ctx context.Context) error {

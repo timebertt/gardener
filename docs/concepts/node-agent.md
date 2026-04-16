@@ -62,15 +62,65 @@ Amongst others, a prominent example is the configuration file for `kubelet` and 
 It also watches `Node`s and requeues the corresponding `Secret` when the reason of the node condition `InPlaceUpdate` changes to `ReadyForUpdate`.
 
 The controller decodes the configuration and computes the files and units that have changed since its last reconciliation.
-It writes or update the files and units to the file system, removes no longer needed files and units, reloads the systemd daemon, and starts or stops the units accordingly.
+File content can be provided inline, via an image reference, or via a `secretRef` pointing to a `Secret` in the `kube-system` namespace.
+For `secretRef` files, the controller reads the referenced `Secret` and extracts the data from the specified key.
+It writes or updates the files and units to the file system, removes no longer needed files and units, reloads the systemd daemon, and starts or stops the units accordingly.
 
 After successful reconciliation, it persists the just applied `OperatingSystemConfig` into a file on the host.
 This file will be used for future reconciliations to compute file/unit changes.
 
-The controller also maintains two annotations on the `Node`:
+#### Static Pod Reconciliation
+
+After applying the operating system configuration, the controller performs additional checks for static pods managed by the `kubelet`.
+Static pods are defined as pod manifests in the `/etc/kubernetes/manifests/` directory.
+
+The controller:
+
+1. **Identifies static pod manifests**: Scans both `.spec.files[]` and `.status.extensionFiles[]` in the `OperatingSystemConfig` for files located in `/etc/kubernetes/manifests/` that contain pod definitions.
+2. **Extracts expected state**: Parses each static pod manifest to determine the pod name and its desired configuration hash (from the `gardener.cloud/config.mirror` annotation).
+3. **Compares with actual state**: Lists all pods on the node with the label `static-pod=true` and compares their hashes with the expected hashes to make sure that the desired specification has been rolled out.
+4. **Waits for convergence**: If the actual pod hashes don't match the expected hashes (indicating kubelet hasn't picked up the new manifests yet), the controller requeues with a delay to check again later.
+5. **Verifies health**: Once all static pods exist with the correct hashes, the controller verifies that each pod passes health checks and is in a ready state.
+6. **Completes reconciliation**: Only after all static pods are present, have the correct configuration, and are healthy does the controller consider the reconciliation complete.
+
+This ensures that changes to static pod configurations are fully applied and the pods are running correctly before marking the node as up-to-date.
+
+After all these steps are complete, the controller maintains two annotations on the `Node`:
 
 - `worker.gardener.cloud/kubernetes-version`, describing the version of the installed `kubelet`.
 - `checksum/cloud-config-data`, describing the checksum of the applied `OperatingSystemConfig` (used in future reconciliations to determine whether it needs to reconcile, and to report that this node is up-to-date).
+
+#### Serial Reconciliation
+
+For certain critical nodes that should never be updated in parallel (e.g., control plane nodes for self-hosted shoot clusters), the controller supports a **serial reconciliation** mode.
+This ensures that only one `gardener-node-agent` instance at a time reconciles the `OperatingSystemConfig`, preventing simultaneous updates that could potentially disrupt cluster operations.
+
+It is particularly relevant for control plane nodes since they run critical components like `etcd` or `kube-apiserver` as static pods, and we want them to get updated one at a time.
+The primary driver for this feature is `etcd`'s quorum requirement: `etcd` needs a majority of members to be healthy to perform any useful operations, so updating multiple control plane nodes simultaneously risks losing quorum and making the cluster unavailable.
+In contrast, `kube-apiserver` instances sit behind a load balancer that can health-check and route traffic away from non-ready instances, meaning the API server can tolerate some replicas being temporarily unavailable as long as at least one is ready.
+Therefore, while serial reconciliation benefits both components, it is the `etcd` quorum constraint that makes it a hard requirement.
+
+##### How It Works
+
+Serial reconciliation is enabled by setting the `reconciliation.osc.node-agent.gardener.cloud/serial` annotation to `"true"` on the `Secret` containing the `OperatingSystemConfig`.
+When this annotation is present, the controller uses a leader election mechanism based on Kubernetes `Lease` objects to coordinate reconciliation across multiple `gardener-node-agent` instances:
+
+1. **Lease Acquisition**: Before starting reconciliation, each `gardener-node-agent` instance attempts to acquire a `Lease` object with the same name as the `Secret` (in the `kube-system` namespace). The `Lease` is owned by the `Secret` via an `OwnerReference`.
+2. **Reconciliation with Lock**: Only the instance that successfully acquires the `Lease` proceeds with reconciliation. The `Lease` has a duration of 10 minutes and is renewed in the beginning of the reconciliation process.
+3. **Lock Release**: After successful reconciliation, the instance releases the `Lease` by clearing its holder identity, making it available for other instances to acquire.
+4. **Waiting for Lock**: Instances that fail to acquire the `Lease` (because another instance holds it) will requeue their reconciliation and wait. The controller watches the `Lease` object and automatically requeues when it detects the `Lease` has been released.
+5. **Lease Expiry Handling**: If a `Lease` holder fails to renew the `Lease` before it expires, other instances can detect this and attempt to acquire the `Lease` to proceed with reconciliation.
+
+##### Behavior Changes
+
+When serial reconciliation is enabled:
+
+- The [jitter delay mechanism](resource-manager.md#node-agent-reconciliation-delay-controller) (which normally staggers reconciliations to reduce API server load) is bypassed, as the leader election mechanism provides sufficient coordination.
+- Accordingly, 'Update' events on the `Secret` are processed immediately rather than with a random delay.
+- The controller uses a dedicated cache for the leader election `Lease` object to minimize unnecessary network I/O.
+
+> [!NOTE]
+> Nodes with serial reconciliation enabled are excluded from the [Agent Reconciliation Delay Controller](resource-manager.md#agent-reconciliation-delay-controller) in the `gardener-resource-manager`, as the serialization mechanism provides its own coordination.
 
 ### [Token Controller](../../pkg/nodeagent/controller/token)
 
@@ -80,6 +130,36 @@ This mechanism is used to download its own access token for the shoot cluster, b
 Since the underlying client is based on `k8s.io/client-go` and the kubeconfig points to this token file, it is dynamically reloaded without the necessity of explicit configuration or code changes.
 This procedure ensures that the most up-to-date tokens are always present on the host and used by the `gardener-node-agent` and the other `systemd` components.
 The controller is also triggered via a source channel, which is done by the `Operating System Config` controller during an in-place service account key rotation.
+
+### [Certificate Controller](../../pkg/nodeagent/controller/certificate)
+
+This controller is responsible for rotating the client certificate used by `gardener-node-agent` to authenticate against the shoot cluster's API server.
+It monitors the expiration of the certificate and requests a new one before the current certificate expires.
+
+### [Health Check Controller](../../pkg/nodeagent/controller/healthcheck)
+
+This controller performs periodic health checks on the node's critical components, such as `containerd` and `kubelet`.
+It watches the `Node` object and executes configured health checkers at regular intervals.
+If a health check fails, the controller can restart the affected systemd service to restore normal operation.
+
+### [Hostname Check Controller](../../pkg/nodeagent/controller/hostnamecheck)
+
+This controller periodically checks whether the hostname of the machine has changed.
+If a hostname change is detected, the controller triggers a restart of `gardener-node-agent` by calling its cancel function.
+
+### [Systemd Unit Check Controller](../../pkg/nodeagent/controller/systemdunitcheck)
+
+This controller periodically checks the health of all systemd units managed by `gardener-node-agent` (i.e., those from the last applied `OperatingSystemConfig`).
+It reports a `SystemdUnitsReady` condition on the `Node` object.
+
+The controller detects the following unhealthy states:
+- A unit is in `failed` state.
+- A unit is stuck in `activating` or `deactivating` for longer than a configurable threshold (default: 5 minutes). Stuck detection uses systemd's `StateChangeTimestamp` property, so it survives `gardener-node-agent` restarts without flapping.
+- An enabled unit is `inactive`.
+- An enabled unit is not loaded.
+
+The `gardenlet`'s shoot care controller incorporates this condition into the `EveryNodeReady` shoot condition.
+Nodes that do not yet have the `SystemdUnitsReady` condition (e.g., during rolling upgrades) are skipped for backward compatibility.
 
 ## Reasoning
 

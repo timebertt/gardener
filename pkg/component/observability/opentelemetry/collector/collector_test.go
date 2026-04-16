@@ -11,7 +11,6 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/format"
 	"github.com/onsi/gomega/types"
-	otelv1beta1 "github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -39,12 +38,14 @@ import (
 	fakesecretsmanager "github.com/gardener/gardener/pkg/utils/secrets/manager/fake"
 	"github.com/gardener/gardener/pkg/utils/test"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
+	otelv1beta1 "github.com/gardener/gardener/third_party/open-telemetry/opentelemetry-operator/apis/v1beta1"
 )
 
 const (
 	ingressName                     = "logging"
 	namespace                       = "some-namespace"
 	valiHost                        = "vali.foo.bar"
+	ingressHost                     = "otel.foo.bar"
 	managedResourceNameTarget       = "logging-target"
 	managedResourceSecretNameTarget = "managedresource-logging-target"
 )
@@ -65,7 +66,11 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			LokiEndpoint:            lokiEndpoint,
 			Replicas:                1,
 			ShootNodeLoggingEnabled: true,
-			IngressHost:             valiHost,
+			IngressHost:             ingressHost,
+			ValiHost:                valiHost,
+			SecretNameServerCA:      v1beta1constants.SecretNameCACluster,
+			PriorityClassName:       "gardener-system-100",
+			ClusterType:             "shoot",
 		}
 
 		c         client.Client
@@ -77,15 +82,17 @@ var _ = Describe("OpenTelemetry Collector", func() {
 		customResourcesManagedResourceSecret *corev1.Secret
 		managedResourceSecretTarget          *corev1.Secret
 		fakeSecretManager                    secretsmanager.Interface
-		kubeRBACProxyContainer               corev1.Container
+		kubeRBACProxyValiContainer           corev1.Container
+		kubeRBACProxyOTLPContainer           corev1.Container
 
-		volume                 corev1.Volume
-		volumeMount            corev1.VolumeMount
-		managedResourceTarget  *resourcesv1alpha1.ManagedResource
-		openTelemetryCollector *otelv1beta1.OpenTelemetryCollector
-		serviceMonitor         *monitoringv1.ServiceMonitor
-		serviceAccount         *corev1.ServiceAccount
-		kubeRBACServicePort    corev1.ServicePort
+		volume                  corev1.Volume
+		volumeMount             corev1.VolumeMount
+		managedResourceTarget   *resourcesv1alpha1.ManagedResource
+		openTelemetryCollector  *otelv1beta1.OpenTelemetryCollector
+		serviceMonitor          *monitoringv1.ServiceMonitor
+		serviceAccount          *corev1.ServiceAccount
+		kubeRBACValiServicePort corev1.ServicePort
+		kubeRBACOTLPServicePort corev1.ServicePort
 	)
 
 	BeforeEach(func() {
@@ -177,11 +184,39 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			AutomountServiceAccountToken: ptr.To(false),
 		}
 
-		kubeRBACProxyContainer = corev1.Container{
-			Name:  "rbac-proxy",
+		kubeRBACProxyValiContainer = corev1.Container{
+			Name:  "rbac-proxy-vali",
 			Image: kubeRBACProxyImage,
 			Args: []string{
-				"--insecure-listen-address=0.0.0.0:8080",
+				"--insecure-listen-address=[::]:8081",
+				"--upstream=http://logging:3100/",
+				"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
+				"--logtostderr=true",
+				"--v=6",
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("5m"),
+					corev1.ResourceMemory: resource.MustParse("30Mi"),
+				},
+			},
+			SecurityContext: &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				RunAsUser:                ptr.To[int64](65532),
+				RunAsGroup:               ptr.To[int64](65534),
+				RunAsNonRoot:             ptr.To(true),
+				ReadOnlyRootFilesystem:   ptr.To(true),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				volumeMount,
+			},
+		}
+
+		kubeRBACProxyOTLPContainer = corev1.Container{
+			Name:  "rbac-proxy-otlp",
+			Image: kubeRBACProxyImage,
+			Args: []string{
+				"--insecure-listen-address=[::]:8080",
 				"--upstream=http://127.0.0.1:4317/",
 				"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
 				"--logtostderr=true",
@@ -272,8 +307,13 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			},
 		}
 
-		kubeRBACServicePort = corev1.ServicePort{
-			Name: "rbac-proxy",
+		kubeRBACValiServicePort = corev1.ServicePort{
+			Name: "rbac-proxy-vali",
+			Port: 8081,
+		}
+
+		kubeRBACOTLPServicePort = corev1.ServicePort{
+			Name: "rbac-proxy-otlp",
 			Port: 8080,
 		}
 
@@ -283,10 +323,19 @@ var _ = Describe("OpenTelemetry Collector", func() {
 				Namespace: namespace,
 				Labels:    getLabels(),
 				Annotations: map[string]string{
-					`networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports`: `[{"protocol":"TCP","port":8888}]`,
+					resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+						v1beta1constants.LabelNetworkPolicyScrapeTargets +
+						resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":8888}]`,
+					resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias: v1beta1constants.LabelNetworkPolicyShootNamespaceAlias,
+					resourcesv1alpha1.NetworkingNamespaceSelectors:             `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`,
 				},
 			},
 			Spec: otelv1beta1.OpenTelemetryCollectorSpec{
+				Observability: otelv1beta1.ObservabilitySpec{
+					Metrics: otelv1beta1.MetricsConfigSpec{
+						DisablePrometheusAnnotations: true,
+					},
+				},
 				Mode:            "deployment",
 				UpgradeStrategy: "none",
 				OpenTelemetryCommonFields: otelv1beta1.OpenTelemetryCommonFields{
@@ -310,7 +359,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 							"otlp": map[string]any{
 								"protocols": map[string]any{
 									"grpc": map[string]any{
-										"endpoint": "127.0.0.1:4317",
+										"endpoint": "[::]:4317",
 									},
 								},
 							},
@@ -319,7 +368,18 @@ var _ = Describe("OpenTelemetry Collector", func() {
 					Processors: &otelv1beta1.AnyConfig{
 						Object: map[string]any{
 							"batch": map[string]any{
-								"timeout": "10s",
+								// Field needs to be cast to `float64` due to an issue with serialization during tests.
+								// When fetching the object from the apiserver, since there's no type information regarding this field.
+								// the deserializer will interpret it as a `float64`. By setting the value to `float64` here, we ensure that
+								// when this object is compared to the fetched one, the types match.
+								"send_batch_size":     float64(2000),
+								"send_batch_max_size": float64(4000),
+								"timeout":             "10s",
+							},
+							"memory_limiter": map[string]any{
+								"check_interval":  "1s",
+								"limit_mib":       float64(3000),
+								"spike_limit_mib": float64(600),
 							},
 							"resource/vali": map[string]any{
 								"attributes": []any{
@@ -339,13 +399,52 @@ var _ = Describe("OpenTelemetry Collector", func() {
 										"action":         "insert",
 									},
 									map[string]any{
+										"key":            "namespace_name",
+										"from_attribute": "k8s.namespace.name",
+										"action":         "insert",
+									},
+									map[string]any{
 										"key":    "loki.resource.labels",
 										"value":  "job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
 										"action": "insert",
 									},
 									map[string]any{
 										"key":    "loki.format",
-										"value":  "logfmt",
+										"value":  "raw",
+										"action": "insert",
+									},
+								},
+							},
+							"attributes/vali": map[string]any{
+								"actions": []any{
+									map[string]any{
+										"key":            "nodename",
+										"from_attribute": "k8s.node.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "pod_name",
+										"from_attribute": "k8s.pod.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "container_name",
+										"from_attribute": "k8s.container.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "namespace_name",
+										"from_attribute": "k8s.namespace.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":    "loki.attribute.labels",
+										"value":  "priority, level, process.command, process.pid, host.name, host.id, service.name, service.namespace, job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
+										"action": "upsert",
+									},
+									map[string]any{
+										"key":    "loki.format",
+										"value":  "raw",
 										"action": "insert",
 									},
 								},
@@ -356,6 +455,28 @@ var _ = Describe("OpenTelemetry Collector", func() {
 						Object: map[string]any{
 							"loki": map[string]any{
 								"endpoint": lokiEndpoint,
+								"default_labels_enabled": map[string]any{
+									"exporter": false,
+									"job":      false,
+								},
+								"sending_queue": map[string]any{
+									"queue_size": float64(16777216),
+									"sizer":      "bytes",
+									"batch": map[string]any{
+										"flush_timeout": "1s",
+										"max_size":      float64(4194304),
+										"sizer":         "bytes",
+									},
+								},
+							},
+							"debug/logs": map[string]any{
+								"verbosity": "basic",
+							},
+							"otlphttp/victorialogs": map[string]any{
+								"logs_endpoint": "http://logging-vl:9428/insert/opentelemetry/v1/logs",
+								"headers": map[string]any{
+									"VL-Stream-Fields": "host.name,k8s.node.name,k8s.namespace.name,k8s.pod.name,k8s.container.name,k8s.deployment.name,k8s.daemonset.name,k8s.statefulset.name,severity,unit,origin",
+								},
 							},
 						},
 					},
@@ -369,7 +490,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 											"pull": map[string]any{
 												"exporter": map[string]any{
 													"prometheus": map[string]any{
-														"host": "0.0.0.0",
+														"host": "[::]",
 														// Field needs to be cast to `float64` due to an issue with serialization during tests.
 														// When fetching the object from the apiserver, since there's no type information regarding this field.
 														// the deserializer will interpret it as a `float64`. By setting the value to `float64` here, we ensure that
@@ -389,9 +510,9 @@ var _ = Describe("OpenTelemetry Collector", func() {
 						},
 						Pipelines: map[string]*otelv1beta1.Pipeline{
 							"logs/vali": {
-								Exporters:  []string{"loki"},
+								Exporters:  []string{"loki", "debug/logs"},
 								Receivers:  []string{"otlp"},
-								Processors: []string{"resource/vali", "batch"},
+								Processors: []string{"memory_limiter", "resource/vali", "attributes/vali", "batch"},
 							},
 						},
 					},
@@ -435,7 +556,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
 			Expect(customResourcesManagedResource).To(consistOf(
 				openTelemetryCollector,
-				getIngress("/opentelemetry.proto.collector.logs.v1.LogsService/Export", "opentelemetry-collector-collector", 8080),
+				getIngress(),
 				serviceMonitor,
 				serviceAccount,
 			))
@@ -478,14 +599,18 @@ var _ = Describe("OpenTelemetry Collector", func() {
 			Expect(customResourcesManagedResource).To(DeepEqual(expectedMr))
 
 			customResourcesManagedResourceSecret.Name = customResourcesManagedResource.Spec.SecretRefs[0].Name
-			openTelemetryCollector.Spec.AdditionalContainers = []corev1.Container{kubeRBACProxyContainer}
+			openTelemetryCollector.Spec.AdditionalContainers = []corev1.Container{kubeRBACProxyValiContainer, kubeRBACProxyOTLPContainer}
 			openTelemetryCollector.Spec.Volumes = []corev1.Volume{volume}
 			openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
-				ServicePort: kubeRBACServicePort,
+				ServicePort: kubeRBACValiServicePort,
 			})
+			openTelemetryCollector.Spec.Ports = append(openTelemetryCollector.Spec.Ports, otelv1beta1.PortsSpec{
+				ServicePort: kubeRBACOTLPServicePort,
+			})
+			metav1.SetMetaDataLabel(&openTelemetryCollector.ObjectMeta, "networking.resources.gardener.cloud/to-kube-apiserver-tcp-443", "allowed")
 			Expect(customResourcesManagedResource).To(consistOf(
 				openTelemetryCollector,
-				getIngress("/opentelemetry.proto.collector.logs.v1.LogsService/Export", "opentelemetry-collector-collector", 8080),
+				getIngress(),
 				serviceMonitor,
 				serviceAccount,
 			))
@@ -528,6 +653,35 @@ var _ = Describe("OpenTelemetry Collector", func() {
 
 		})
 
+		It("should use custom CA secret name for certificate signing", func() {
+			customValues := values
+			customValues.SecretNameServerCA = "custom-ca-secret"
+			customValues.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
+			customValues.PriorityClassName = "gardener-system-100"
+
+			component = New(c, namespace, customValues, fakeSecretManager)
+
+			// The main test is that deploy succeeds with a custom CA secret name
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			// Verify that the component created the managed resource
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+		})
+
+		It("should use seed CA secret when SecretNameServerCA is set to SecretNameCASeed", func() {
+			customValues := values
+			customValues.SecretNameServerCA = v1beta1constants.SecretNameCASeed
+			customValues.ShootNodeLoggingEnabled = false // Disable node logging for simpler test
+			customValues.PriorityClassName = "gardener-system-100"
+
+			component = New(c, namespace, customValues, fakeSecretManager)
+
+			// The main test is that deploy succeeds with the seed CA secret
+			Expect(component.Deploy(ctx)).To(Succeed())
+
+			// Verify that the component created the managed resource
+			Expect(c.Get(ctx, client.ObjectKeyFromObject(customResourcesManagedResource), customResourcesManagedResource)).To(Succeed())
+		})
 	})
 
 	Describe("#Destroy", func() {
@@ -635,7 +789,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 	})
 })
 
-func getIngress(path, serviceName string, port int32) *networkingv1.Ingress {
+func getIngress() *networkingv1.Ingress {
 	pathType := networkingv1.PathTypePrefix
 	annotations := map[string]string{"nginx.ingress.kubernetes.io/backend-protocol": "GRPC"}
 
@@ -651,10 +805,31 @@ func getIngress(path, serviceName string, port int32) *networkingv1.Ingress {
 			TLS: []networkingv1.IngressTLS{
 				{
 					SecretName: "logging-tls",
-					Hosts:      []string{valiHost},
+					Hosts:      []string{ingressHost, valiHost},
 				},
 			},
 			Rules: []networkingv1.IngressRule{
+				{
+					Host: ingressHost,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: "opentelemetry-collector-collector",
+											Port: networkingv1.ServiceBackendPort{
+												Number: 8080,
+											},
+										},
+									},
+									Path:     "/opentelemetry.proto.collector.logs.v1.LogsService/Export",
+									PathType: &pathType,
+								},
+							},
+						},
+					},
+				},
 				{
 					Host: valiHost,
 					IngressRuleValue: networkingv1.IngressRuleValue{
@@ -663,13 +838,13 @@ func getIngress(path, serviceName string, port int32) *networkingv1.Ingress {
 								{
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{
-											Name: serviceName,
+											Name: "opentelemetry-collector-collector",
 											Port: networkingv1.ServiceBackendPort{
-												Number: port,
+												Number: 8081,
 											},
 										},
 									},
-									Path:     path,
+									Path:     "/vali/api/v1/push",
 									PathType: &pathType,
 								},
 							},
@@ -755,8 +930,8 @@ func getLabels() map[string]string {
 		v1beta1constants.LabelRole:  v1beta1constants.LabelObservability,
 		v1beta1constants.GardenRole: v1beta1constants.GardenRoleObservability,
 		gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort): v1beta1constants.LabelNetworkPolicyAllowed,
+		gardenerutils.NetworkPolicyLabel("logging-vl", 9428):                                v1beta1constants.LabelNetworkPolicyAllowed,
 		v1beta1constants.LabelNetworkPolicyToDNS:                                            v1beta1constants.LabelNetworkPolicyAllowed,
-		v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer:                               v1beta1constants.LabelNetworkPolicyAllowed,
 		v1beta1constants.LabelObservabilityApplication:                                      "opentelemetry-collector",
 	}
 }

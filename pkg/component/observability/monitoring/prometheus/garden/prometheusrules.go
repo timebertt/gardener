@@ -5,7 +5,10 @@
 package garden
 
 import (
+	"bytes"
 	_ "embed"
+	"fmt"
+	"text/template"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +29,10 @@ var (
 	//go:embed assets/prometheusrules/etcd.yaml
 	etcdYAML []byte
 	etcd     *monitoringv1.PrometheusRule
+
+	//go:embed assets/prometheusrules/healthcheck.yaml.tmpl
+	healthcheckYAML []byte
+	healthcheck     *monitoringv1.PrometheusRule
 
 	//go:embed assets/prometheusrules/metering-meta.yaml
 	meteringYAML []byte
@@ -65,16 +72,32 @@ func init() {
 }
 
 // CentralPrometheusRules returns the central PrometheusRule resources for the garden prometheus.
-func CentralPrometheusRules(isGardenerDiscoveryServerEnabled bool) []*monitoringv1.PrometheusRule {
+func CentralPrometheusRules(isGardenerDiscoveryServerEnabled bool, prometheusAggregateTargetNames []string) ([]*monitoringv1.PrometheusRule, error) {
+	tpl, err := template.New("PrometheusGarden:CentralPrometheusRules").Parse(string(healthcheckYAML))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Prometheus health rules template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err = tpl.Execute(&buf, map[string]any{"Seeds": prometheusAggregateTargetNames}); err != nil {
+		return nil, fmt.Errorf("failed to generate Prometheus health rules: %w", err)
+	}
+
+	healthcheck = &monitoringv1.PrometheusRule{}
+	if err = runtime.DecodeInto(monitoringutils.Decoder, buf.Bytes(), healthcheck); err != nil {
+		return nil, fmt.Errorf("failed to decode Prometheus health rules: %w", err)
+	}
+
 	return []*monitoringv1.PrometheusRule{
 		auditLog.DeepCopy(),
 		etcd.DeepCopy(),
+		healthcheck,
 		gardenPrometheusRule(isGardenerDiscoveryServerEnabled).DeepCopy(),
 		metering.DeepCopy(),
 		recording.DeepCopy(),
 		seed.DeepCopy(),
 		shoot.DeepCopy(),
-	}
+	}, nil
 }
 
 func gardenPrometheusRule(isGardenerDiscoveryServerEnabled bool) *monitoringv1.PrometheusRule {
@@ -206,6 +229,30 @@ func gardenPrometheusRule(isGardenerDiscoveryServerEnabled bool) *monitoringv1.P
 				"description": "Garden {{$labels.name}} in landscape " +
 					"{{$externalLabels.landscape}} has condition {{$labels.condition}} unequal to True" +
 					" for 10 minutes.",
+			},
+		},
+		{
+			Alert:  "GardenLastOperationInErrorState",
+			Expr:   intstr.FromString(`garden_garden_last_operation{state=~"Error|Failed"} == 1`),
+			For:    ptr.To(monitoringv1.Duration("10m")),
+			Labels: getLabels("critical"),
+			Annotations: map[string]string{
+				"summary": "Garden {{$labels.name}} last operation has failed",
+				"description": "Garden {{$labels.name}} in landscape " +
+					"{{$externalLabels.landscape}} has last operation {{$labels.type}} in state {{$labels.state}}" +
+					" for 10 minutes.",
+			},
+		},
+		{
+			Alert:  "GardenLastOperationStuckProcessing",
+			Expr:   intstr.FromString(`garden_garden_last_operation{state="Processing"} == 1`),
+			For:    ptr.To(monitoringv1.Duration("30m")),
+			Labels: getLabels("warning"),
+			Annotations: map[string]string{
+				"summary": "Garden {{$labels.name}} last operation stuck in Processing",
+				"description": "Garden {{$labels.name}} in landscape " +
+					"{{$externalLabels.landscape}} has last operation {{$labels.type}} stuck in Processing" +
+					" for 30 minutes.",
 			},
 		},
 		{

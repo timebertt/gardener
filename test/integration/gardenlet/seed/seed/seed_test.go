@@ -28,6 +28,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/gardener/gardener/pkg/api/indexer"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
@@ -42,11 +43,12 @@ import (
 	"github.com/gardener/gardener/pkg/component/networking/istio"
 	"github.com/gardener/gardener/pkg/component/networking/nginxingress"
 	"github.com/gardener/gardener/pkg/component/observability/logging/fluentoperator"
+	victoriaoperator "github.com/gardener/gardener/pkg/component/observability/logging/victoria/operator"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/persesoperator"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheusoperator"
-	oteloperator "github.com/gardener/gardener/pkg/component/observability/opentelemetry/operator"
+	opentelemetryoperator "github.com/gardener/gardener/pkg/component/observability/opentelemetry/operator"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
+	"github.com/gardener/gardener/pkg/features"
 	seedcontroller "github.com/gardener/gardener/pkg/gardenlet/controller/seed/seed"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -144,6 +146,9 @@ var _ = Describe("Seed controller tests", func() {
 					Vali: &gardenletconfigv1alpha1.Vali{
 						Enabled: ptr.To(true),
 					},
+					VictoriaLogs: &gardenletconfigv1alpha1.VictoriaLogs{
+						Enabled: ptr.To(true),
+					},
 				},
 				ETCDConfig: &gardenletconfigv1alpha1.ETCDConfig{
 					BackupCompactionController: &gardenletconfigv1alpha1.BackupCompactionController{
@@ -233,9 +238,21 @@ var _ = Describe("Seed controller tests", func() {
 				DNS: gardencorev1beta1.SeedDNS{
 					Provider: &gardencorev1beta1.SeedDNSProvider{
 						Type: providerName,
-						SecretRef: corev1.SecretReference{
-							Name:      dnsProviderSecret.Name,
-							Namespace: dnsProviderSecret.Namespace,
+						CredentialsRef: &corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       dnsProviderSecret.Name,
+							Namespace:  dnsProviderSecret.Namespace,
+						},
+					},
+					Internal: &gardencorev1beta1.SeedDNSProviderConfig{
+						Type:   providerName,
+						Domain: "internal.example.com",
+						CredentialsRef: corev1.ObjectReference{
+							APIVersion: "v1",
+							Kind:       "Secret",
+							Name:       "some-secret",
+							Namespace:  "some-namespace",
 						},
 					},
 				},
@@ -299,7 +316,7 @@ var _ = Describe("Seed controller tests", func() {
 				RegistrationRef: corev1.ObjectReference{
 					Name: controllerRegistration.Name,
 				},
-				SeedRef: corev1.ObjectReference{
+				SeedRef: &corev1.ObjectReference{
 					Name: seedName,
 				},
 			},
@@ -466,6 +483,7 @@ var _ = Describe("Seed controller tests", func() {
 						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(testNamespace), testNamespace)).To(Succeed())
 						g.Expect(testNamespace.Labels).To(And(
 							HaveKeyWithValue("role", "garden"),
+							HaveKeyWithValue("gardener.cloud/role", "garden"),
 							HaveKeyWithValue("pod-security.kubernetes.io/enforce", "privileged"),
 							HaveKeyWithValue("high-availability-config.resources.gardener.cloud/consider", "true"),
 						))
@@ -505,6 +523,7 @@ var _ = Describe("Seed controller tests", func() {
 						"infrastructures.extensions.gardener.cloud",
 						"networks.extensions.gardener.cloud",
 						"operatingsystemconfigs.extensions.gardener.cloud",
+						"selfhostedshootexposures.extensions.gardener.cloud",
 						"workers.extensions.gardener.cloud",
 					}
 					crdsSharedWithGardenCluster = []string{
@@ -515,6 +534,7 @@ var _ = Describe("Seed controller tests", func() {
 						// etcd-druid
 						"etcds.druid.gardener.cloud",
 						"etcdcopybackupstasks.druid.gardener.cloud",
+						"etcdopstasks.druid.gardener.cloud",
 						"managedresources.resources.gardener.cloud",
 						// istio
 						"destinationrules.networking.istio.io",
@@ -560,6 +580,9 @@ var _ = Describe("Seed controller tests", func() {
 						"perses.perses.dev",
 						"persesdashboards.perses.dev",
 						"persesdatasources.perses.dev",
+						"persesglobaldatasources.perses.dev",
+						// victoria-operator
+						"vlsingles.operator.victoriametrics.com",
 						// opentelemetry-operator
 						"opentelemetrycollectors.opentelemetry.io",
 						"instrumentations.opentelemetry.io",
@@ -574,6 +597,24 @@ var _ = Describe("Seed controller tests", func() {
 					g.Expect(testClient.List(ctx, crdList)).To(Succeed())
 					return test.ObjectNames(crdList)
 				}).WithTimeout(kubernetesutils.WaitTimeout).Should(ContainElements(crdsOnlyForSeedClusters))
+
+				patchPlutonoMRHealth := func(mrName string) {
+					// The seed controller waits for the plutono ManagedResource to be healthy, so
+					// let's fake this here.
+					By("Patch plutono deployment to report healthiness")
+					Eventually(func(g Gomega) {
+						mr := &resourcesv1alpha1.ManagedResource{ObjectMeta: metav1.ObjectMeta{Name: mrName, Namespace: testNamespace.Name}}
+						g.Expect(testClient.Get(ctx, client.ObjectKeyFromObject(mr), mr)).To(Succeed())
+
+						patch := client.MergeFrom(mr.DeepCopy())
+						mr.Status.ObservedGeneration = mr.Generation
+						mr.Status.Conditions = []gardencorev1beta1.Condition{
+							{Type: resourcesv1alpha1.ResourcesApplied, Status: gardencorev1beta1.ConditionTrue, LastTransitionTime: metav1.NewTime(time.Unix(10, 0)), LastUpdateTime: metav1.NewTime(time.Unix(10, 0))},
+							{Type: resourcesv1alpha1.ResourcesHealthy, Status: gardencorev1beta1.ConditionTrue, LastTransitionTime: metav1.NewTime(time.Unix(10, 0)), LastUpdateTime: metav1.NewTime(time.Unix(10, 0))},
+						}
+						g.Expect(testClient.Status().Patch(ctx, mr, patch)).To(Succeed())
+					}).Should(Succeed())
+				}
 
 				if !seedIsGarden {
 					By("Verify that VPA was created for gardenlet")
@@ -600,6 +641,8 @@ var _ = Describe("Seed controller tests", func() {
 						deployment.Status.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue}}
 						g.Expect(testClient.Status().Patch(ctx, deployment, patch)).To(Succeed())
 					}).Should(Succeed())
+
+					patchPlutonoMRHealth("plutono")
 				} else {
 					By("Verify that the CRDs shared with the garden cluster have not been deployed (gardener-operator deploys them)")
 					Eventually(func(g Gomega) []string {
@@ -627,10 +670,12 @@ var _ = Describe("Seed controller tests", func() {
 					Expect(err).NotTo(HaveOccurred())
 					persesCRD, err := persesoperator.NewCRDs(testClient)
 					Expect(err).NotTo(HaveOccurred())
+					victoriaCRD, err := victoriaoperator.NewCRDs(testClient)
+					Expect(err).NotTo(HaveOccurred())
 					// General CRDs are not deployed when seedIsGarden is true, as they are managed by the gardener-operator.
 					extensionCRD, err := extensionscrds.NewCRD(testClient, true, false)
 					Expect(err).NotTo(HaveOccurred())
-					openTelemetryCRD, err := oteloperator.NewCRDs(testClient)
+					openTelemetryCRD, err := opentelemetryoperator.NewCRDs(testClient)
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(applier.ApplyManifest(ctx, managedResourceCRDReader, kubernetes.DefaultMergeFuncs)).To(Succeed())
@@ -640,6 +685,7 @@ var _ = Describe("Seed controller tests", func() {
 					Expect(component.OpWait(fluentCRD).Deploy(ctx)).To(Succeed())
 					Expect(component.OpWait(prometheusCRD).Deploy(ctx)).To(Succeed())
 					Expect(component.OpWait(persesCRD).Deploy(ctx)).To(Succeed())
+					Expect(component.OpWait(victoriaCRD).Deploy(ctx)).To(Succeed())
 					Expect(component.OpWait(extensionCRD).Deploy(ctx)).To(Succeed())
 					Expect(component.OpWait(openTelemetryCRD).Deploy(ctx)).To(Succeed())
 
@@ -654,6 +700,7 @@ var _ = Describe("Seed controller tests", func() {
 						Expect(fluentCRD.Destroy(ctx)).To(Succeed())
 						Expect(prometheusCRD.Destroy(ctx)).To(Succeed())
 						Expect(persesCRD.Destroy(ctx)).To(Succeed())
+						Expect(victoriaCRD.Destroy(ctx)).To(Succeed())
 						Expect(extensionCRD.Destroy(ctx)).To(Succeed())
 						Expect(openTelemetryCRD.Destroy(ctx)).To(Succeed())
 					})
@@ -663,6 +710,8 @@ var _ = Describe("Seed controller tests", func() {
 					Eventually(func() error {
 						return testClient.Get(ctx, client.ObjectKey{Name: "gardenlet-vpa", Namespace: testNamespace.Name}, &vpaautoscalingv1.VerticalPodAutoscaler{})
 					}).WithTimeout(kubernetesutils.WaitTimeout).Should(Succeed())
+
+					patchPlutonoMRHealth("plutono-seed-config-only")
 				}
 
 				controllerRegistrationList := &gardencorev1beta1.ControllerRegistrationList{}
@@ -673,11 +722,16 @@ var _ = Describe("Seed controller tests", func() {
 					return gardenerutils.RequiredExtensionsReady(ctx, testClient, seed.Name, gardenerutils.ComputeRequiredExtensionsForSeed(seed, controllerRegistrationList))
 				}).WithTimeout(time.Minute).Should(Succeed())
 
+				By("Verify seed has extension label")
+				Expect(testClient.Get(ctx, client.ObjectKeyFromObject(seed), seed)).To(Succeed())
+				Expect(seed.Labels).To(HaveKeyWithValue("extensions.extensions.gardener.cloud/"+providerName, "true"))
+
 				By("Verify that the seed system components have been deployed")
 				expectedManagedResources := []string{
 					"cluster-autoscaler",
 					"dependency-watchdog-weeder",
 					"dependency-watchdog-prober",
+					"istio-basic-auth-server",
 					"system",
 					"prometheus-cache",
 					"prometheus-seed",
@@ -698,8 +752,14 @@ var _ = Describe("Seed controller tests", func() {
 						"fluent-operator-custom-resources",
 						"prometheus-operator",
 						"perses-operator",
+						"victoria-operator",
 						"opentelemetry-operator",
+						"opentelemetry-collector",
 					)
+					// Add victoria-logs when VictoriaLogsBackend feature gate is enabled
+					if features.DefaultFeatureGate.Enabled(features.VictoriaLogsBackend) {
+						expectedManagedResources = append(expectedManagedResources, "victoria-logs")
+					}
 				} else {
 					expectedManagedResources = append(expectedManagedResources,
 						"nginx-ingress-seed",
@@ -863,6 +923,7 @@ var _ = Describe("Seed controller tests", func() {
 					test(true)
 				})
 			})
+
 		})
 	})
 })
@@ -879,6 +940,6 @@ func waitUntilLoadBalancerIsReadyInTest(_ context.Context, _ logr.Logger, _ clie
 	return "someingress.example.com", nil
 }
 
-func waitUntilExtensionObjectReadyInTest(_ context.Context, _ client.Client, _ logr.Logger, _ extensionsv1alpha1.Object, _ string, _, _, _ time.Duration, _ func() error) error {
+func waitUntilExtensionObjectReadyInTest(_ context.Context, _ client.Client, _ logr.Logger, _ extensionsv1alpha1.Object, _ string, _, _, _ time.Duration, _ func(context.Context) error) error {
 	return nil
 }

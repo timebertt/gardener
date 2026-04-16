@@ -41,13 +41,13 @@ const (
 	ModeURLWithServiceName = "url-service"
 )
 
-// PrefixedName does not prefix the component name if it starts with "gardener-". Otherwise, it prefixes it with
-// "gardener-extension-".
-func PrefixedName(componentName string) string {
-	if !strings.HasPrefix(componentName, "gardener-") {
-		return NamePrefix + componentName
+// PrefixedName does not prefix the component name if it starts with "gardener-" and if doNotPrefix is set to true.
+// Otherwise, it prefixes it with "gardener-extension-".
+func PrefixedName(componentName string, doNotPrefix bool) string {
+	if doNotPrefix || strings.HasPrefix(componentName, "gardener-") {
+		return componentName
 	}
-	return componentName
+	return NamePrefix + componentName
 }
 
 // Configs contains mutating and validating webhook configurations.
@@ -89,10 +89,12 @@ func (c *Configs) HasWebhookConfig() bool {
 func BuildWebhookConfigs(
 	webhooks []*Webhook,
 	c client.Client,
-	namespace, providerName string,
+	namespace string,
+	providerName string, doNotPrefixComponentName bool,
 	servicePort int,
 	mode, url string,
 	caBundle []byte,
+	mergeShootWebhooksIntoSeedWebhooks bool,
 ) (
 	seedWebhookConfigs Configs,
 	shootWebhookConfigs Configs,
@@ -110,7 +112,7 @@ func BuildWebhookConfigs(
 
 	for _, webhook := range webhooks {
 		var (
-			name  = NamePrefix + providerName
+			name  = PrefixedName(providerName, doNotPrefixComponentName)
 			rules []admissionregistrationv1.RuleWithOperations
 		)
 
@@ -134,11 +136,27 @@ func BuildWebhookConfigs(
 				rules,
 				getFailurePolicy(admissionregistrationv1.Fail, webhook.FailurePolicy),
 				&exact,
-				BuildClientConfigFor(webhook.Path, namespace, providerName, servicePort, mode, url, caBundle),
+				BuildClientConfigFor(webhook.Path, namespace, providerName, doNotPrefixComponentName, servicePort, mode, url, caBundle),
 				&sideEffects,
 			)
 
 		case TargetShoot:
+			// When merging shoot webhooks into seed webhooks (self-hosted shoot), additionally register
+			// them in the seed webhook config so the shoot kube-apiserver can reach them.
+			if mergeShootWebhooksIntoSeedWebhooks {
+				createAndAddToWebhookConfig(
+					&seedWebhookConfigs,
+					name,
+					*webhook,
+					providerName,
+					rules,
+					getFailurePolicy(admissionregistrationv1.Ignore, webhook.FailurePolicy),
+					&exact,
+					BuildClientConfigFor(webhook.Path, namespace, providerName, doNotPrefixComponentName, servicePort, mode, url, nil),
+					&sideEffects,
+				)
+			}
+
 			createAndAddToWebhookConfig(
 				&shootWebhookConfigs,
 				name+NameSuffixShoot,
@@ -147,7 +165,7 @@ func BuildWebhookConfigs(
 				rules,
 				getFailurePolicy(admissionregistrationv1.Ignore, webhook.FailurePolicy),
 				&exact,
-				BuildClientConfigFor(webhook.Path, namespace, providerName, servicePort, shootMode, url, caBundle),
+				BuildClientConfigFor(webhook.Path, namespace, providerName, doNotPrefixComponentName, servicePort, shootMode, url, caBundle),
 				&sideEffects,
 			)
 		default:
@@ -332,7 +350,7 @@ func buildRule(c client.Client, t Type) (*admissionregistrationv1.RuleWithOperat
 }
 
 // BuildClientConfigFor builds the client config for a webhook.
-func BuildClientConfigFor(webhookPath string, namespace, componentName string, servicePort int, mode, url string, caBundle []byte) admissionregistrationv1.WebhookClientConfig {
+func BuildClientConfigFor(webhookPath string, namespace, componentName string, doNotPrefixComponentName bool, servicePort int, mode, url string, caBundle []byte) admissionregistrationv1.WebhookClientConfig {
 	var (
 		path         = webhookPath
 		clientConfig = admissionregistrationv1.WebhookClientConfig{
@@ -349,12 +367,13 @@ func BuildClientConfigFor(webhookPath string, namespace, componentName string, s
 	case ModeURL:
 		clientConfig.URL = ptr.To(fmt.Sprintf("https://%s%s", url, path))
 	case ModeURLWithServiceName:
-		clientConfig.URL = ptr.To(fmt.Sprintf("https://%s.%s:%d%s", PrefixedName(componentName), namespace, servicePort, path))
+		clientConfig.URL = ptr.To(fmt.Sprintf("https://%s.%s:%d%s", PrefixedName(componentName, doNotPrefixComponentName), namespace, servicePort, path))
 	case ModeService:
 		clientConfig.Service = &admissionregistrationv1.ServiceReference{
 			Namespace: namespace,
-			Name:      PrefixedName(componentName),
+			Name:      PrefixedName(componentName, doNotPrefixComponentName),
 			Path:      &path,
+			Port:      ptr.To(int32(servicePort)), // #nosec: G115 - Port is validated on Kubernetes level
 		}
 	}
 

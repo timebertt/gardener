@@ -8,10 +8,12 @@ import (
 	"context"
 	"fmt"
 
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 )
 
@@ -80,12 +82,15 @@ func DeleteSecretByObjectReference(ctx context.Context, c client.Client, ref *co
 	return client.IgnoreNotFound(c.Delete(ctx, secret))
 }
 
-// GetCredentialsByObjectReference returns the credentials, being Secret or WorkloadIdentity, referenced by the given object reference.
-func GetCredentialsByObjectReference(ctx context.Context, c client.Client, ref corev1.ObjectReference) (client.Object, error) {
+// GetCredentialsByObjectReference returns the credentials, being Secret, InternalSecret, or WorkloadIdentity,
+// referenced by the given object reference.
+func GetCredentialsByObjectReference(ctx context.Context, c client.Reader, ref corev1.ObjectReference) (client.Object, error) {
 	var obj client.Object
 	switch ref.GroupVersionKind() {
 	case corev1.SchemeGroupVersion.WithKind("Secret"):
 		obj = &corev1.Secret{}
+	case gardencorev1beta1.SchemeGroupVersion.WithKind("InternalSecret"):
+		obj = &gardencorev1beta1.InternalSecret{}
 	case securityv1alpha1.SchemeGroupVersion.WithKind("WorkloadIdentity"):
 		obj = &securityv1alpha1.WorkloadIdentity{}
 	default:
@@ -96,4 +101,14 @@ func GetCredentialsByObjectReference(ctx context.Context, c client.Client, ref c
 		return nil, err
 	}
 	return obj, nil
+}
+
+// GetCredentialsByCrossVersionObjectReference returns the credentials, being Secret or WorkloadIdentity, referenced by the [autoscalingv1.CrossVersionObjectReference] parameter.
+func GetCredentialsByCrossVersionObjectReference(ctx context.Context, c client.Reader, ref autoscalingv1.CrossVersionObjectReference, namespace string) (client.Object, error) {
+	return GetCredentialsByObjectReference(ctx, c, corev1.ObjectReference{
+		APIVersion: ref.APIVersion,
+		Kind:       ref.Kind,
+		Name:       ref.Name,
+		Namespace:  namespace,
+	})
 }

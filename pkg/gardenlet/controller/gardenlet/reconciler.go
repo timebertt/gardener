@@ -14,21 +14,20 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/api/seedmanagement/v1alpha1/helper"
+	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
-	"github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controller/gardenletdeployer"
-	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
-	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	gardenletutils "github.com/gardener/gardener/pkg/utils/gardener/gardenlet"
 	"github.com/gardener/gardener/pkg/utils/oci"
 )
@@ -39,7 +38,7 @@ type Reconciler struct {
 	GardenRESTConfig *rest.Config
 	SeedClientSet    kubernetes.Interface
 	Config           gardenletconfigv1alpha1.GardenletConfiguration
-	Recorder         record.EventRecorder
+	Recorder         events.EventRecorder
 	Clock            clock.Clock
 	GardenNamespace  string
 	HelmRegistry     oci.Interface
@@ -65,7 +64,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	_, gardenletConfig, err := helper.ExtractSeedTemplateAndGardenletConfig(gardenlet.Name, &gardenlet.Spec.Config)
 	if err != nil {
-		r.Recorder.Eventf(gardenlet, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, err.Error())
+		r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, err.Error())
 		updateCondition(r.Clock, status, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconcileError, err.Error())
 		if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
 			log.Error(updateErr, "Could not update status")
@@ -77,7 +76,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	if !strings.HasPrefix(gardenlet.Name, gardenletutils.ResourcePrefixSelfHostedShoot) {
 		seed, err = gardenletdeployer.GetSeed(ctx, r.GardenClient, gardenlet.Name)
 		if err != nil {
-			r.Recorder.Eventf(gardenlet, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, err.Error())
+			r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, err.Error())
 			updateCondition(r.Clock, status, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconcileError, err.Error())
 			if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
 				log.Error(updateErr, "Could not update status")
@@ -87,9 +86,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	log.Info("Deploying gardenlet")
-	r.Recorder.Eventf(gardenlet, corev1.EventTypeNormal, gardencorev1beta1.EventReconciling, "Deploying gardenlet")
+	r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeNormal, gardencorev1beta1.EventReconciling, gardencorev1beta1.EventActionReconcile, "Deploying gardenlet")
 	if err := r.deployGardenlet(ctx, log, gardenlet, seed, gardenletConfig); err != nil {
-		r.Recorder.Eventf(gardenlet, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, err.Error())
+		r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeWarning, gardencorev1beta1.EventReconcileError, gardencorev1beta1.EventActionReconcile, err.Error())
 		updateCondition(r.Clock, status, gardencorev1beta1.ConditionFalse, gardencorev1beta1.EventReconcileError, err.Error())
 		if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
 			log.Error(updateErr, "Could not update status")
@@ -98,7 +97,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	log.V(1).Info("Reconciliation finished")
-	r.Recorder.Eventf(gardenlet, corev1.EventTypeNormal, gardencorev1beta1.EventReconciled, "Gardenlet has been deployed")
+	r.Recorder.Eventf(gardenlet, nil, corev1.EventTypeNormal, gardencorev1beta1.EventReconciled, gardencorev1beta1.EventActionReconcile, "Gardenlet has been deployed")
 	updateCondition(r.Clock, status, gardencorev1beta1.ConditionTrue, gardencorev1beta1.EventReconciled, "Gardenlet with chart from "+gardenlet.Spec.Deployment.Helm.OCIRepository.GetURL()+" has been deployed")
 	if updateErr := r.updateStatus(ctx, gardenlet, status); updateErr != nil {
 		log.Error(updateErr, "Could not update status")
@@ -119,12 +118,12 @@ func (r *Reconciler) deployGardenlet(
 		return fmt.Errorf("failed preparing gardenlet chart values: %w", err)
 	}
 
-	pullSecretNamespace := metav1.NamespaceSystem
+	secretNamespace := metav1.NamespaceSystem
 	if seed != nil {
-		pullSecretNamespace = gardenerutils.ComputeGardenNamespace(seed.Name)
+		secretNamespace = gardenlet.Namespace
 	}
 
-	subCtx := context.WithValue(ctx, oci.ContextKeyPullSecretNamespace, pullSecretNamespace)
+	subCtx := context.WithValue(ctx, oci.ContextKeySecretNamespace, secretNamespace)
 	archive, err := r.HelmRegistry.Pull(subCtx, &gardenlet.Spec.Deployment.Helm.OCIRepository)
 	if err != nil {
 		return fmt.Errorf("failed pulling Helm chart from OCI repository: %w", err)
@@ -153,7 +152,7 @@ func (r *Reconciler) prepareGardenletChartValues(
 	seed *gardencorev1beta1.Seed,
 	gardenletConfig *gardenletconfigv1alpha1.GardenletConfiguration,
 ) (
-	map[string]interface{},
+	map[string]any,
 	error,
 ) {
 	values, err := gardenletdeployer.PrepareGardenletChartValues(
@@ -178,10 +177,24 @@ func (r *Reconciler) prepareGardenletChartValues(
 
 	if imageVector := gardenlet.Spec.Deployment.ImageVectorOverwrite; imageVector != nil {
 		values["imageVectorOverwrite"] = *imageVector
+	} else {
+		// The values returned by gardenletdeployer.PrepareGardenletChartValues always include the
+		// `imageVectorOverwrite` key. It is populated from the parent gardenlet’s image vector overwrite (see
+		// https://github.com/gardener/gardener/blob/485c25124ea536e4610c627109017dd34d434921/pkg/controller/gardenletdeployer/valueshelper.go#L156-L164).
+		//
+		// In this controller there is no parent gardenlet. The helper code implicitly treats the existing gardenlet
+		// deployment as its own parent. Consequently, if we did not remove the `imageVectorOverwrite` key here, it
+		// would be impossible to clear this configuration once `.spec.deployment.imageVectorOverwrite` is unset on the
+		// Gardenlet resource.
+		delete(values, "imageVectorOverwrite")
 	}
 
 	if imageVector := gardenlet.Spec.Deployment.ComponentImageVectorOverwrite; imageVector != nil {
 		values["componentImageVectorOverwrites"] = *imageVector
+	} else {
+		// Similar to the <imageVectorOverwrite> (see above), we have to also get rid of the
+		// <componentImageVectorOverwrites> in case it is no longer specified in the `Gardenlet` resource.
+		delete(values, "componentImageVectorOverwrites")
 	}
 
 	return values, nil

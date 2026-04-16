@@ -76,7 +76,7 @@ func New(
 
 		Clock:               &clock.RealClock{},
 		WaitInterval:        5 * time.Second,
-		WaitSevereThreshold: 30 * time.Second,
+		WaitSevereThreshold: 6 * time.Minute,
 		WaitTimeout:         15 * time.Minute,
 		SSHDial:             sshutils.Dial,
 
@@ -129,7 +129,7 @@ func (b *Bastion) Wait(ctx context.Context) error {
 		b.WaitInterval,
 		b.WaitSevereThreshold,
 		b.WaitTimeout,
-		func() error {
+		func(ctx context.Context) error {
 			return b.connect(ctx)
 		},
 	)
@@ -198,14 +198,14 @@ func (b *Bastion) ingressPolicies() []extensionsv1alpha1.BastionIngressPolicy {
 const bastionUser = "gardener"
 
 func userDataForBastion(sshPublicKey []byte) []byte {
-	return []byte(fmt.Sprintf(`#!/bin/bash -eu
+	return fmt.Appendf(nil, `#!/bin/bash -eu
 
 id %[1]s || useradd %[1]s -mU
 mkdir -p /home/%[1]s/.ssh
 echo "%[2]s" > /home/%[1]s/.ssh/authorized_keys
 chown %[1]s:%[1]s /home/%[1]s/.ssh/authorized_keys
 systemctl start sshd || systemctl start ssh
-`, bastionUser, sshPublicKey))
+`, bastionUser, sshPublicKey)
 }
 
 // connect is called after the Bastion object has been reconciled successfully. It opens an SSH connection to the

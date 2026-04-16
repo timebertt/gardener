@@ -33,6 +33,7 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	operatorv1alpha1 "github.com/gardener/gardener/pkg/apis/operator/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
 	. "github.com/gardener/gardener/pkg/component/gardener/dashboard"
 	operatorclient "github.com/gardener/gardener/pkg/operator/client"
@@ -197,7 +198,8 @@ var _ = Describe("GardenerDashboard", func() {
 				Data: make(map[string]string),
 			}
 
-			configRaw := `port: 8080
+			var configRaw strings.Builder
+			configRaw.WriteString(`port: 8080
 logFormat: text
 logLevel: ` + logLevel + `
 apiServerUrl: https://` + apiServerURL + `
@@ -207,26 +209,26 @@ readinessProbe:
 unreachableSeeds:
   matchLabels:
     seed.gardener.cloud/network: private
-websocketAllowedOrigins:`
+websocketAllowedOrigins:`)
 
 			for _, domain := range ingressDomains {
-				configRaw += `
-  - https://dashboard.` + domain
+				configRaw.WriteString(`
+  - https://dashboard.` + domain)
 			}
-			configRaw += "\n"
+			configRaw.WriteString("\n")
 
 			if terminal != nil {
-				configRaw += `contentSecurityPolicy:
+				configRaw.WriteString(`contentSecurityPolicy:
   connectSrc:
-    - '''self'''`
+    - '''self'''`)
 
 				for _, host := range terminal.AllowedHosts {
-					configRaw += `
+					configRaw.WriteString(`
     - wss://` + host + `
-    - https://` + host
+    - https://` + host)
 				}
 
-				configRaw += `
+				configRaw.WriteString(`
 terminal:
   container:
     image: ` + terminal.Container.Image + `
@@ -243,48 +245,48 @@ terminal:
 frontend:
   features:
     terminalEnabled: true
-`
+`)
 			}
 
 			if oidc != nil {
-				configRaw += `oidc:
+				configRaw.WriteString(`oidc:
   issuer: ` + oidc.IssuerURL + `
   sessionLifetime: 43200
-  redirect_uris:`
+  redirect_uris:`)
 
 				for _, domain := range ingressDomains {
-					configRaw += `
-    - https://dashboard.` + domain + `/auth/callback`
+					configRaw.WriteString(`
+    - https://dashboard.` + domain + `/auth/callback`)
 				}
 
-				configRaw += `
+				configRaw.WriteString(`
   scope: ` + strings.Join(append([]string{"openid", "email"}, oidc.AdditionalScopes...), " ") + `
   rejectUnauthorized: true
   public:
     clientId: ` + oidc.ClientIDPublic + `
     usePKCE: true
-`
+`)
 			}
 
 			if gitHub != nil {
-				configRaw += `gitHub:
+				configRaw.WriteString(`gitHub:
   apiUrl: ` + gitHub.APIURL + `
   org: ` + gitHub.Organisation + `
-  repository: ` + gitHub.Repository
+  repository: ` + gitHub.Repository)
 
 				if gitHub.PollInterval != nil {
-					configRaw += `
-  pollIntervalSeconds: ` + fmt.Sprintf("%d", int64(gitHub.PollInterval.Seconds()))
+					configRaw.WriteString(`
+  pollIntervalSeconds: ` + fmt.Sprintf("%d", int64(gitHub.PollInterval.Seconds())))
 				}
 
-				configRaw += `
+				configRaw.WriteString(`
   syncThrottleSeconds: 20
   syncConcurrency: 10
-`
+`)
 			}
 
 			if frontendConfigMapName != nil {
-				configRaw += `frontend:
+				configRaw.WriteString(`frontend:
   branding:
     some: branding
   foo:
@@ -292,7 +294,7 @@ frontend:
   landingPageUrl: landing-page-url
   themes:
     some: themes
-`
+`)
 			}
 
 			loginTypes := "null"
@@ -311,7 +313,7 @@ frontend:
 
 			loginConfigRaw := `{"loginTypes":` + loginTypes + frontend + `}`
 
-			obj.Data["config.yaml"] = configRaw
+			obj.Data["config.yaml"] = configRaw.String()
 			obj.Data["login-config.json"] = loginConfigRaw
 			utilruntime.Must(kubernetesutils.MakeUnique(obj))
 			return obj
@@ -567,7 +569,7 @@ frontend:
 				})
 				obj.Spec.Template.Spec.Containers[0].VolumeMounts = append(obj.Spec.Template.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
 					Name:      "gardener-dashboard-assets",
-					MountPath: "/app/public/static/assets",
+					MountPath: "/app/public/static/custom-assets",
 				})
 			}
 
@@ -646,12 +648,16 @@ frontend:
 				ResourcePolicy: &vpaautoscalingv1.PodResourcePolicy{
 					ContainerPolicies: []vpaautoscalingv1.ContainerResourcePolicy{
 						{
-							ContainerName:    "*",
+							ContainerName:    "gardener-dashboard",
 							ControlledValues: ptr.To(vpaautoscalingv1.ContainerControlledValuesRequestsOnly),
 							MinAllowed: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse("10m"),
 								corev1.ResourceMemory: resource.MustParse("64Mi"),
 							},
+						},
+						{
+							ContainerName: "*",
+							Mode:          ptr.To(vpaautoscalingv1.ContainerScalingModeOff),
 						},
 					},
 				},
@@ -751,7 +757,12 @@ frontend:
 				},
 				{
 					APIGroups: []string{"core.gardener.cloud"},
-					Resources: []string{"quotas", "projects", "shoots", "controllerregistrations"},
+					Resources: []string{"quotas", "projects", "shoots", "controllerregistrations", "namespacedcloudprofiles"},
+					Verbs:     []string{"list", "watch"},
+				},
+				{
+					APIGroups: []string{seedmanagementv1alpha1.GroupName},
+					Resources: []string{"managedseeds"},
 					Verbs:     []string{"list", "watch"},
 				},
 				{

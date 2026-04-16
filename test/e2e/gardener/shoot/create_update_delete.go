@@ -17,9 +17,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
@@ -36,8 +36,8 @@ import (
 const (
 	// Explicitly use one version below the latest supported minor version
 	// so that Kubernetes version update test can be performed.
-	kubernetesTargetVersion = "1.32.0"
-	kubernetesSourceVersion = "1.31.1"
+	kubernetesTargetVersion = "1.33"
+	kubernetesSourceVersion = "1.32"
 )
 
 var _ = Describe("Shoot Tests", Label("Shoot", "default"), func() {

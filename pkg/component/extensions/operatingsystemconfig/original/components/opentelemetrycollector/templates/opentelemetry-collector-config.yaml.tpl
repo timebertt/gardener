@@ -15,11 +15,26 @@ receivers:
     start_at: beginning
     storage: file_storage
     matches:
-      - _TRANSPORT: kernel
+      - SYSLOG_IDENTIFIER: kernel
       - _SYSTEMD_UNIT: kubelet.service
       - _SYSTEMD_UNIT: containerd.service
       - _SYSTEMD_UNIT: gardener-node-agent.service
+    # A cleaner approach would be to use the 'identifier' field instead of the
+    # 'matches' field. However, the 'identifier' field uses the 'SYSLOG_IDENTIFIER'
+    # journal field, which does not include the '-service' suffix of systemd units.
+    # Due to backwards compatibility, we want to continue representing the 'unit'
+    # field with the full systemd unit name (including the '-service' suffix).
+    # Due to this, it is required we filter based on the '_SYSTEMD_UNIT' field.
+    # We can then rely on it to set the 'resource.unit' field correctly.
+    # TODO(rrhubenov): Reimplement this using the 'identifier' field once
+    # we move from 'Vali' to 'VictoriaLogs'. Revisit whether 
+    # - we still want to call the field 'unit'
+    # - we can remove the '-service' suffix
     operators:
+      - type: move
+        if: 'body.SYSLOG_IDENTIFIER == "kernel"'
+        from: body.SYSLOG_IDENTIFIER
+        to:  body._SYSTEMD_UNIT
       - type: move
         from: body._SYSTEMD_UNIT
         to: resource.unit
@@ -41,7 +56,13 @@ receivers:
 
 processors:
   batch:
+    send_batch_size: 2000
+    send_batch_max_size: 4000
     timeout: 10s
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: {{ .memoryLimitMiB }}
 
   # Include resource attributes from the Kubernetes environment.
   # The Shoot KAPI server is queried for pods in the kube-system namespace
@@ -115,9 +136,9 @@ service:
   pipelines:
     logs/journal:
       receivers: [journald/journal]
-      processors: [resource/journal, batch]
+      processors: [memory_limiter, resource/journal, batch]
       exporters: [otlp]
     logs/pods:
       receivers: [filelog/pods]
-      processors: [k8sattributes, filter/drop_non_gardener, resource/pod_labels, batch]
+      processors: [memory_limiter, k8sattributes, filter/drop_non_gardener, resource/pod_labels, batch]
       exporters: [otlp]

@@ -14,8 +14,12 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 )
 
-// DefaultReconciliationTimeout is the default timeout for the context of reconciliation functions.
-const DefaultReconciliationTimeout = 3 * time.Minute
+const (
+	// DefaultReconciliationTimeout is the default timeout for the context of reconciliation functions.
+	DefaultReconciliationTimeout = 3 * time.Minute
+	// DefaultRequeueAfterDuration is the default duration to wait before requeuing a reconciliation request.
+	DefaultRequeueAfterDuration = 5 * time.Millisecond
+)
 
 const separator = ","
 
@@ -82,7 +86,7 @@ func setTaskAnnotations(annotations map[string]string, tasks []string) {
 func GetChildReconciliationContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	t := min(timeout, DefaultReconciliationTimeout)
 
-	return context.WithTimeout(ctx, t/2)
+	return context.WithTimeout(ctx, t/2) // #nosec: G118 -- cancel function is returned to the caller.
 }
 
 // GetControllerInstallationNames returns a list of the names of the controllerinstallations passed.

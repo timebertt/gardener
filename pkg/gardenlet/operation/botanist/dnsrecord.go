@@ -9,8 +9,8 @@ import (
 
 	"k8s.io/utils/ptr"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/component"
 	extensionsdnsrecord "github.com/gardener/gardener/pkg/component/extensions/dnsrecord"
 	"github.com/gardener/gardener/pkg/controllerutils"
@@ -26,14 +26,20 @@ func (b *Botanist) DefaultExternalDNSRecord() extensionsdnsrecord.Interface {
 		TTL:               b.dnsRecordTTLSeconds(),
 		AnnotateOperation: controllerutils.HasTask(b.Shoot.GetInfo().Annotations, v1beta1constants.ShootTaskDeployDNSRecordExternal) || b.IsRestorePhase(),
 		IPStack:           gardenerutils.GetIPStackForShoot(b.Shoot.GetInfo()),
+		Labels: map[string]string{
+			v1beta1constants.LabelRole:  v1beta1constants.LabelDNSRecordExternal,
+			v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
+		},
 	}
+
+	var credentialsDeployer extensionsdnsrecord.CredentialsDeployFunc
 
 	if b.NeedsExternalDNS() {
 		values.Type = b.Shoot.ExternalDomain.Provider
 		if b.Shoot.ExternalDomain.Zone != "" {
 			values.Zone = &b.Shoot.ExternalDomain.Zone
 		}
-		values.SecretData = b.Shoot.ExternalDomain.SecretData
+		credentialsDeployer = extensionsdnsrecord.CredentialsDeployerFromCredentials(b.Shoot.ExternalDomain.Credentials, b.Shoot.GetInfo())
 		values.DNSName = v1beta1helper.GetAPIServerDomain(*b.Shoot.ExternalClusterDomain)
 	}
 
@@ -44,6 +50,7 @@ func (b *Botanist) DefaultExternalDNSRecord() extensionsdnsrecord.Interface {
 		extensionsdnsrecord.DefaultInterval,
 		extensionsdnsrecord.DefaultSevereThreshold,
 		extensionsdnsrecord.DefaultTimeout,
+		credentialsDeployer,
 	)
 }
 
@@ -59,14 +66,20 @@ func (b *Botanist) DefaultInternalDNSRecord() extensionsdnsrecord.Interface {
 			controllerutils.HasTask(b.Shoot.GetInfo().Annotations, v1beta1constants.ShootTaskDeployDNSRecordInternal) ||
 			b.IsRestorePhase(),
 		IPStack: gardenerutils.GetIPStackForShoot(b.Shoot.GetInfo()),
+		Labels: map[string]string{
+			v1beta1constants.LabelRole:  v1beta1constants.LabelDNSRecordInternal,
+			v1beta1constants.GardenRole: v1beta1constants.GardenRoleControlPlane,
+		},
 	}
+
+	var credentialsDeployer extensionsdnsrecord.CredentialsDeployFunc
 
 	if b.NeedsInternalDNS() {
 		values.Type = b.Garden.InternalDomain.Provider
 		if b.Garden.InternalDomain.Zone != "" {
 			values.Zone = &b.Garden.InternalDomain.Zone
 		}
-		values.SecretData = b.Garden.InternalDomain.SecretData
+		credentialsDeployer = extensionsdnsrecord.CredentialsDeployerFromCredentials(b.Garden.InternalDomain.Credentials, b.Shoot.GetInfo())
 		values.DNSName = v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain)
 	}
 
@@ -77,6 +90,7 @@ func (b *Botanist) DefaultInternalDNSRecord() extensionsdnsrecord.Interface {
 		extensionsdnsrecord.DefaultInterval,
 		extensionsdnsrecord.DefaultSevereThreshold,
 		extensionsdnsrecord.DefaultTimeout,
+		credentialsDeployer,
 	)
 }
 

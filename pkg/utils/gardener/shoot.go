@@ -28,18 +28,18 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/apis/core"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	v1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
+	"github.com/gardener/gardener/pkg/apis/utils/timewindow"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/utils"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/secrets"
-	"github.com/gardener/gardener/pkg/utils/timewindow"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 )
 
@@ -164,7 +164,7 @@ func GetShootNameFromOwnerReferences(objectMeta metav1.Object) string {
 }
 
 // NodeLabelsForWorkerPool returns a combined map of all user-specified and gardener-managed node labels.
-func NodeLabelsForWorkerPool(workerPool gardencorev1beta1.Worker, nodeLocalDNSEnabled bool, gardenerNodeAgentSecretName string) map[string]string {
+func NodeLabelsForWorkerPool(workerPool gardencorev1beta1.Worker, nodeLocalDNSEnabled bool, gardenerNodeAgentSecretName, region string) map[string]string {
 	// copy worker pool labels map
 	labels := utils.MergeStringMaps(workerPool.Labels)
 	if labels == nil {
@@ -193,6 +193,10 @@ func NodeLabelsForWorkerPool(workerPool gardencorev1beta1.Worker, nodeLocalDNSEn
 				labels[key] = "true"
 			}
 		}
+	}
+
+	if region != "" {
+		labels[corev1.LabelTopologyRegion] = region
 	}
 
 	return labels
@@ -317,6 +321,7 @@ type AccessSecret struct {
 	targetSecretName        string
 	targetSecretNamespace   string
 	serviceAccountLabels    map[string]string
+	serviceAccountNamespace string
 }
 
 // NewShootAccessSecret returns a new AccessSecret object and initializes it with an empty corev1.Secret object
@@ -363,6 +368,14 @@ func (s *AccessSecret) WithServiceAccountLabels(labels map[string]string) *Acces
 	return s
 }
 
+// WithServiceAccountNamespace overrides the namespace of the ServiceAccount to be created. If empty, the
+// TokenRequestor's TargetNamespace is used (or kube-system for shoot class). Use this when the ServiceAccount must
+// live in a different namespace than the TokenRequestor's default TargetNamespace.
+func (s *AccessSecret) WithServiceAccountNamespace(namespace string) *AccessSecret {
+	s.serviceAccountNamespace = namespace
+	return s
+}
+
 // WithTokenExpirationDuration sets the tokenExpirationDuration field of the AccessSecret.
 func (s *AccessSecret) WithTokenExpirationDuration(duration string) *AccessSecret {
 	s.tokenExpirationDuration = duration
@@ -393,6 +406,8 @@ func (s *AccessSecret) Reconcile(ctx context.Context, c client.Client) error {
 
 		if s.Class == resourcesv1alpha1.ResourceManagerClassShoot {
 			metav1.SetMetaDataAnnotation(&s.Secret.ObjectMeta, resourcesv1alpha1.ServiceAccountNamespace, metav1.NamespaceSystem)
+		} else if s.serviceAccountNamespace != "" {
+			metav1.SetMetaDataAnnotation(&s.Secret.ObjectMeta, resourcesv1alpha1.ServiceAccountNamespace, s.serviceAccountNamespace)
 		}
 
 		if s.serviceAccountLabels != nil {
@@ -630,29 +645,28 @@ func ConstructExternalDomain(ctx context.Context, c client.Reader, shoot *garden
 		externalDomain.Provider = core.DNSUnmanaged
 
 	case defaultDomain != nil:
-		externalDomain.SecretData = defaultDomain.SecretData
+		externalDomain.Credentials = defaultDomain.Credentials
 		externalDomain.Provider = defaultDomain.Provider
 		externalDomain.Zone = defaultDomain.Zone
 
 	case primaryProvider != nil:
-		if primaryProvider.SecretName != nil {
-			secret := &corev1.Secret{}
-			if err := c.Get(ctx, client.ObjectKey{Namespace: shoot.Namespace, Name: *primaryProvider.SecretName}, secret); err != nil {
-				return nil, fmt.Errorf("could not get dns provider secret %q: %+v", *primaryProvider.SecretName, err)
+		if primaryProvider.CredentialsRef != nil {
+			credentials, err := kubernetesutils.GetCredentialsByCrossVersionObjectReference(ctx, c, *primaryProvider.CredentialsRef, shoot.Namespace)
+			if err != nil {
+				return nil, fmt.Errorf("could not get dns provider credentials from reference %q: %w", primaryProvider.CredentialsRef.String(), err)
 			}
-			externalDomain.SecretData = secret.Data
+			externalDomain.Credentials = credentials
 		} else {
 			if shootCredentials == nil {
 				return nil, fmt.Errorf("default domain is not present, secret for primary dns provider is required")
 			}
 			switch creds := shootCredentials.(type) {
 			case *corev1.Secret:
-				externalDomain.SecretData = creds.Data
+				externalDomain.Credentials = creds
 			case *securityv1alpha1.WorkloadIdentity:
-				// TODO(dimityrmirchev): This code should eventually handle shoot credentials being of type WorkloadIdentity
-				return nil, fmt.Errorf("shoot credentials of type WorkloadIdentity cannot be used as domain secret")
+				externalDomain.Credentials = creds
 			default:
-				return nil, fmt.Errorf("unexpected shoot credentials type")
+				return nil, fmt.Errorf("unexpected shoot credentials type %T", creds)
 			}
 		}
 		if primaryProvider.Type != nil {
@@ -707,6 +721,9 @@ func ComputeRequiredExtensionsForShoot(shoot *gardencorev1beta1.Shoot, seed *gar
 				requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.ContainerRuntimeResource, cr.Type))
 			}
 		}
+		if pool.ControlPlane != nil && pool.ControlPlane.Exposure != nil {
+			requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.SelfHostedShootExposureResource, *pool.ControlPlane.Exposure.Extension.Type))
+		}
 	}
 
 	if shoot.Spec.DNS != nil {
@@ -723,46 +740,28 @@ func ComputeRequiredExtensionsForShoot(shoot *gardencorev1beta1.Shoot, seed *gar
 		requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.DNSRecordResource, internalDomain.Provider))
 	}
 
-	if externalDomain != nil && externalDomain.Provider != core.DNSUnmanaged {
+	if externalDomain != nil && externalDomain.Provider != core.DNSUnmanaged && externalDomain.Provider != "" {
 		requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.DNSRecordResource, externalDomain.Provider))
 	}
 
-	for extensionType := range ComputeEnabledTypesForKindExtension(shoot, controllerRegistrationList) {
+	for extensionType := range ComputeEnabledTypesForKindExtensionShoot(shoot, controllerRegistrationList) {
 		requiredExtensions.Insert(ExtensionsID(extensionsv1alpha1.ExtensionResource, extensionType))
 	}
 
 	return requiredExtensions
 }
 
-// ComputeEnabledTypesForKindExtension computes the enabled extension types for a given Shoot and ControllerRegistrationList.
+// ComputeEnabledTypesForKindExtensionShoot computes the enabled extension types for a given Shoot and ControllerRegistrationList.
 // It considers extensions explicitly enabled or disabled in the Shoot specification and those automatically enabled
 // based on the ControllerRegistration resources.
-func ComputeEnabledTypesForKindExtension(shoot *gardencorev1beta1.Shoot, controllerRegistrationList *gardencorev1beta1.ControllerRegistrationList) sets.Set[string] {
-	var (
-		enabledTypes  = sets.New[string]()
-		disabledTypes = sets.New[string]()
-	)
-
-	for _, extension := range shoot.Spec.Extensions {
-		if ptr.Deref(extension.Disabled, false) {
-			disabledTypes.Insert(extension.Type)
-		} else {
-			enabledTypes.Insert(extension.Type)
-		}
-	}
-
-	for _, controllerRegistration := range controllerRegistrationList.Items {
-		for _, resource := range controllerRegistration.Spec.Resources {
-			if extensionEnabledForCluster(gardencorev1beta1.ClusterTypeShoot, resource, disabledTypes) {
-				if v1beta1helper.IsWorkerless(shoot) && !ptr.Deref(resource.WorkerlessSupported, false) {
-					continue
-				}
-				enabledTypes.Insert(resource.Type)
-			}
-		}
-	}
-
-	return enabledTypes
+func ComputeEnabledTypesForKindExtensionShoot(shoot *gardencorev1beta1.Shoot, controllerRegistrationList *gardencorev1beta1.ControllerRegistrationList) sets.Set[string] {
+	return computeEnabledTypesForKindExtension(
+		gardencorev1beta1.ClusterTypeShoot,
+		shoot.Spec.Extensions,
+		controllerRegistrationList,
+		func(res gardencorev1beta1.ControllerResource) bool {
+			return !v1beta1helper.IsWorkerless(shoot) || ptr.Deref(res.WorkerlessSupported, false)
+		})
 }
 
 // ExtensionsID returns an identifier for the given extension kind/type.
@@ -847,7 +846,7 @@ func CalculateDataStringForKubeletConfiguration(kubeletConfiguration *gardencore
 		return nil
 	}
 
-	if resources := v1beta1helper.SumResourceReservations(kubeletConfiguration.KubeReserved, kubeletConfiguration.SystemReserved); resources != nil {
+	if resources := kubeletConfiguration.KubeReserved; resources != nil {
 		data = append(data, fmt.Sprintf("%s-%s-%s-%s", resources.CPU, resources.Memory, resources.PID, resources.EphemeralStorage))
 	}
 	if eviction := kubeletConfiguration.EvictionHard; eviction != nil {
@@ -905,20 +904,16 @@ func IsAuthorizeWithSelectorsEnabled(kubeAPIServer *gardencorev1beta1.KubeAPISer
 	}
 
 	// The feature gate is alpha in v1.31 and disabled by default.
-	if versionutils.ConstraintK8sGreaterEqual131.Check(kubernetesVersion) {
-		if kubeAPIServer == nil {
-			return false
-		}
-
-		value, ok := kubeAPIServer.FeatureGates["AuthorizeWithSelectors"]
-		if !ok {
-			return false
-		}
-
-		return value
+	if kubeAPIServer == nil {
+		return false
 	}
 
-	return false
+	value, ok := kubeAPIServer.FeatureGates["AuthorizeWithSelectors"]
+	if !ok {
+		return false
+	}
+
+	return value
 }
 
 // CalculateWorkerPoolHashForInPlaceUpdate calculates the data string for the worker pool hash to be used for in-place updates.
@@ -950,10 +945,10 @@ func CalculateWorkerPoolHashForInPlaceUpdate(workerPoolName string, kubernetesVe
 
 	data = append(data, CalculateDataStringForKubeletConfiguration(kubeletConfig)...)
 
-	var result string
+	var result strings.Builder
 	for _, v := range data {
-		result += utils.ComputeSHA256Hex([]byte(v))
+		result.WriteString(utils.ComputeSHA256Hex([]byte(v)))
 	}
 
-	return utils.ComputeSHA256Hex([]byte(result))[:16], nil
+	return utils.ComputeSHA256Hex([]byte(result.String()))[:16], nil
 }

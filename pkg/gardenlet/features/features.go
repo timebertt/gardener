@@ -24,8 +24,12 @@ func GetFeatures() []featuregate.Feature {
 		features.IstioTLSTermination,
 		features.DoNotCopyBackupCredentials,
 		features.OpenTelemetryCollector,
+		features.VictoriaLogsBackend,
 		features.UseUnifiedHTTPProxyPort,
 		features.VPAInPlaceUpdates,
 		features.CustomDNSServerInNodeLocalDNS,
+		features.VPNBondingModeRoundRobin,
+		features.PrometheusHealthChecks,
+		features.RemoveVali,
 	}
 }
