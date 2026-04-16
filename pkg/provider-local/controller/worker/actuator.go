@@ -28,8 +28,8 @@ import (
 	"github.com/gardener/gardener/extensions/pkg/util"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	kubernetesclient "github.com/gardener/gardener/pkg/client/kubernetes"
-	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
 	"github.com/gardener/gardener/pkg/provider-local/apis/local/helper"
+	localv1alpha1 "github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 )
 
 type delegateFactory struct {
@@ -37,7 +37,6 @@ type delegateFactory struct {
 	seedClient   client.Client
 	decoder      runtime.Decoder
 	restConfig   *rest.Config
-	scheme       *runtime.Scheme
 }
 
 type actuator struct {
@@ -52,7 +51,6 @@ func NewActuator(mgr manager.Manager, gardenCluster cluster.Cluster) worker.Actu
 		seedClient: mgr.GetClient(),
 		decoder:    serializer.NewCodecFactory(mgr.GetScheme(), serializer.EnableStrict).UniversalDecoder(),
 		restConfig: mgr.GetConfig(),
-		scheme:     mgr.GetScheme(),
 	}
 
 	if gardenCluster != nil {
@@ -147,7 +145,6 @@ func (d *delegateFactory) WorkerDelegate(_ context.Context, worker *extensionsv1
 	return NewWorkerDelegate(
 		d.seedClient,
 		d.decoder,
-		d.scheme,
 		seedChartApplier,
 		kubernetesclient.NewPodExecutor(d.restConfig),
 		serverVersion.GitVersion,
@@ -157,19 +154,17 @@ func (d *delegateFactory) WorkerDelegate(_ context.Context, worker *extensionsv1
 }
 
 type workerDelegate struct {
-	client  client.Client
-	decoder runtime.Decoder
-	scheme  *runtime.Scheme
-
+	client              client.Client
+	decoder             runtime.Decoder
 	seedChartApplier    kubernetesclient.ChartApplier
 	podExecutor         kubernetesclient.PodExecutor
 	serverVersion       string
-	cloudProfileConfig  *api.CloudProfileConfig
+	cloudProfileConfig  *localv1alpha1.CloudProfileConfig
 	cluster             *extensionscontroller.Cluster
 	worker              *extensionsv1alpha1.Worker
 	machineClassSecrets []*corev1.Secret
 	machineClasses      []*machinev1alpha1.MachineClass
-	machineImages       []api.MachineImage
+	machineImages       []localv1alpha1.MachineImage
 	machineDeployments  worker.MachineDeployments
 }
 
@@ -177,7 +172,6 @@ type workerDelegate struct {
 func NewWorkerDelegate(
 	client client.Client,
 	decoder runtime.Decoder,
-	scheme *runtime.Scheme,
 	seedChartApplier kubernetesclient.ChartApplier,
 	podExecutor kubernetesclient.PodExecutor,
 	serverVersion string,
@@ -193,7 +187,6 @@ func NewWorkerDelegate(
 	}
 
 	return &workerDelegate{
-		scheme:             scheme,
 		client:             client,
 		decoder:            decoder,
 		seedChartApplier:   seedChartApplier,

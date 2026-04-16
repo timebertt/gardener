@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/gardener/gardener/extensions/pkg/util"
-	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
+	api "github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 )
 
 // DecodeCloudProfileConfig decodes the given RawExtension into a CloudProfileConfig.

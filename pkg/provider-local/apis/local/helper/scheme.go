@@ -12,8 +12,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 
 	"github.com/gardener/gardener/extensions/pkg/controller"
-	api "github.com/gardener/gardener/pkg/provider-local/apis/local"
-	"github.com/gardener/gardener/pkg/provider-local/apis/local/install"
+	api "github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1"
 )
 
 var (
@@ -25,7 +24,7 @@ var (
 
 func init() {
 	Scheme = runtime.NewScheme()
-	utilruntime.Must(install.AddToScheme(Scheme))
+	utilruntime.Must(api.AddToScheme(Scheme))
 
 	decoder = serializer.NewCodecFactory(Scheme, serializer.EnableStrict).UniversalDecoder()
 }

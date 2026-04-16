@@ -1178,7 +1178,6 @@ build:
             - pkg/logger
             - pkg/provider-local/apis/local
             - pkg/provider-local/apis/local/helper
-            - pkg/provider-local/apis/local/install
             - pkg/provider-local/apis/local/v1alpha1
             - pkg/provider-local/charts
             - pkg/provider-local/charts/shoot-storageclasses
@@ -1308,7 +1307,6 @@ build:
             - pkg/provider-local/admission/validator
             - pkg/provider-local/apis/local
             - pkg/provider-local/apis/local/helper
-            - pkg/provider-local/apis/local/install
             - pkg/provider-local/apis/local/v1alpha1
             - pkg/provider-local/apis/local/validation
             - pkg/provider-local/local

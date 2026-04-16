@@ -360,16 +360,14 @@ export -f shootresourcereservation_groups
 # local.provider.extensions.gardener.cloud APIs
 
 provider_local_groups() {
-  echo "Generating API groups for pkg/provider-local/apis/local"
+  echo "Generating API groups for pkg/provider-local/apis/local/v1alpha1"
   
   kube::codegen::gen_helpers \
     --boilerplate "${PROJECT_ROOT}/hack/LICENSE_BOILERPLATE.txt" \
-    --extra-peer-dir github.com/gardener/gardener/pkg/provider-local/apis/local \
     --extra-peer-dir github.com/gardener/gardener/pkg/provider-local/apis/local/v1alpha1 \
     --extra-peer-dir k8s.io/apimachinery/pkg/apis/meta/v1 \
-    --extra-peer-dir k8s.io/apimachinery/pkg/conversion \
     --extra-peer-dir k8s.io/apimachinery/pkg/runtime \
-    "${PROJECT_ROOT}/pkg/provider-local/apis/local"
+    "${PROJECT_ROOT}/pkg/provider-local/apis/local/v1alpha1"
 }
 export -f provider_local_groups
 
