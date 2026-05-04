@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -81,6 +82,10 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, managedSeedSe
 		return status, false, fmt.Errorf("failed to manage ControllerRevisions: %w", err)
 	}
 
+	// Extract the hash portions from the current and update revision names.
+	updateRevisionHash := revisionHashFromName(status.UpdateRevision, managedSeedSet.Name)
+	currentRevisionHash := revisionHashFromName(status.CurrentRevision, managedSeedSet.Name)
+
 	// Get replicas
 	replicas, err := a.replicaGetter.GetReplicas(ctx, managedSeedSet)
 	if err != nil {
@@ -108,9 +113,20 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, managedSeedSe
 	}
 	log.V(1).Info("Current replicas of ManagedSeedSet", "readyReplicas", readyReplicas, "postponedReplicas", postponedReplicas, "deletableReplicas", deletableReplicas)
 
-	// Update replicas and readyReplicas in status
+	// Update replicas, readyReplicas, currentReplicas, and updatedReplicas counts in status.
 	status.Replicas = int32(len(replicas))           // #nosec G115 -- `ra.replicaGetter.GetReplicas(ctx, managedSeedSet)` returns a line for every ManagedSeeds in the system. This number cannot exceed max int32.
 	status.ReadyReplicas = int32(len(readyReplicas)) // #nosec G115 -- `ra.replicaGetter.GetReplicas(ctx, managedSeedSet)` returns a line for every ManagedSeeds in the system. This number cannot exceed max int32.
+	var currentReplicas, updatedReplicas int32
+	for _, r := range replicas {
+		switch r.GetRevisionHash() {
+		case updateRevisionHash:
+			updatedReplicas++
+		case currentRevisionHash:
+			currentReplicas++
+		}
+	}
+	status.CurrentReplicas = currentReplicas
+	status.UpdatedReplicas = updatedReplicas
 
 	// Determine the actual and target replica counts
 	count := len(replicas)
@@ -124,7 +140,7 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, managedSeedSe
 
 	// Reconcile the pending replica, if any
 	if pendingReplica != nil {
-		if pending, err := a.reconcileReplica(ctx, log, managedSeedSet, status, pendingReplica, scalingIn); err != nil || pending {
+		if pending, err := a.reconcileReplica(ctx, log, managedSeedSet, status, pendingReplica, scalingIn, updateRevisionHash); err != nil || pending {
 			return status, false, err
 		}
 	}
@@ -133,7 +149,7 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, managedSeedSe
 	case scalingOut:
 		// Initialize a new replica and create its shoot
 		ordinal := getNextOrdinal(replicas, status)
-		if err := a.createReplica(ctx, log, managedSeedSet, status, ordinal); err != nil {
+		if err := a.createReplica(ctx, log, managedSeedSet, status, ordinal, updateRevisionHash); err != nil {
 			return status, false, err
 		}
 
@@ -167,7 +183,15 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, managedSeedSe
 
 	// Reconcile postponed replicas
 	for _, r := range postponedReplicas {
-		if pending, err := a.reconcileReplica(ctx, log, managedSeedSet, status, r, scalingIn); err != nil || pending {
+		if pending, err := a.reconcileReplica(ctx, log, managedSeedSet, status, r, scalingIn, updateRevisionHash); err != nil || pending {
+			return status, false, err
+		}
+	}
+
+	// Rolling update: if the spec changed (UpdateRevision != CurrentRevision), update one replica at a
+	// time starting from the highest ordinal, exactly like the Kubernetes StatefulSet controller.
+	if status.UpdateRevision != status.CurrentRevision {
+		if pending, err := a.performRollingUpdate(ctx, log, managedSeedSet, status, replicas, updateRevisionHash); err != nil || pending {
 			return status, false, err
 		}
 	}
@@ -181,6 +205,7 @@ func (a *actuator) Reconcile(ctx context.Context, log logr.Logger, managedSeedSe
 const (
 	EventCreatingShoot                   = "CreatingShoot"
 	EventDeletingShoot                   = "DeletingShoot"
+	EventUpdatingShoot                   = "UpdatingShoot"
 	EventRetryingShootReconciliation     = "RetryingShootReconciliation"
 	EventNotRetryingShootReconciliation  = "NotRetryingShootReconciliation"
 	EventRetryingShootDeletion           = "RetryingShootDeletion"
@@ -188,10 +213,13 @@ const (
 	EventWaitingForShootReconciled       = "WaitingForShootReconciled"
 	EventWaitingForShootDeleted          = "WaitingForShootDeleted"
 	EventWaitingForShootHealthy          = "WaitingForShootHealthy"
+	EventWaitingForShootUpdated          = "WaitingForShootUpdated"
 	EventCreatingManagedSeed             = "CreatingManagedSeed"
 	EventDeletingManagedSeed             = "DeletingManagedSeed"
+	EventUpdatingManagedSeed             = "UpdatingManagedSeed"
 	EventWaitingForManagedSeedRegistered = "WaitingForManagedSeedRegistered"
 	EventWaitingForManagedSeedDeleted    = "WaitingForManagedSeedDeleted"
+	EventWaitingForManagedSeedUpdated    = "WaitingForManagedSeedUpdated"
 	EventWaitingForSeedReady             = "WaitingForSeedReady"
 )
 
@@ -202,9 +230,23 @@ func (a *actuator) reconcileReplica(
 	status *seedmanagementv1alpha1.ManagedSeedSetStatus,
 	r Replica,
 	scalingIn bool,
+	updateRevisionHash string,
 ) (bool, error) {
 	replicaStatus := r.GetStatus()
 	log = log.WithValues("replica", r.GetObjectKey())
+
+	// Handle rolling-update phases before falling through to the normal status-based switch.
+	// These cases are identified by the PendingReplica reason stored in status and must be
+	// checked first because GetStatus() returns ManagedSeed* status codes while the managed
+	// seed is still present (even mid-update).
+	if status.PendingReplica != nil && status.PendingReplica.Name == r.GetName() {
+		switch status.PendingReplica.Reason {
+		case seedmanagementv1alpha1.ShootUpdatingReason:
+			return a.reconcileShootUpdatePhase(ctx, log, managedSeedSet, status, r, updateRevisionHash)
+		case seedmanagementv1alpha1.ManagedSeedUpdatingReason:
+			return a.reconcileManagedSeedUpdatePhase(ctx, log, managedSeedSet, status, r)
+		}
+	}
 
 	switch {
 	case replicaStatus == StatusShootReconcileFailed && !scalingIn:
@@ -261,7 +303,7 @@ func (a *actuator) reconcileReplica(
 		if !scalingIn {
 			log.Info("Creating ManagedSeed")
 			a.infoEventf(managedSeedSet, EventCreatingManagedSeed, gardencorev1beta1.EventActionReconcile, "Creating ManagedSeed %s", r.GetFullName())
-			if err := r.CreateManagedSeed(ctx, a.gardenClient); err != nil {
+			if err := r.CreateManagedSeed(ctx, a.gardenClient, updateRevisionHash); err != nil {
 				return false, err
 			}
 			updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ManagedSeedPreparingReason, nil)
@@ -313,13 +355,14 @@ func (a *actuator) createReplica(
 	managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet,
 	status *seedmanagementv1alpha1.ManagedSeedSetStatus,
 	ordinal int32,
+	updateRevisionHash string,
 ) error {
 	r := a.replicaFactory.NewReplica(managedSeedSet, nil, nil, nil, false)
 
 	fullName := getFullName(managedSeedSet, ordinal)
 	log.Info("Creating Shoot", "replica", client.ObjectKey{Namespace: managedSeedSet.Namespace, Name: fullName})
 	a.infoEventf(managedSeedSet, EventCreatingShoot, gardencorev1beta1.EventActionReconcile, "Creating Shoot %s", fullName)
-	if err := r.CreateShoot(ctx, a.gardenClient, ordinal); err != nil {
+	if err := r.CreateShoot(ctx, a.gardenClient, ordinal, updateRevisionHash); err != nil {
 		return err
 	}
 	updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ShootReconcilingReason, nil)
@@ -353,8 +396,130 @@ func (a *actuator) deleteReplica(
 	return nil
 }
 
-func (a *actuator) infoEventf(managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet, reason, action, fmt string, args ...any) {
-	a.recorder.Eventf(managedSeedSet, nil, corev1.EventTypeNormal, reason, action, fmt, args...)
+// reconcileShootUpdatePhase handles the pending state when a replica's shoot has been updated to
+// a new revision. It waits for the shoot reconciliation to complete, then triggers the
+// ManagedSeed update, advancing the pending reason to ManagedSeedUpdatingReason.
+func (a *actuator) reconcileShootUpdatePhase(
+	ctx context.Context,
+	log logr.Logger,
+	managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet,
+	status *seedmanagementv1alpha1.ManagedSeedSetStatus,
+	r Replica,
+	updateRevisionHash string,
+) (bool, error) {
+	if r.IsShootReconcileSucceeded() {
+		// Shoot has been reconciled with the new spec — now update the ManagedSeed.
+		log.Info("Shoot reconciled after update, updating ManagedSeed")
+		a.infoEventf(managedSeedSet, EventUpdatingManagedSeed, gardencorev1beta1.EventActionReconcile, "Updating ManagedSeed %s to new revision", r.GetFullName())
+		if err := r.UpdateManagedSeed(ctx, a.gardenClient, updateRevisionHash); err != nil {
+			return false, err
+		}
+		updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ManagedSeedUpdatingReason, nil)
+		return true, nil
+	}
+	// Shoot is still reconciling (or failed) — keep waiting.
+	log.Info("Waiting for Shoot to be reconciled after update")
+	a.infoEventf(managedSeedSet, EventWaitingForShootUpdated, gardencorev1beta1.EventActionReconcile, "Waiting for Shoot %s to be reconciled after update", r.GetFullName())
+	updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ShootUpdatingReason, nil)
+	return true, nil
+}
+
+// reconcileManagedSeedUpdatePhase handles the pending state when a replica's managed seed has been
+// updated to a new revision. It waits for the managed seed to be registered again, then checks
+// seed readiness and shoot health before considering the replica fully updated.
+func (a *actuator) reconcileManagedSeedUpdatePhase(
+	ctx context.Context,
+	log logr.Logger,
+	managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet,
+	status *seedmanagementv1alpha1.ManagedSeedSetStatus,
+	r Replica,
+) (bool, error) {
+	// GetStatus() returns StatusManagedSeedRegistered only when managedSeedRegistered() is true.
+	if r.GetStatus() != StatusManagedSeedRegistered {
+		log.Info("Waiting for ManagedSeed to be registered after update")
+		a.infoEventf(managedSeedSet, EventWaitingForManagedSeedUpdated, gardencorev1beta1.EventActionReconcile, "Waiting for ManagedSeed %s to be registered after update", r.GetFullName())
+		updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ManagedSeedUpdatingReason, nil)
+		return true, nil
+	}
+	if !r.IsSeedReady() {
+		log.Info("Waiting for Seed to be ready after ManagedSeed update")
+		a.infoEventf(managedSeedSet, EventWaitingForSeedReady, gardencorev1beta1.EventActionReconcile, "Waiting for Seed %s to be ready after update", r.GetName())
+		updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.SeedNotReadyReason, nil)
+		return true, nil
+	}
+	if r.GetShootHealthStatus() != gardenerutils.ShootStatusHealthy {
+		log.Info("Waiting for Shoot to be healthy after ManagedSeed update")
+		a.infoEventf(managedSeedSet, EventWaitingForShootHealthy, gardencorev1beta1.EventActionReconcile, "Waiting for Shoot %s to be healthy after update", r.GetFullName())
+		updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ShootNotHealthyReason, nil)
+		return true, nil
+	}
+	// Replica is fully updated and healthy — clear the pending state.
+	return false, nil
+}
+
+// performRollingUpdate implements the rolling-update strategy: starting from the replica with the
+// highest ordinal (subject to the UpdateStrategy.Partition setting), it updates one replica per
+// reconciliation cycle, waiting for each one to become healthy before moving to the next.
+// When all replicas at or above the partition are on the update revision, CurrentRevision is
+// advanced to UpdateRevision.
+func (a *actuator) performRollingUpdate(
+	ctx context.Context,
+	log logr.Logger,
+	managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet,
+	status *seedmanagementv1alpha1.ManagedSeedSetStatus,
+	replicas []Replica,
+	updateRevisionHash string,
+) (bool, error) {
+	partition := getPartition(managedSeedSet)
+
+	// Work from highest to lowest ordinal (reverse of the sorted-ascending slice).
+	for i := len(replicas) - 1; i >= 0; i-- {
+		r := replicas[i]
+		if r.GetOrdinal() < partition {
+			// Replicas below the partition are intentionally kept on the current revision.
+			break
+		}
+		if r.GetRevisionHash() == updateRevisionHash {
+			// This replica is already on the update revision; only one replica is updated
+			// at a time — if it is not yet ready, wait before touching the next one.
+			if !replicaIsReady(r) {
+				log.V(1).Info("Waiting for already-updated replica to become ready before proceeding", "replica", r.GetObjectKey())
+				return true, nil
+			}
+			continue
+		}
+
+		// This replica needs to be updated. Update its shoot first; the subsequent phases
+		// (ManagedSeed update, readiness checks) are handled by reconcileShootUpdatePhase /
+		// reconcileManagedSeedUpdatePhase once the pending reason is set.
+		log.Info("Updating Shoot for rolling update", "replica", r.GetObjectKey())
+		a.infoEventf(managedSeedSet, EventUpdatingShoot, gardencorev1beta1.EventActionReconcile, "Updating Shoot %s to revision %s", r.GetFullName(), strings.TrimPrefix(status.UpdateRevision, managedSeedSet.Name+"-"))
+		if err := r.UpdateShoot(ctx, a.gardenClient, updateRevisionHash); err != nil {
+			return false, err
+		}
+		updatePendingReplica(status, r.GetName(), seedmanagementv1alpha1.ShootUpdatingReason, nil)
+		return true, nil
+	}
+
+	// All replicas at or above the partition are on the update revision — the rolling update
+	// is complete; advance CurrentRevision so getMSSRevisions treats this as stable.
+	log.Info("Rolling update complete, advancing CurrentRevision", "revision", status.UpdateRevision)
+	status.CurrentRevision = status.UpdateRevision
+	return false, nil
+}
+
+// getPartition returns the configured update partition for the managed seed set.
+// Replicas with ordinal < partition are not updated during a rolling update.
+func getPartition(managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet) int32 {
+	if managedSeedSet.Spec.UpdateStrategy != nil &&
+		managedSeedSet.Spec.UpdateStrategy.RollingUpdate != nil &&
+		managedSeedSet.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
+		return *managedSeedSet.Spec.UpdateStrategy.RollingUpdate.Partition
+	}
+	return 0
+}
+
+func (a *actuator) infoEventf(managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet, reason, action, fmt string, args ...any) {	a.recorder.Eventf(managedSeedSet, nil, corev1.EventTypeNormal, reason, action, fmt, args...)
 }
 
 func (a *actuator) errorEventf(managedSeedSet *seedmanagementv1alpha1.ManagedSeedSet, reason, action, fmt string, args ...any) {

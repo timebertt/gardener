@@ -94,16 +94,33 @@ type Replica interface {
 	// IsDeletable returns true if this replica can be deleted, false otherwise. A replica can be deleted if it has no
 	// scheduled shoots and is not protected by the "protect-from-deletion" annotation.
 	IsDeletable() bool
+	// IsShootReconcileSucceeded returns true when the replica's shoot has been fully reconciled at its
+	// current generation (i.e., generation == observedGeneration and last operation succeeded).
+	// This differs from GetStatus() == StatusShootReconciled: it also returns true when the managed
+	// seed still exists, enabling the rolling-update logic to detect that the shoot is done reconciling
+	// even while the managed seed is present.
+	IsShootReconcileSucceeded() bool
+	// GetRevisionHash returns the controller-revision-hash label value from this replica's shoot,
+	// or an empty string if not set.
+	GetRevisionHash() string
 	// CreateShoot initializes this replica's shoot and then creates it using the given context and client.
-	CreateShoot(ctx context.Context, c client.Client, ordinal int32) error
+	// revisionHash is stored as the controller-revision-hash label on the created shoot.
+	CreateShoot(ctx context.Context, c client.Client, ordinal int32, revisionHash string) error
 	// CreateManagedSeed initializes this replica's managed seed, and then creates it using the given context and client.
-	CreateManagedSeed(ctx context.Context, c client.Client) error
+	// revisionHash is stored as the controller-revision-hash label on the created managed seed.
+	CreateManagedSeed(ctx context.Context, c client.Client, revisionHash string) error
 	// DeleteShoot deletes this replica's shoot using the given context and client.
 	DeleteShoot(ctx context.Context, c client.Client) error
 	// DeleteManagedSeed deletes this replica's managed seed using the given context and client.
 	DeleteManagedSeed(ctx context.Context, c client.Client) error
 	// RetryShoot retries this replica's shoot using the given context and client.
 	RetryShoot(ctx context.Context, c client.Client) error
+	// UpdateShoot updates this replica's shoot spec to match the set's current ShootTemplate and
+	// stamps it with the given revision hash label, triggering Gardener reconciliation.
+	UpdateShoot(ctx context.Context, c client.Client, revisionHash string) error
+	// UpdateManagedSeed updates this replica's managed seed spec to match the set's current Template and
+	// stamps it with the given revision hash label, triggering gardenlet reconciliation.
+	UpdateManagedSeed(ctx context.Context, c client.Client, revisionHash string) error
 }
 
 // ReplicaFactory provides a method for creating new replicas.
@@ -238,21 +255,50 @@ func (r *replica) IsDeletable() bool {
 	return !r.hasScheduledShoots && !shootProtected && !managedSeedProtected
 }
 
+// IsShootReconcileSucceeded returns true when the replica's shoot has been fully reconciled at its
+// current generation, regardless of whether the managed seed exists.
+func (r *replica) IsShootReconcileSucceeded() bool {
+	if r.shoot == nil {
+		return false
+	}
+	return shootReconcileSucceeded(r.shoot)
+}
+
+// GetRevisionHash returns the controller-revision-hash label value from this replica's shoot.
+func (r *replica) GetRevisionHash() string {
+	if r.shoot == nil {
+		return ""
+	}
+	return r.shoot.Labels[controllerRevisionHashLabel]
+}
+
 // CreateShoot initializes this replica's shoot and then creates it using the given context and client.
-func (r *replica) CreateShoot(ctx context.Context, c client.Client, ordinal int32) error {
+func (r *replica) CreateShoot(ctx context.Context, c client.Client, ordinal int32, revisionHash string) error {
 	if r.shoot == nil {
 		r.shoot = newShoot(r.managedSeedSet, ordinal)
+		if revisionHash != "" {
+			if r.shoot.Labels == nil {
+				r.shoot.Labels = make(map[string]string)
+			}
+			r.shoot.Labels[controllerRevisionHashLabel] = revisionHash
+		}
 		return client.IgnoreAlreadyExists(c.Create(ctx, r.shoot))
 	}
 	return nil
 }
 
 // CreateManagedSeed initializes this replica's managed seed, and then creates it using the given context and client.
-func (r *replica) CreateManagedSeed(ctx context.Context, c client.Client) error {
+func (r *replica) CreateManagedSeed(ctx context.Context, c client.Client, revisionHash string) error {
 	if r.managedSeed == nil {
 		var err error
 		if r.managedSeed, err = newManagedSeed(r.managedSeedSet, r.GetOrdinal()); err != nil {
 			return err
+		}
+		if revisionHash != "" {
+			if r.managedSeed.Labels == nil {
+				r.managedSeed.Labels = make(map[string]string)
+			}
+			r.managedSeed.Labels[controllerRevisionHashLabel] = revisionHash
 		}
 		return client.IgnoreAlreadyExists(c.Create(ctx, r.managedSeed))
 	}
@@ -284,6 +330,82 @@ func (r *replica) RetryShoot(ctx context.Context, c client.Client) error {
 		return nil
 	}
 	return kubernetesutils.SetAnnotationAndUpdate(ctx, c, r.shoot, v1beta1constants.GardenerOperation, v1beta1constants.ShootOperationRetry)
+}
+
+// UpdateShoot updates this replica's shoot spec to match the set's current ShootTemplate and
+// stamps it with the given revision hash label, which bumps the shoot's generation and triggers
+// Gardener reconciliation.
+func (r *replica) UpdateShoot(ctx context.Context, c client.Client, revisionHash string) error {
+	if r.shoot == nil {
+		return nil
+	}
+	patch := client.MergeFrom(r.shoot.DeepCopy())
+
+	// Apply the new spec from the template (with placeholder substitution).
+	name := r.GetName()
+	r.shoot.Spec = r.managedSeedSet.Spec.ShootTemplate.Spec
+	replacePlaceholdersInShootSpec(&r.shoot.Spec, name)
+
+	// Merge template labels, preserving any labels added by other controllers.
+	for k, v := range r.managedSeedSet.Spec.ShootTemplate.Labels {
+		if r.shoot.Labels == nil {
+			r.shoot.Labels = make(map[string]string)
+		}
+		r.shoot.Labels[k] = v
+	}
+	// Merge template annotations.
+	for k, v := range r.managedSeedSet.Spec.ShootTemplate.Annotations {
+		if r.shoot.Annotations == nil {
+			r.shoot.Annotations = make(map[string]string)
+		}
+		r.shoot.Annotations[k] = v
+	}
+	// Stamp with the new revision hash.
+	if r.shoot.Labels == nil {
+		r.shoot.Labels = make(map[string]string)
+	}
+	r.shoot.Labels[controllerRevisionHashLabel] = revisionHash
+
+	return c.Patch(ctx, r.shoot, patch)
+}
+
+// UpdateManagedSeed updates this replica's managed seed spec to match the set's current Template and
+// stamps it with the given revision hash label, which bumps the managed seed's generation and triggers
+// gardenlet reconciliation.
+func (r *replica) UpdateManagedSeed(ctx context.Context, c client.Client, revisionHash string) error {
+	if r.managedSeed == nil {
+		return nil
+	}
+	patch := client.MergeFrom(r.managedSeed.DeepCopy())
+
+	// Build the desired managed seed spec via newManagedSeed (includes placeholder substitution).
+	desired, err := newManagedSeed(r.managedSeedSet, r.GetOrdinal())
+	if err != nil {
+		return err
+	}
+	r.managedSeed.Spec = desired.Spec
+
+	// Merge template labels.
+	for k, v := range r.managedSeedSet.Spec.Template.Labels {
+		if r.managedSeed.Labels == nil {
+			r.managedSeed.Labels = make(map[string]string)
+		}
+		r.managedSeed.Labels[k] = v
+	}
+	// Merge template annotations.
+	for k, v := range r.managedSeedSet.Spec.Template.Annotations {
+		if r.managedSeed.Annotations == nil {
+			r.managedSeed.Annotations = make(map[string]string)
+		}
+		r.managedSeed.Annotations[k] = v
+	}
+	// Stamp with the new revision hash.
+	if r.managedSeed.Labels == nil {
+		r.managedSeed.Labels = make(map[string]string)
+	}
+	r.managedSeed.Labels[controllerRevisionHashLabel] = revisionHash
+
+	return c.Patch(ctx, r.managedSeed, patch)
 }
 
 func shootReconcileSucceeded(shoot *gardencorev1beta1.Shoot) bool {

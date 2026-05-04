@@ -155,6 +155,12 @@ const (
 	SeedNotReadyReason PendingReplicaReason = "SeedNotReady"
 	// ShootNotHealthyReason indicates that the replica's shoot is not healthy.
 	ShootNotHealthyReason PendingReplicaReason = "ShootNotHealthy"
+	// ShootUpdatingReason indicates that the replica's shoot is being updated to a new revision and
+	// the controller is waiting for the shoot reconciliation to complete.
+	ShootUpdatingReason PendingReplicaReason = "ShootUpdating"
+	// ManagedSeedUpdatingReason indicates that the replica's managed seed is being updated to a new
+	// revision and the controller is waiting for the managed seed to be registered again.
+	ManagedSeedUpdatingReason PendingReplicaReason = "ManagedSeedUpdating"
 )
 
 // PendingReplica contains information about a replica that is currently pending creation, update, or deletion.

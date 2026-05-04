@@ -298,14 +298,15 @@ var _ = Describe("Replica", func() {
 	Describe("#CreateShoot", func() {
 		It("should create the shoot", func() {
 			replica := NewReplica(managedSeedSet, nil, nil, nil, false)
-			err := replica.CreateShoot(ctx, fakeClient, ordinal)
+			err := replica.CreateShoot(ctx, fakeClient, ordinal, "test-hash")
 			Expect(err).ToNot(HaveOccurred())
 
 			createdShoot := &gardencorev1beta1.Shoot{}
 			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: replicaName}, createdShoot)).To(Succeed())
 			Expect(createdShoot.Name).To(Equal(replicaName))
 			Expect(createdShoot.Namespace).To(Equal(namespace))
-			Expect(createdShoot.Labels).To(Equal(map[string]string{"foo": "bar"}))
+			Expect(createdShoot.Labels).To(HaveKeyWithValue("foo", "bar"))
+			Expect(createdShoot.Labels).To(HaveKeyWithValue("controller.kubernetes.io/hash", "test-hash"))
 			Expect(createdShoot.OwnerReferences).To(Equal([]metav1.OwnerReference{
 				*metav1.NewControllerRef(managedSeedSet, seedmanagementv1alpha1.SchemeGroupVersion.WithKind("ManagedSeedSet")),
 			}))
@@ -318,14 +319,15 @@ var _ = Describe("Replica", func() {
 		It("should create the managed seed", func() {
 			s := shoot(nil, "", "", "", false)
 			replica := NewReplica(managedSeedSet, s, nil, nil, false)
-			err := replica.CreateManagedSeed(ctx, fakeClient)
+			err := replica.CreateManagedSeed(ctx, fakeClient, "test-hash")
 			Expect(err).ToNot(HaveOccurred())
 
 			createdMS := &seedmanagementv1alpha1.ManagedSeed{}
 			Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: replicaName}, createdMS)).To(Succeed())
 			Expect(createdMS.Name).To(Equal(replicaName))
 			Expect(createdMS.Namespace).To(Equal(namespace))
-			Expect(createdMS.Labels).To(Equal(map[string]string{"foo": "bar"}))
+			Expect(createdMS.Labels).To(HaveKeyWithValue("foo", "bar"))
+			Expect(createdMS.Labels).To(HaveKeyWithValue("controller.kubernetes.io/hash", "test-hash"))
 			Expect(createdMS.OwnerReferences).To(Equal([]metav1.OwnerReference{
 				*metav1.NewControllerRef(managedSeedSet, seedmanagementv1alpha1.SchemeGroupVersion.WithKind("ManagedSeedSet")),
 			}))

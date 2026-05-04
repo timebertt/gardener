@@ -12,6 +12,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -234,6 +235,21 @@ func truncateRevisionHistory(ctx context.Context, c client.Client, set *seedmana
 		}
 	}
 	return nil
+}
+
+// revisionHashFromName extracts the controller-revision hash from a ControllerRevision name.
+// ControllerRevision names have the format "<setName>-<hash>", where the hash (from SafeEncodeString)
+// is purely alphanumeric and never contains dashes.
+func revisionHashFromName(revisionName, setName string) string {
+	prefix := setName
+	if len(prefix) > 223 {
+		prefix = prefix[:223]
+	}
+	prefix += "-"
+	if strings.HasPrefix(revisionName, prefix) {
+		return revisionName[len(prefix):]
+	}
+	return ""
 }
 
 // getMSSRevisions computes the current and update ControllerRevisions for set. It mirrors

@@ -162,6 +162,10 @@ var _ = Describe("Actuator", func() {
 			r.EXPECT().IsSeedReady().Return(seedReady).AnyTimes()
 			r.EXPECT().GetShootHealthStatus().Return(shootStatus).AnyTimes()
 			r.EXPECT().IsDeletable().Return(deletable).AnyTimes()
+			// Return empty string so the replica is counted in neither CurrentReplicas nor UpdatedReplicas.
+			// Existing test assertions don't check those fields; revision-hash tracking is covered by
+			// dedicated rolling-update tests.
+			r.EXPECT().GetRevisionHash().Return("").AnyTimes()
 		}
 	)
 
@@ -235,7 +239,7 @@ var _ = Describe("Actuator", func() {
 				managedSeedSet(1, 1, getReplicaName(0), seedmanagementv1alpha1.ShootReconcilingReason, nil),
 				func() {
 					expectReplica(r0, 0, StatusShootReconciled, false, gardenerutils.ShootStatusHealthy, true)
-					r0.EXPECT().CreateManagedSeed(ctx, gc).Return(nil)
+					r0.EXPECT().CreateManagedSeed(ctx, gc, gomock.Any()).Return(nil)
 				},
 				status(1, 0, 1, getReplicaName(0), seedmanagementv1alpha1.ManagedSeedPreparingReason, now, nil),
 				EventCreatingManagedSeed, gardencorev1beta1.EventActionReconcile, "Creating ManagedSeed %s", getReplicaFullName(0),
@@ -350,7 +354,7 @@ var _ = Describe("Actuator", func() {
 				managedSeedSet(2, 1, getReplicaName(0), seedmanagementv1alpha1.ShootReconcilingReason, nil),
 				func() {
 					expectReplica(r0, 0, StatusShootReconciled, false, gardenerutils.ShootStatusHealthy, true)
-					r0.EXPECT().CreateManagedSeed(ctx, gc).Return(nil)
+					r0.EXPECT().CreateManagedSeed(ctx, gc, gomock.Any()).Return(nil)
 				},
 				status(1, 0, 1, getReplicaName(0), seedmanagementv1alpha1.ManagedSeedPreparingReason, now, nil),
 				EventCreatingManagedSeed, gardencorev1beta1.EventActionReconcile, "Creating ManagedSeed %s", getReplicaFullName(0),
@@ -392,8 +396,8 @@ var _ = Describe("Actuator", func() {
 				func() {
 					expectReplica(r0, 0, StatusManagedSeedRegistered, true, gardenerutils.ShootStatusHealthy, true)
 					r1 := mockmanagedseedset.NewMockReplica(ctrl)
-					rf.EXPECT().NewReplica(managedSeedSet(2, 1, "", "", nil), nil, nil, nil, false).Return(r1)
-					r1.EXPECT().CreateShoot(ctx, gc, int32(1)).Return(nil)
+				rf.EXPECT().NewReplica(managedSeedSet(2, 1, "", "", nil), nil, nil, nil, false).Return(r1)
+				r1.EXPECT().CreateShoot(ctx, gc, int32(1), gomock.Any()).Return(nil)
 					r1.EXPECT().GetName().Return(getReplicaName(1))
 				},
 				status(2, 1, 2, getReplicaName(1), seedmanagementv1alpha1.ShootReconcilingReason, now, nil),
@@ -404,8 +408,8 @@ var _ = Describe("Actuator", func() {
 				func() {
 					expectReplica(r0, 0, StatusManagedSeedRegistered, true, gardenerutils.ShootStatusHealthy, true)
 					r1 := mockmanagedseedset.NewMockReplica(ctrl)
-					rf.EXPECT().NewReplica(managedSeedSet(2, 0, "", "", nil), nil, nil, nil, false).Return(r1)
-					r1.EXPECT().CreateShoot(ctx, gc, int32(1)).Return(nil)
+				rf.EXPECT().NewReplica(managedSeedSet(2, 0, "", "", nil), nil, nil, nil, false).Return(r1)
+				r1.EXPECT().CreateShoot(ctx, gc, int32(1), gomock.Any()).Return(nil)
 					r1.EXPECT().GetName().Return(getReplicaName(1))
 				},
 				status(2, 1, 2, getReplicaName(1), seedmanagementv1alpha1.ShootReconcilingReason, now, nil),

@@ -147,6 +147,9 @@ func (p *shootPredicate) filterShoot(obj client.Object) bool {
 	switch managedSeedSetPendingReplicaReason {
 	case seedmanagementv1alpha1.ShootReconcilingReason:
 		return shootReconcileFailed(shoot) || shootReconcileSucceeded(shoot) || shoot.DeletionTimestamp != nil
+	case seedmanagementv1alpha1.ShootUpdatingReason:
+		// Fire when the shoot finishes reconciling (success or fail) after a rolling update.
+		return shootReconcileFailed(shoot) || shootReconcileSucceeded(shoot)
 	case seedmanagementv1alpha1.ShootDeletingReason:
 		return shootDeleteFailed(shoot)
 	case seedmanagementv1alpha1.ShootReconcileFailedReason:
@@ -249,6 +252,9 @@ func (p *managedSeedPredicate) filterManagedSeed(obj client.Object) bool {
 	switch managedSeedSetPendingReplicaReason {
 	case seedmanagementv1alpha1.ManagedSeedPreparingReason:
 		return managedSeedRegistered(managedSeed) || managedSeed.DeletionTimestamp != nil
+	case seedmanagementv1alpha1.ManagedSeedUpdatingReason:
+		// Fire when the managed seed finishes registering after a rolling update.
+		return managedSeedRegistered(managedSeed)
 	default:
 		return false
 	}

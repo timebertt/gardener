@@ -283,6 +283,7 @@ func validatePendingReplica(pendingReplica *seedmanagement.PendingReplica, name 
 
 	validValues := []string{
 		string(seedmanagement.ShootReconcilingReason),
+		string(seedmanagement.ShootUpdatingReason),
 		string(seedmanagement.ShootDeletingReason),
 		string(seedmanagement.ShootReconcileFailedReason),
 		string(seedmanagement.ShootDeleteFailedReason),

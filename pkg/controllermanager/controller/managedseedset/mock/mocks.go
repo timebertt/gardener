@@ -87,31 +87,31 @@ func (m *MockReplica) EXPECT() *MockReplicaMockRecorder {
 }
 
 // CreateManagedSeed mocks base method.
-func (m *MockReplica) CreateManagedSeed(ctx context.Context, c client.Client) error {
+func (m *MockReplica) CreateManagedSeed(ctx context.Context, c client.Client, revisionHash string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateManagedSeed", ctx, c)
+	ret := m.ctrl.Call(m, "CreateManagedSeed", ctx, c, revisionHash)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // CreateManagedSeed indicates an expected call of CreateManagedSeed.
-func (mr *MockReplicaMockRecorder) CreateManagedSeed(ctx, c any) *gomock.Call {
+func (mr *MockReplicaMockRecorder) CreateManagedSeed(ctx, c, revisionHash any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateManagedSeed", reflect.TypeOf((*MockReplica)(nil).CreateManagedSeed), ctx, c)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateManagedSeed", reflect.TypeOf((*MockReplica)(nil).CreateManagedSeed), ctx, c, revisionHash)
 }
 
 // CreateShoot mocks base method.
-func (m *MockReplica) CreateShoot(ctx context.Context, c client.Client, ordinal int32) error {
+func (m *MockReplica) CreateShoot(ctx context.Context, c client.Client, ordinal int32, revisionHash string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateShoot", ctx, c, ordinal)
+	ret := m.ctrl.Call(m, "CreateShoot", ctx, c, ordinal, revisionHash)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // CreateShoot indicates an expected call of CreateShoot.
-func (mr *MockReplicaMockRecorder) CreateShoot(ctx, c, ordinal any) *gomock.Call {
+func (mr *MockReplicaMockRecorder) CreateShoot(ctx, c, ordinal, revisionHash any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateShoot", reflect.TypeOf((*MockReplica)(nil).CreateShoot), ctx, c, ordinal)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateShoot", reflect.TypeOf((*MockReplica)(nil).CreateShoot), ctx, c, ordinal, revisionHash)
 }
 
 // DeleteManagedSeed mocks base method.
@@ -266,6 +266,62 @@ func (m *MockReplica) RetryShoot(ctx context.Context, c client.Client) error {
 func (mr *MockReplicaMockRecorder) RetryShoot(ctx, c any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RetryShoot", reflect.TypeOf((*MockReplica)(nil).RetryShoot), ctx, c)
+}
+
+// GetRevisionHash mocks base method.
+func (m *MockReplica) GetRevisionHash() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRevisionHash")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// GetRevisionHash indicates an expected call of GetRevisionHash.
+func (mr *MockReplicaMockRecorder) GetRevisionHash() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRevisionHash", reflect.TypeOf((*MockReplica)(nil).GetRevisionHash))
+}
+
+// IsShootReconcileSucceeded mocks base method.
+func (m *MockReplica) IsShootReconcileSucceeded() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsShootReconcileSucceeded")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsShootReconcileSucceeded indicates an expected call of IsShootReconcileSucceeded.
+func (mr *MockReplicaMockRecorder) IsShootReconcileSucceeded() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsShootReconcileSucceeded", reflect.TypeOf((*MockReplica)(nil).IsShootReconcileSucceeded))
+}
+
+// UpdateShoot mocks base method.
+func (m *MockReplica) UpdateShoot(ctx context.Context, c client.Client, revisionHash string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateShoot", ctx, c, revisionHash)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateShoot indicates an expected call of UpdateShoot.
+func (mr *MockReplicaMockRecorder) UpdateShoot(ctx, c, revisionHash any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateShoot", reflect.TypeOf((*MockReplica)(nil).UpdateShoot), ctx, c, revisionHash)
+}
+
+// UpdateManagedSeed mocks base method.
+func (m *MockReplica) UpdateManagedSeed(ctx context.Context, c client.Client, revisionHash string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateManagedSeed", ctx, c, revisionHash)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateManagedSeed indicates an expected call of UpdateManagedSeed.
+func (mr *MockReplicaMockRecorder) UpdateManagedSeed(ctx, c, revisionHash any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateManagedSeed", reflect.TypeOf((*MockReplica)(nil).UpdateManagedSeed), ctx, c, revisionHash)
 }
 
 // MockReplicaFactory is a mock of ReplicaFactory interface.
