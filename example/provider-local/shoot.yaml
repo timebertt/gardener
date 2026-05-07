@@ -6,10 +6,14 @@ metadata:
   annotations:
     shoot.gardener.cloud/cloud-config-execution-max-delay-seconds: "0"
     authentication.gardener.cloud/issuer: "managed"
+#    gardener.cloud/operation: rotate-ca-start
 spec:
   cloudProfile:
     name: local
   credentialsBindingName: local # dummy, doesn't contain any credentials
+  dns:
+    internalDomain:
+      enabled: false
   region: local
   networking:
     type: calico
