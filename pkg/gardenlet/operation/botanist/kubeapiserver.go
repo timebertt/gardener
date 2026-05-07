@@ -125,7 +125,7 @@ func (b *Botanist) computeKubeAPIServerServerCertificateConfig() kubeapiserver.S
 		ipAddresses = append(ipAddresses, b.Shoot.Networks.APIServer...)
 	}
 
-	if b.Shoot.InternalClusterDomain != nil {
+	if b.ShouldDeployInternalDNS() {
 		dnsNames = append(dnsNames, v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain))
 	}
 

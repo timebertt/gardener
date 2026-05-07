@@ -234,7 +234,7 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 			SkipIf:       o.Shoot.HibernationEnabled,
 			Dependencies: flow.NewTaskIDs(deployReferencedResources, waitUntilKubeAPIServerServiceIsReady),
 		})
-		_ = g.Add(flow.Task{
+		deployExternalDomainDNSRecord = g.Add(flow.Task{
 			Name: "Deploying external domain DNS record",
 			Fn: flow.TaskFn(func(ctx context.Context) error {
 				if err := botanist.DeployOrDestroyExternalDNSRecord(ctx); err != nil {
@@ -427,7 +427,7 @@ func (r *Reconciler) runReconcileShootFlow(ctx context.Context, o *operation.Ope
 		initializeShootClients = g.Add(flow.Task{
 			Name:         "Initializing connection to Shoot",
 			Fn:           flow.TaskFn(botanist.InitializeDesiredShootClients).RetryUntilTimeout(defaultInterval, 2*time.Minute),
-			Dependencies: flow.NewTaskIDs(deployInternalDomainDNSRecord, deployGardenerAccess),
+			Dependencies: flow.NewTaskIDs(deployInternalDomainDNSRecord, deployExternalDomainDNSRecord, deployGardenerAccess),
 		})
 		_ = g.Add(flow.Task{
 			Name: "Sync public service account signing keys to Garden cluster",

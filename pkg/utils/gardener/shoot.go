@@ -595,22 +595,6 @@ func IsIncompleteDNSConfigError(err error) bool {
 	return ok
 }
 
-// ConstructInternalClusterDomain constructs the internal base domain for this shoot cluster.
-// It is only used for internal purposes (all kubeconfigs except the one which is received by the
-// user will only talk with the kube-apiserver via a DNS record of domain). In case the given <internalDomain>
-// already contains "internal", the result is constructed as "<shootName>.<shootProject>.<internalDomain>."
-// In case it does not, the word "internal" will be appended, resulting in
-// "<shootName>.<shootProject>.internal.<internalDomain>".
-func ConstructInternalClusterDomain(shoot *gardencorev1beta1.Shoot, shootProject string, internalDomain *Domain) *string {
-	if internalDomain == nil || !v1beta1helper.ShootUsesInternalDNS(shoot) {
-		return nil
-	}
-	if strings.Contains(internalDomain.Domain, InternalDomainKey) {
-		return ptr.To(fmt.Sprintf("%s.%s.%s", shoot.Name, shootProject, internalDomain.Domain))
-	}
-	return ptr.To(fmt.Sprintf("%s.%s.%s.%s", shoot.Name, shootProject, InternalDomainKey, internalDomain.Domain))
-}
-
 // ConstructExternalClusterDomain constructs the external Shoot cluster domain, i.e. the domain which will be put
 // into the Kubeconfig handed out to the user.
 func ConstructExternalClusterDomain(shoot *gardencorev1beta1.Shoot) *string {

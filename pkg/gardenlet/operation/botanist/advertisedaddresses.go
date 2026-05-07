@@ -54,7 +54,7 @@ func (b *Botanist) ToAdvertisedAddresses(ctx context.Context) ([]gardencorev1bet
 		})
 	}
 
-	if b.Shoot.InternalClusterDomain != nil {
+	if v1beta1helper.ShootUsesInternalDNS(b.Shoot.GetInfo()) {
 		addresses = append(addresses, gardencorev1beta1.ShootAdvertisedAddress{
 			Name: v1beta1constants.AdvertisedAddressInternal,
 			URL:  "https://" + v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain),
@@ -75,7 +75,7 @@ func (b *Botanist) ToAdvertisedAddresses(ctx context.Context) ([]gardencorev1bet
 			shoot.Spec.Kubernetes.KubeAPIServer.ServiceAccountConfig.Issuer != nil
 	}
 
-	if b.Shoot.InternalClusterDomain != nil ||
+	if v1beta1helper.ShootUsesInternalDNS(b.Shoot.GetInfo()) ||
 		hasCustomIssuer(b.Shoot.GetInfo()) ||
 		v1beta1helper.HasManagedIssuer(b.Shoot.GetInfo()) {
 		externalHostname := b.Shoot.ComputeOutOfClusterAPIServerAddress(true)

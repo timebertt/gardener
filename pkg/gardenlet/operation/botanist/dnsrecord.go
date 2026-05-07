@@ -74,7 +74,7 @@ func (b *Botanist) DefaultInternalDNSRecord() extensionsdnsrecord.Interface {
 
 	var credentialsDeployer extensionsdnsrecord.CredentialsDeployFunc
 
-	if b.NeedsInternalDNS() {
+	if b.ShouldDeployInternalDNS() {
 		values.Type = b.Garden.InternalDomain.Provider
 		if b.Garden.InternalDomain.Zone != "" {
 			values.Zone = &b.Garden.InternalDomain.Zone
@@ -104,9 +104,10 @@ func (b *Botanist) DeployOrDestroyExternalDNSRecord(ctx context.Context) error {
 
 // DeployOrDestroyInternalDNSRecord deploys, restores, or destroys the internal DNSRecord and waits for the operation to complete.
 func (b *Botanist) DeployOrDestroyInternalDNSRecord(ctx context.Context) error {
-	if b.NeedsInternalDNS() {
+	if b.ShouldDeployInternalDNS() {
 		return b.deployInternalDNSRecord(ctx)
 	}
+
 	return b.DestroyInternalDNSRecord(ctx)
 }
 

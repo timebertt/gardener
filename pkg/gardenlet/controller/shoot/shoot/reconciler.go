@@ -431,7 +431,7 @@ func (r *Reconciler) initializeOperation(
 		WithInternalDomain(gardenObj.InternalDomain).
 		WithDefaultDomains(gardenObj.DefaultDomains).
 		WithServiceAccountIssuerHostname(gardenSecrets[v1beta1constants.GardenRoleShootServiceAccountIssuer]).
-		Build(ctx, r.GardenClient)
+		Build(ctx, r.GardenClient, r.SeedClientSet.Client())
 	if err != nil {
 		return nil, err
 	}

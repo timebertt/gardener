@@ -66,7 +66,7 @@ func (b *Botanist) defaultKubeAPIServerServiceWithSuffix(suffix string, register
 // ShootUsesDNS returns true if the shoot uses internal or external DNS.
 // TODO: consider dropping this function with https://github.com/gardener/gardener/issues/12212
 func (b *Botanist) ShootUsesDNS() bool {
-	return b.NeedsInternalDNS() || b.NeedsExternalDNS()
+	return b.ShouldDeployInternalDNS() || b.NeedsExternalDNS()
 }
 
 // ShootUsesIstioTLSTermination returns true if the shoot uses Istio TLS termination aka L7 load-balancing.
@@ -160,7 +160,7 @@ func (b *Botanist) setAPIServerServiceClusterIPs(clusterIPs []string) {
 			}
 
 			hosts := []string{v1beta1helper.GetAPIServerDomain(*b.Shoot.ExternalClusterDomain)}
-			if b.Shoot.InternalClusterDomain != nil {
+			if b.ShouldDeployInternalDNS() {
 				hosts = append(hosts, v1beta1helper.GetAPIServerDomain(*b.Shoot.InternalClusterDomain))
 			}
 

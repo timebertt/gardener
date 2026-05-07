@@ -134,17 +134,17 @@ var _ = Describe("dns", func() {
 	Context("NeedsInternalDNS", func() {
 		It("should be false when the internal domain is nil", func() {
 			b.Garden.InternalDomain = nil
-			Expect(b.NeedsInternalDNS()).To(BeFalse())
+			Expect(b.ShouldDeployInternalDNS()).To(BeFalse())
 		})
 
 		It("should be false when the internal domain provider is unmanaged", func() {
 			b.Garden.InternalDomain = &gardenerutils.Domain{Provider: "unmanaged"}
-			Expect(b.NeedsInternalDNS()).To(BeFalse())
+			Expect(b.ShouldDeployInternalDNS()).To(BeFalse())
 		})
 
 		It("should be true when the internal domain provider is not unmanaged", func() {
 			b.Garden.InternalDomain = &gardenerutils.Domain{Provider: "some-provider"}
-			Expect(b.NeedsInternalDNS()).To(BeTrue())
+			Expect(b.ShouldDeployInternalDNS()).To(BeTrue())
 		})
 	})
 

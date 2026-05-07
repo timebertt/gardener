@@ -15,9 +15,11 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gardenlethelper "github.com/gardener/gardener/pkg/api/config/gardenlet/v1alpha1/helper"
@@ -25,6 +27,7 @@ import (
 	gardenletconfigv1alpha1 "github.com/gardener/gardener/pkg/apis/config/gardenlet/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	securityv1alpha1 "github.com/gardener/gardener/pkg/apis/security/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
@@ -205,7 +208,7 @@ func (b *Builder) WithServiceAccountIssuerHostname(secret *corev1.Secret) *Build
 }
 
 // Build initializes a new Shoot object.
-func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
+func (b *Builder) Build(ctx context.Context, gardenReader, seedReader client.Reader) (*Shoot, error) {
 	shoot := &Shoot{}
 
 	shootObject, err := b.shootObjectFunc(ctx)
@@ -242,7 +245,10 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 
 	shoot.HibernationEnabled = v1beta1helper.HibernationIsEnabled(shootObject)
 	shoot.ControlPlaneNamespace = v1beta1helper.ControlPlaneNamespaceForShoot(shootObject)
-	shoot.InternalClusterDomain = gardenerutils.ConstructInternalClusterDomain(shootObject, b.projectName, b.internalDomain)
+	shoot.InternalClusterDomain, err = shoot.ConstructInternalClusterDomain(ctx, seedReader, b.projectName, b.internalDomain)
+	if err != nil {
+		return nil, err
+	}
 	shoot.ExternalClusterDomain = gardenerutils.ConstructExternalClusterDomain(shootObject)
 	shoot.IgnoreAlerts = v1beta1helper.ShootIgnoresAlerts(shootObject)
 	shoot.WantsAlertmanager = v1beta1helper.ShootWantsAlertManager(shootObject)
@@ -261,7 +267,7 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 	shoot.ServiceAccountIssuerHostname = serviceAccountIssuerHostname
 
 	// Determine information about external domain for shoot cluster.
-	externalDomain, err := gardenerutils.ConstructExternalDomain(ctx, c, shootObject, shoot.Credentials, b.defaultDomains)
+	externalDomain, err := gardenerutils.ConstructExternalDomain(ctx, gardenReader, shootObject, shoot.Credentials, b.defaultDomains)
 	if err != nil {
 		return nil, err
 	}
@@ -335,13 +341,52 @@ func (b *Builder) Build(ctx context.Context, c client.Reader) (*Shoot, error) {
 		lastOperation.Type == gardencorev1beta1.LastOperationTypeRestore &&
 		lastOperation.State != gardencorev1beta1.LastOperationStateSucceeded {
 		shootState := &gardencorev1beta1.ShootState{ObjectMeta: metav1.ObjectMeta{Name: shootObject.Name, Namespace: shootObject.Namespace}}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(shootState), shootState); err != nil {
+		if err := gardenReader.Get(ctx, client.ObjectKeyFromObject(shootState), shootState); err != nil {
 			return nil, err
 		}
 		shoot.SetShootState(shootState)
 	}
 
 	return shoot, nil
+}
+
+// ConstructInternalClusterDomain constructs the internal base domain for this shoot cluster.
+// It is only used for internal purposes (all kubeconfigs except the one which is received by the
+// user will only talk with the kube-apiserver via a DNS record of domain). In case the given <internalDomain>
+// already contains "internal", the result is constructed as "<shootName>.<shootProject>.<internalDomain>."
+// In case it does not, the word "internal" will be appended, resulting in
+// "<shootName>.<shootProject>.internal.<internalDomain>".
+func (s *Shoot) ConstructInternalClusterDomain(ctx context.Context, seedReader client.Reader, shootProject string, internalDomain *gardenerutils.Domain) (*string, error) {
+	if internalDomain == nil {
+		return nil, nil
+	}
+
+	shoot := s.GetInfo()
+	dnsRecord := &extensionsv1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{
+		Namespace: s.ControlPlaneNamespace,
+		Name:      shoot.Name + "-" + v1beta1constants.DNSRecordInternalName,
+	}}
+	dnsRecordExists := true
+	if err := seedReader.Get(ctx, client.ObjectKeyFromObject(dnsRecord), dnsRecord); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("failed to get DNSRecord for shoot %q: %w", shoot.Name, err)
+		}
+		dnsRecordExists = false
+	}
+
+	if !v1beta1helper.ShootUsesInternalDNS(shoot) {
+		// delay removal of the internal DNSRecord from certificates, istio resources, etc. until completing phase
+		if !dnsRecordExists || v1beta1helper.GetShootCARotationPhase(shoot.Status.Credentials) == gardencorev1beta1.RotationCompleting {
+			fmt.Println("InternalClusterDomain nil")
+			return nil, nil
+		}
+		fmt.Println("InternalClusterDomain not nil")
+	}
+
+	if strings.Contains(internalDomain.Domain, gardenerutils.InternalDomainKey) {
+		return ptr.To(fmt.Sprintf("%s.%s.%s", shoot.Name, shootProject, internalDomain.Domain)), nil
+	}
+	return ptr.To(fmt.Sprintf("%s.%s.%s.%s", shoot.Name, shootProject, gardenerutils.InternalDomainKey, internalDomain.Domain)), nil
 }
 
 // GetInfo returns the shoot resource of this Shoot in a concurrency safe way.
@@ -519,7 +564,8 @@ func (s *Shoot) ComputeInClusterAPIServerAddress(runsInShootNamespace bool) stri
 // ComputeOutOfClusterAPIServerAddress returns the external address for the shoot API server depending on whether
 // the caller wants to use the internal cluster domain and whether DNS is disabled on this seed.
 func (s *Shoot) ComputeOutOfClusterAPIServerAddress(preferInternalClusterDomain bool) string {
-	if s.InternalClusterDomain != nil && (preferInternalClusterDomain || s.ExternalClusterDomain == nil || v1beta1helper.ShootUsesUnmanagedDNS(s.GetInfo())) {
+	if v1beta1helper.ShootUsesInternalDNS(s.GetInfo()) && s.InternalClusterDomain != nil &&
+		(preferInternalClusterDomain || s.ExternalClusterDomain == nil || v1beta1helper.ShootUsesUnmanagedDNS(s.GetInfo())) {
 		return v1beta1helper.GetAPIServerDomain(*s.InternalClusterDomain)
 	}
 

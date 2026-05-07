@@ -191,7 +191,7 @@ func (b *Builder) WithShootFromCluster(seedClientSet kubernetes.Interface, shoot
 			WithInternalDomain(gardenObj.InternalDomain).
 			WithDefaultDomains(gardenObj.DefaultDomains).
 			WithServiceAccountIssuerHostname(serviceAccountIssuerConfig).
-			Build(ctx, c)
+			Build(ctx, c, seedClientSet.Client())
 		if err != nil {
 			return nil, err
 		}
