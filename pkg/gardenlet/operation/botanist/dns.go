@@ -5,6 +5,7 @@
 package botanist
 
 import (
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 )
 
@@ -26,7 +27,8 @@ func (b *Botanist) NeedsExternalDNS() bool {
 func (b *Botanist) NeedsInternalDNS() bool {
 	return b.Garden != nil &&
 		b.Garden.InternalDomain != nil &&
-		b.Garden.InternalDomain.Provider != "unmanaged"
+		b.Garden.InternalDomain.Provider != "unmanaged" &&
+		v1beta1helper.ShootUsesInternalDNS(b.Shoot.GetInfo())
 }
 
 func (b *Botanist) newDNSComponentsTargetingAPIServerAddress() {
