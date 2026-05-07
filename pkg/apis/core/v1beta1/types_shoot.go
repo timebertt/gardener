@@ -566,6 +566,17 @@ type DNS struct {
 	// Please use the DNS extension provider config (e.g. shoot-dns-service) for additional providers.
 	// +optional
 	Providers []DNSProvider `json:"providers,omitempty" protobuf:"bytes,2,rep,name=providers"`
+	// InternalDomain TODO(maboehm)
+	// +optional
+	InternalDomain *InternalDomain `json:"internalDomain,omitempty" protobuf:"bytes,3,opt,name=internalDomain"`
+}
+
+// InternalDomain is foo
+type InternalDomain struct {
+	// Enabled
+	// Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" protobuf:"varint,1,opt,name=enabled"`
 }
 
 // TODO(timuthy): Rework the 'DNSProvider' struct and deprecated fields in the scope of https://github.com/gardener/gardener/issues/9176.

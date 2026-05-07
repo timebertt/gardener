@@ -919,6 +919,10 @@ message DNS {
   // Please use the DNS extension provider config (e.g. shoot-dns-service) for additional providers.
   // +optional
   repeated DNSProvider providers = 2;
+
+  // InternalDomain TODO(maboehm)
+  // +optional
+  optional InternalDomain internalDomain = 3;
 }
 
 // DNSExposure specifies that this shoot will be exposed by DNS.
@@ -1398,6 +1402,14 @@ message IngressController {
   // ProviderConfig specifies infrastructure specific configuration for the ingressController
   // +optional
   optional .k8s.io.apimachinery.pkg.runtime.RawExtension providerConfig = 2;
+}
+
+// InternalDomain is foo
+message InternalDomain {
+  // Enabled
+  // Defaults to true.
+  // +optional
+  optional bool enabled = 1;
 }
 
 // InternalSecret holds secret data of a certain type. The total bytes of the values in

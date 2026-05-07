@@ -381,6 +381,8 @@ spec:
     # automatically compute a correct domain based on the default domains in the garden cluster.
     domain: crazy-botany.core.my-custom-domain.com
     # Provider configuration required if custom shoot domain is configured.
+  # internalDomain:
+  #   enabled: true
   # providers:
   # - type: aws-route53
   #   secretName: my-custom-domain-secret # Deprecated. Forbidden for Kubernetes >= 1.35. Use `credentialsRef` instead.

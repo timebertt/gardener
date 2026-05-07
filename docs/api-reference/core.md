@@ -3360,6 +3360,18 @@ string
 <p>Providers is a list of DNS providers that shall be enabled for this shoot cluster. Only relevant if<br />not a default domain is used.<br />Deprecated: Configuring multiple DNS providers is deprecated and will be forbidden in a future release.<br />Please use the DNS extension provider config (e.g. shoot-dns-service) for additional providers.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>internalDomain</code></br>
+<em>
+<a href="#internaldomain">InternalDomain</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>InternalDomain TODO(maboehm)</p>
+</td>
+</tr>
 
 </tbody>
 </table>
@@ -5207,6 +5219,44 @@ string
 <td>
 <em>(Optional)</em>
 <p>ProviderConfig specifies infrastructure specific configuration for the ingressController</p>
+</td>
+</tr>
+
+</tbody>
+</table>
+
+
+<h3 id="internaldomain">InternalDomain
+</h3>
+
+
+<p>
+(<em>Appears on:</em><a href="#dns">DNS</a>)
+</p>
+
+<p>
+InternalDomain is foo
+</p>
+
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+
+<tr>
+<td>
+<code>enabled</code></br>
+<em>
+boolean
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Enabled<br />Defaults to true.</p>
 </td>
 </tr>
 

@@ -460,6 +460,11 @@ func (in IngressController) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in InternalDomain) OpenAPIModelName() string {
+	return "com.github.gardener.gardener.pkg.apis.core.v1beta1.InternalDomain"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in InternalSecret) OpenAPIModelName() string {
 	return "com.github.gardener.gardener.pkg.apis.core.v1beta1.InternalSecret"
 }

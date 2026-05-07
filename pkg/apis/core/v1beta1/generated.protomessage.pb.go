@@ -191,6 +191,8 @@ func (*Ingress) ProtoMessage() {}
 
 func (*IngressController) ProtoMessage() {}
 
+func (*InternalDomain) ProtoMessage() {}
+
 func (*InternalSecret) ProtoMessage() {}
 
 func (*InternalSecretList) ProtoMessage() {}

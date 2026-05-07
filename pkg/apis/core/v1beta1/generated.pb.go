@@ -216,6 +216,8 @@ func (m *Ingress) Reset() { *m = Ingress{} }
 
 func (m *IngressController) Reset() { *m = IngressController{} }
 
+func (m *InternalDomain) Reset() { *m = InternalDomain{} }
+
 func (m *InternalSecret) Reset() { *m = InternalSecret{} }
 
 func (m *InternalSecretList) Reset() { *m = InternalSecretList{} }
@@ -3503,6 +3505,18 @@ func (m *DNS) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.InternalDomain != nil {
+		{
+			size, err := m.InternalDomain.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintGenerated(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x1a
+	}
 	if len(m.Providers) > 0 {
 		for iNdEx := len(m.Providers) - 1; iNdEx >= 0; iNdEx-- {
 			{
@@ -5093,6 +5107,39 @@ func (m *IngressController) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i = encodeVarintGenerated(dAtA, i, uint64(len(m.Kind)))
 	i--
 	dAtA[i] = 0xa
+	return len(dAtA) - i, nil
+}
+
+func (m *InternalDomain) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *InternalDomain) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *InternalDomain) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.Enabled != nil {
+		i--
+		if *m.Enabled {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x8
+	}
 	return len(dAtA) - i, nil
 }
 
@@ -14599,6 +14646,10 @@ func (m *DNS) Size() (n int) {
 			n += 1 + l + sovGenerated(uint64(l))
 		}
 	}
+	if m.InternalDomain != nil {
+		l = m.InternalDomain.Size()
+		n += 1 + l + sovGenerated(uint64(l))
+	}
 	return n
 }
 
@@ -15200,6 +15251,18 @@ func (m *IngressController) Size() (n int) {
 	if m.ProviderConfig != nil {
 		l = m.ProviderConfig.Size()
 		n += 1 + l + sovGenerated(uint64(l))
+	}
+	return n
+}
+
+func (m *InternalDomain) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Enabled != nil {
+		n += 2
 	}
 	return n
 }
@@ -19086,6 +19149,7 @@ func (this *DNS) String() string {
 	s := strings.Join([]string{`&DNS{`,
 		`Domain:` + valueToStringGenerated(this.Domain) + `,`,
 		`Providers:` + repeatedStringForProviders + `,`,
+		`InternalDomain:` + strings.Replace(this.InternalDomain.String(), "InternalDomain", "InternalDomain", 1) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -19512,6 +19576,16 @@ func (this *IngressController) String() string {
 	s := strings.Join([]string{`&IngressController{`,
 		`Kind:` + fmt.Sprintf("%v", this.Kind) + `,`,
 		`ProviderConfig:` + strings.Replace(fmt.Sprintf("%v", this.ProviderConfig), "RawExtension", "runtime.RawExtension", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *InternalDomain) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&InternalDomain{`,
+		`Enabled:` + valueToStringGenerated(this.Enabled) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -30356,6 +30430,42 @@ func (m *DNS) Unmarshal(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field InternalDomain", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowGenerated
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthGenerated
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthGenerated
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.InternalDomain == nil {
+				m.InternalDomain = &InternalDomain{}
+			}
+			if err := m.InternalDomain.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skipGenerated(dAtA[iNdEx:])
@@ -34909,6 +35019,77 @@ func (m *IngressController) Unmarshal(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipGenerated(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLengthGenerated
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *InternalDomain) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowGenerated
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: InternalDomain: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: InternalDomain: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Enabled", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowGenerated
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.Enabled = &b
 		default:
 			iNdEx = preIndex
 			skippy, err := skipGenerated(dAtA[iNdEx:])

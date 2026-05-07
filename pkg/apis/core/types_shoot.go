@@ -453,6 +453,14 @@ type DNS struct {
 	// Deprecated: Configuring multiple DNS providers is deprecated and will be forbidden in a future release.
 	// Please use the DNS extension provider config (e.g. shoot-dns-service) for additional providers.
 	Providers []DNSProvider
+	// InternalDomain TODO(maboehm)
+	InternalDomain *InternalDomain
+}
+
+// InternalDomain is foo
+type InternalDomain struct {
+	// Enabled
+	Enabled *bool
 }
 
 // TODO(timuthy): Rework the 'DNSProvider' struct and deprecated fields in the scope of https://github.com/gardener/gardener/issues/9176.

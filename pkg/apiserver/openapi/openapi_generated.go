@@ -132,6 +132,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1beta1.InPlaceUpdatesStatus{}.OpenAPIModelName():                         schema_pkg_apis_core_v1beta1_InPlaceUpdatesStatus(ref),
 		v1beta1.Ingress{}.OpenAPIModelName():                                      schema_pkg_apis_core_v1beta1_Ingress(ref),
 		v1beta1.IngressController{}.OpenAPIModelName():                            schema_pkg_apis_core_v1beta1_IngressController(ref),
+		v1beta1.InternalDomain{}.OpenAPIModelName():                               schema_pkg_apis_core_v1beta1_InternalDomain(ref),
 		v1beta1.InternalSecret{}.OpenAPIModelName():                               schema_pkg_apis_core_v1beta1_InternalSecret(ref),
 		v1beta1.InternalSecretList{}.OpenAPIModelName():                           schema_pkg_apis_core_v1beta1_InternalSecretList(ref),
 		v1beta1.KubeAPIServerConfig{}.OpenAPIModelName():                          schema_pkg_apis_core_v1beta1_KubeAPIServerConfig(ref),
@@ -3529,11 +3530,17 @@ func schema_pkg_apis_core_v1beta1_DNS(ref common.ReferenceCallback) common.OpenA
 							},
 						},
 					},
+					"internalDomain": {
+						SchemaProps: spec.SchemaProps{
+							Description: "InternalDomain TODO(maboehm)",
+							Ref:         ref(v1beta1.InternalDomain{}.OpenAPIModelName()),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v1beta1.DNSProvider{}.OpenAPIModelName()},
+			v1beta1.DNSProvider{}.OpenAPIModelName(), v1beta1.InternalDomain{}.OpenAPIModelName()},
 	}
 }
 
@@ -4739,6 +4746,26 @@ func schema_pkg_apis_core_v1beta1_IngressController(ref common.ReferenceCallback
 		},
 		Dependencies: []string{
 			runtime.RawExtension{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_core_v1beta1_InternalDomain(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "InternalDomain is foo",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"enabled": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Enabled Defaults to true.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
