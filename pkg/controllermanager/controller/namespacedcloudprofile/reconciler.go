@@ -226,7 +226,9 @@ func mergeExpirableVersions(base, override gardencorev1beta1.ExpirableVersion) g
 		true,
 	)
 
-	slices.SortFunc(resultLifecycle, compareLifecycleStages)
+	slices.SortFunc(resultLifecycle, func(a, b gardencorev1beta1.LifecycleStage) int {
+		return compareLifecycleStages(a.Classification, b.Classification)
+	})
 	adjustLifecycleStartTimes(resultLifecycle, overrideLifecycle)
 
 	return gardencorev1beta1.ExpirableVersion{
@@ -255,10 +257,9 @@ func mergeLegacyClassificationFields(base, override gardencorev1beta1.ExpirableV
 // introduces an initial 'preview' stage without a StartTime, the implicit 'supported' stage is
 // removed so that 'preview' is not immediately superseded.
 func removeImplicitLaterStages(stages []gardencorev1beta1.LifecycleStage, classification gardencorev1beta1.VersionClassification) []gardencorev1beta1.LifecycleStage {
-	classificationStage := gardencorev1beta1.LifecycleStage{Classification: classification}
 	return slices.DeleteFunc(stages, func(stage gardencorev1beta1.LifecycleStage) bool {
 		isImplicitStage := stage.StartTime == nil
-		isLaterStage := compareLifecycleStages(stage, classificationStage) > 0
+		isLaterStage := compareLifecycleStages(stage.Classification, classification) > 0
 		return isImplicitStage && isLaterStage
 	})
 }
@@ -282,7 +283,7 @@ func adjustLifecycleStartTimes(
 
 		for i := range resultLifecycle {
 			resultStage := &resultLifecycle[i]
-			classificationOrder := compareLifecycleStages(*resultStage, overrideStage)
+			classificationOrder := compareLifecycleStages(resultStage.Classification, overrideStage.Classification)
 
 			switch {
 			// resultStage is earlier in the lifecycle then the override, check if resultStage is after the override.
@@ -307,7 +308,7 @@ func adjustLifecycleStartTimes(
 //	< 0: a is earlier in the lifecycle
 //	= 0: a and b have the same classification
 //	> 0: a is later in the lifecycle
-func compareLifecycleStages(a, b gardencorev1beta1.LifecycleStage) int {
+func compareLifecycleStages(a, b gardencorev1beta1.VersionClassification) int {
 	order := map[gardencorev1beta1.VersionClassification]int{
 		gardencorev1beta1.ClassificationUnavailable: 0,
 		gardencorev1beta1.ClassificationPreview:     1,
@@ -315,7 +316,7 @@ func compareLifecycleStages(a, b gardencorev1beta1.LifecycleStage) int {
 		gardencorev1beta1.ClassificationDeprecated:  3,
 		gardencorev1beta1.ClassificationExpired:     4,
 	}
-	return order[a.Classification] - order[b.Classification]
+	return order[a] - order[b]
 }
 
 // mergeClassificationLifecycles applies a NamespacedCloudProfile override to an existing
