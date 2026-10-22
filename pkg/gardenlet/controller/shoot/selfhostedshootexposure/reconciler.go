@@ -66,8 +66,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconc
 	// The internal DNSRecord is updated first and independently of the exposure (which might block until the exposure
 	// is ready), so that the worker nodes can still reach the control plane when the exposure (e.g., a load balancer)
 	// is broken.
-	internalDNSRecordErr := r.reconcileInternalDNSRecord(ctx, log, shoot)
-	return reconcile.Result{}, errors.Join(internalDNSRecordErr, r.reconcileExposure(ctx, log, shoot))
+	return reconcile.Result{}, errors.Join(r.reconcileInternalDNSRecord(ctx, log, shoot), r.reconcileExposure(ctx, log, shoot))
 }
 
 func (r *Reconciler) reconcileExposure(ctx context.Context, log logr.Logger, shoot *gardencorev1beta1.Shoot) error {
@@ -115,7 +114,7 @@ func (r *Reconciler) reconcileDNSExposure(ctx context.Context, log logr.Logger, 
 	return r.deleteExposureIfExists(ctx, log, shoot)
 }
 
-// reconcileExposureDisabled performs the switch-off handoff for extension-based exposure to unmanaged.
+// reconcileExposureDisabled performs the switch-off handoff for extension/DNS-based exposure to unmanaged DNS records.
 func (r *Reconciler) reconcileExposureDisabled(ctx context.Context, log logr.Logger, shoot *gardencorev1beta1.Shoot) error {
 	exposure, err := r.getExposure(ctx, shoot)
 	if err != nil || exposure == nil {
