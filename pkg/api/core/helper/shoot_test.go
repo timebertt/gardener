@@ -722,6 +722,33 @@ var _ = Describe("Helper", func() {
 		})
 	})
 
+	Describe("#HasControlPlaneExposure", func() {
+		It("should return false when shoot has no control plane worker pool", func() {
+			shoot := &core.Shoot{Spec: core.ShootSpec{Provider: core.Provider{Workers: []core.Worker{{}}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeFalse())
+		})
+
+		It("should return false when shoot has no exposure", func() {
+			shoot := &core.Shoot{Spec: core.ShootSpec{Provider: core.Provider{Workers: []core.Worker{{ControlPlane: &core.WorkerControlPlane{}}}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeFalse())
+		})
+
+		It("should return false when exposure is empty", func() {
+			shoot := &core.Shoot{Spec: core.ShootSpec{Provider: core.Provider{Workers: []core.Worker{{ControlPlane: &core.WorkerControlPlane{Exposure: &core.Exposure{}}}}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeFalse())
+		})
+
+		It("should return true for extension-based exposure", func() {
+			shoot := &core.Shoot{Spec: core.ShootSpec{Provider: core.Provider{Workers: []core.Worker{{ControlPlane: &core.WorkerControlPlane{Exposure: &core.Exposure{Extension: &core.ExtensionExposure{}}}}}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeTrue())
+		})
+
+		It("should return true for DNS-based exposure", func() {
+			shoot := &core.Shoot{Spec: core.ShootSpec{Provider: core.Provider{Workers: []core.Worker{{ControlPlane: &core.WorkerControlPlane{Exposure: &core.Exposure{DNS: &core.DNSExposure{}}}}}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeTrue())
+		})
+	})
+
 	Describe("#ControlPlaneWorkerPoolForShoot", func() {
 		It("should return nil because shoot has no workers", func() {
 			shoot := &core.Shoot{}

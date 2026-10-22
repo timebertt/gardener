@@ -735,6 +735,13 @@ func HasDNSExposure(shoot *gardencorev1beta1.Shoot) bool {
 	return exposure != nil && exposure.DNS != nil
 }
 
+// HasControlPlaneExposure returns true if the shoot's control plane is configured to be exposed by Gardener, either via
+// a SelfHostedShootExposure extension or directly via DNS. In this case, Gardener manages the external and internal
+// DNSRecords of the self-hosted shoot.
+func HasControlPlaneExposure(shoot *gardencorev1beta1.Shoot) bool {
+	return HasExtensionExposure(shoot) || HasDNSExposure(shoot)
+}
+
 // SelfHostedShootExposureExtensionType returns the exposure extension type configured for the shoot,
 // defaulting to the provider type when it is not configured.
 func SelfHostedShootExposureExtensionType(shoot *gardencorev1beta1.Shoot) string {

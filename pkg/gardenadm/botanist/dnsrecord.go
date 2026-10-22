@@ -36,12 +36,14 @@ func (b *GardenadmBotanist) DeployBootstrapDNSRecord(ctx context.Context) error 
 	return component.OpWait(b.Shoot.Components.Extensions.ExternalDNSRecord).Deploy(ctx)
 }
 
-// RestoreExternalDNSRecord restores the external DNSRecord for the self-hosted shoot's API server.
+// ReconcileExternalDNSRecord deploys or restores the external DNSRecord for the self-hosted shoot's API server.
+// In the "managed infrastructure" scenario, the DNSRecord is restored from the ShootState exported by
+// `gardenadm bootstrap`. In the "unmanaged infrastructure" scenario, the DNSRecord is deployed initially.
 // For extension-based exposure the DNS target is set to the ingress that is read from the
 // SelfHostedShootExposure status.
 // For DNS-based exposure the preferred address of each control-plane node is used directly.
 // For dual-stack setups, IP families are preferred in the order they appear in spec.networking.ipFamilies.
-func (b *GardenadmBotanist) RestoreExternalDNSRecord(ctx context.Context) error {
+func (b *GardenadmBotanist) ReconcileExternalDNSRecord(ctx context.Context) error {
 	addresses, recordType, err := b.externalDNSRecordValues(ctx)
 	if err != nil {
 		return err
@@ -50,7 +52,7 @@ func (b *GardenadmBotanist) RestoreExternalDNSRecord(ctx context.Context) error 
 	b.Shoot.Components.Extensions.ExternalDNSRecord.SetRecordType(recordType)
 	b.Shoot.Components.Extensions.ExternalDNSRecord.SetValues(addresses)
 
-	if err := b.Shoot.Components.Extensions.ExternalDNSRecord.Restore(ctx, b.Shoot.GetShootState()); err != nil {
+	if err := b.DeployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.ExternalDNSRecord); err != nil {
 		return err
 	}
 	return b.Shoot.Components.Extensions.ExternalDNSRecord.Wait(ctx)

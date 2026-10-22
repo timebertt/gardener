@@ -1953,6 +1953,41 @@ var _ = Describe("Helper", func() {
 		})
 	})
 
+	Describe("#HasControlPlaneExposure", func() {
+		It("should return false when shoot has no control plane worker pool", func() {
+			shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Provider: gardencorev1beta1.Provider{Workers: []gardencorev1beta1.Worker{{}}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeFalse())
+		})
+
+		It("should return false when shoot has no exposure", func() {
+			shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Provider: gardencorev1beta1.Provider{Workers: []gardencorev1beta1.Worker{
+				{ControlPlane: &gardencorev1beta1.WorkerControlPlane{}},
+			}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeFalse())
+		})
+
+		It("should return false when exposure is empty", func() {
+			shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Provider: gardencorev1beta1.Provider{Workers: []gardencorev1beta1.Worker{
+				{ControlPlane: &gardencorev1beta1.WorkerControlPlane{Exposure: &gardencorev1beta1.Exposure{}}},
+			}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeFalse())
+		})
+
+		It("should return true for extension-based exposure", func() {
+			shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Provider: gardencorev1beta1.Provider{Workers: []gardencorev1beta1.Worker{
+				{ControlPlane: &gardencorev1beta1.WorkerControlPlane{Exposure: &gardencorev1beta1.Exposure{Extension: &gardencorev1beta1.ExtensionExposure{Type: new("local")}}}},
+			}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeTrue())
+		})
+
+		It("should return true for DNS-based exposure", func() {
+			shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Provider: gardencorev1beta1.Provider{Workers: []gardencorev1beta1.Worker{
+				{ControlPlane: &gardencorev1beta1.WorkerControlPlane{Exposure: &gardencorev1beta1.Exposure{DNS: &gardencorev1beta1.DNSExposure{}}}},
+			}}}}
+			Expect(HasControlPlaneExposure(shoot)).To(BeTrue())
+		})
+	})
+
 	Describe("#SelfHostedShootExposureExtensionType", func() {
 		It("should default to the provider type when no exposure is configured", func() {
 			shoot := &gardencorev1beta1.Shoot{Spec: gardencorev1beta1.ShootSpec{Provider: gardencorev1beta1.Provider{

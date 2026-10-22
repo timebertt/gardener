@@ -714,6 +714,27 @@ var _ = Describe("dns", func() {
 					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
 				})
 
+				It("should allow a self-hosted shoot without managed infrastructure but with control plane exposure to retain its primary provider", func() {
+					shoot.Spec.CredentialsBindingName = nil
+					shoot.Spec.Provider.Workers[0].ControlPlane.Exposure = &core.Exposure{DNS: &core.DNSExposure{}}
+
+					attrs := admission.NewAttributesRecord(shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
+
+					Expect(admissionHandler.Validate(ctx, attrs, nil)).To(Succeed())
+				})
+
+				It("should forbid a primary provider for a self-hosted shoot without managed infrastructure and without control plane exposure", func() {
+					shoot.Spec.CredentialsBindingName = nil
+
+					attrs := admission.NewAttributesRecord(shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
+					err := admissionHandler.Validate(ctx, attrs, nil)
+					Expect(err).To(BeInvalidError())
+					Expect(getErrorList(err)).To(ContainElement(PointTo(MatchFields(IgnoreExtras, Fields{
+						"Field":  Equal("spec.dns.providers[0].primary"),
+						"Detail": ContainSubstring("primary dns provider must not be set when default domain is used"),
+					}))))
+				})
+
 				It("should still forbid a primary provider without a self-hosted control plane", func() {
 					shoot.Spec.Provider.Workers = nil
 

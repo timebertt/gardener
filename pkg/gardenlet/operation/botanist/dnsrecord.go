@@ -110,7 +110,7 @@ func (b *Botanist) DeployOrDestroyInternalDNSRecord(ctx context.Context) error {
 
 // deployExternalDNSRecord deploys or restores the external DNSRecord and waits for the operation to complete.
 func (b *Botanist) deployExternalDNSRecord(ctx context.Context) error {
-	if err := b.deployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.ExternalDNSRecord); err != nil {
+	if err := b.DeployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.ExternalDNSRecord); err != nil {
 		return err
 	}
 	return b.Shoot.Components.Extensions.ExternalDNSRecord.Wait(ctx)
@@ -118,7 +118,7 @@ func (b *Botanist) deployExternalDNSRecord(ctx context.Context) error {
 
 // deployInternalDNSRecord deploys or restores the internal DNSRecord and waits for the operation to complete.
 func (b *Botanist) deployInternalDNSRecord(ctx context.Context) error {
-	if err := b.deployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.InternalDNSRecord); err != nil {
+	if err := b.DeployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.InternalDNSRecord); err != nil {
 		return err
 	}
 	return b.Shoot.Components.Extensions.InternalDNSRecord.Wait(ctx)
@@ -156,7 +156,9 @@ func (b *Botanist) MigrateInternalDNSRecord(ctx context.Context) error {
 	return b.Shoot.Components.Extensions.InternalDNSRecord.WaitMigrate(ctx)
 }
 
-func (b *Botanist) deployOrRestoreDNSRecord(ctx context.Context, dnsRecord component.DeployMigrateWaiter) error {
+// DeployOrRestoreDNSRecord restores the given DNSRecord from the ShootState if the shoot is in the restore phase.
+// Otherwise, it deploys the given DNSRecord.
+func (b *Botanist) DeployOrRestoreDNSRecord(ctx context.Context, dnsRecord component.DeployMigrateWaiter) error {
 	if b.Shoot.IsRestorePhase() {
 		return dnsRecord.Restore(ctx, b.Shoot.GetShootState())
 	}

@@ -413,6 +413,7 @@ func ValidateShootSpec(meta metav1.ObjectMeta, spec *core.ShootSpec, opts shootV
 		}
 
 		allErrs = append(allErrs, validateSelfHostedShootControlPlane(spec, fldPath)...)
+		allErrs = append(allErrs, validateSelfHostedShootDNS(spec, fldPath)...)
 	}
 
 	if spec.SchedulerName != nil {
@@ -3798,6 +3799,41 @@ func controlPlaneZones(controlPlane *core.ControlPlane) []string {
 		return nil
 	}
 	return controlPlane.Zones
+}
+
+// validateSelfHostedShootDNS validates the DNS configuration of self-hosted shoots w/o managed infrastructure. If the
+// control plane is exposed by Gardener, Gardener manages the DNS records of the shoot. As there are no shoot credentials
+// in this case, the primary DNS provider must specify the type and credentials explicitly.
+func validateSelfHostedShootDNS(spec *core.ShootSpec, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+
+	shoot := &core.Shoot{Spec: *spec}
+	if helper.HasManagedInfrastructure(shoot) || !helper.HasControlPlaneExposure(shoot) {
+		return allErrs
+	}
+
+	dnsPath := fldPath.Child("dns")
+	if spec.DNS == nil || len(ptr.Deref(spec.DNS.Domain, "")) == 0 {
+		allErrs = append(allErrs, field.Required(dnsPath.Child("domain"), "must be set when the control plane of a self-hosted shoot without managed infrastructure is exposed"))
+		return allErrs
+	}
+
+	primaryProviderIdx := slices.IndexFunc(spec.DNS.Providers, func(provider core.DNSProvider) bool { return ptr.Deref(provider.Primary, false) })
+	if primaryProviderIdx == -1 {
+		allErrs = append(allErrs, field.Required(dnsPath.Child("providers"), "a primary provider must be configured when the control plane of a self-hosted shoot without managed infrastructure is exposed"))
+		return allErrs
+	}
+
+	primaryProvider := spec.DNS.Providers[primaryProviderIdx]
+	providerPath := dnsPath.Child("providers").Index(primaryProviderIdx)
+	if providerType := ptr.Deref(primaryProvider.Type, ""); len(providerType) == 0 || providerType == core.DNSUnmanaged {
+		allErrs = append(allErrs, field.Required(providerPath.Child("type"), "a managed provider type must be set for the primary provider when the control plane of a self-hosted shoot without managed infrastructure is exposed"))
+	}
+	if primaryProvider.CredentialsRef == nil {
+		allErrs = append(allErrs, field.Required(providerPath.Child("credentialsRef"), "must be set for the primary provider when the control plane of a self-hosted shoot without managed infrastructure is exposed"))
+	}
+
+	return allErrs
 }
 
 func validateSelfHostedShootControlPlane(spec *core.ShootSpec, fldPath *field.Path) field.ErrorList {

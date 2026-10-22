@@ -189,13 +189,13 @@ func RunInitFlow(ctx context.Context, b *gardenadmbotanist.GardenadmBotanist, op
 			Dependencies: flow.NewTaskIDs(syncPointBootstrapped),
 		})
 		_ = g.Add(flow.Task{
-			Name: "Restoring external DNSRecord",
+			Name: "Reconciling external DNSRecord",
 			// Retry to tolerate the warmup window of the in-cluster extension controllers that were just redeployed
 			// into the pod network: their pods are Ready, but leader-election and informer cache sync can take
-			// long enough that the first Restore+Wait hits the severe-error threshold before the controller observes
+			// long enough that the first Deploy/Restore+Wait hits the severe-error threshold before the controller observes
 			// the new generation.
-			Fn:           flow.TaskFn(b.RestoreExternalDNSRecord).RetryUntilTimeout(5*time.Second, 5*time.Minute),
-			SkipIf:       !b.Shoot.HasManagedInfrastructure(),
+			Fn:           flow.TaskFn(b.ReconcileExternalDNSRecord).RetryUntilTimeout(5*time.Second, 5*time.Minute),
+			SkipIf:       !b.Shoot.HasControlPlaneExposure(),
 			Dependencies: flow.NewTaskIDs(syncPointBootstrapped, deploySelfHostedShootExposure),
 		})
 		reconcileBackupBucket = g.Add(flow.Task{
