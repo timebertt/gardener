@@ -1116,6 +1116,12 @@ var _ = Describe("Shoot", func() {
 		})
 	})
 
+	Describe("#GetSelfHostedShootInternalAPIServerDomain", func() {
+		It("should return the internal API server domain", func() {
+			Expect(GetSelfHostedShootInternalAPIServerDomain("foo.bar.com")).To(Equal("api.internal.foo.bar.com"))
+		})
+	})
+
 	var (
 		defaultDomainProvider   = "default-domain-provider"
 		defaultDomainSecretData = map[string][]byte{"default": []byte("domain")}

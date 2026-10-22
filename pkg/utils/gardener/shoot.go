@@ -646,6 +646,14 @@ func ConstructExternalClusterDomain(shoot *gardencorev1beta1.Shoot) *string {
 	return shoot.Spec.DNS.Domain
 }
 
+// GetSelfHostedShootInternalAPIServerDomain returns the internal domain of the API server of a self-hosted shoot
+// (`api.internal.<domain>`) for the given external domain (`.spec.dns.domain`). If the control plane of a self-hosted
+// shoot is exposed by Gardener, Gardener manages a DNSRecord for this domain pointing to the internal IPs of the control
+// plane nodes.
+func GetSelfHostedShootInternalAPIServerDomain(domain string) string {
+	return v1beta1helper.GetAPIServerDomain(InternalDomainKey + "." + domain)
+}
+
 // ConstructExternalDomain constructs an object containing all relevant information of the external domain that
 // shall be used for a shoot cluster - based on the configuration of the Garden cluster and the shoot itself.
 // Shoot credentials should be of type [*corev1.Secret] or [*securityv1alpha1.WorkloadIdentity].
