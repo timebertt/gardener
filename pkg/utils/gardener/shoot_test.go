@@ -1220,6 +1220,44 @@ var _ = Describe("Shoot", func() {
 			}))
 		})
 
+		It("returns the primary provider's domain for self-hosted shoots w/o managed infrastructure but with control plane exposure", func(ctx SpecContext) {
+			dnsSecretName := "my-secret"
+			shoot := &gardencorev1beta1.Shoot{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+				},
+				Spec: gardencorev1beta1.ShootSpec{
+					DNS: &gardencorev1beta1.DNS{
+						Domain: &domain,
+						Providers: []gardencorev1beta1.DNSProvider{{
+							Type: &provider,
+							CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+								APIVersion: "v1",
+								Kind:       "Secret",
+								Name:       dnsSecretName,
+							},
+							Primary: new(true),
+						}},
+					},
+					Provider: gardencorev1beta1.Provider{
+						Workers: []gardencorev1beta1.Worker{{
+							ControlPlane: &gardencorev1beta1.WorkerControlPlane{
+								Exposure: &gardencorev1beta1.Exposure{DNS: &gardencorev1beta1.DNSExposure{}},
+							},
+						}},
+					},
+				},
+			}
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: dnsSecretName, Namespace: namespace}}
+			Expect(fakeClient.Create(ctx, secret)).To(Succeed())
+
+			Expect(ConstructExternalDomain(ctx, fakeClient, shoot, nil, nil)).To(Equal(&Domain{
+				Domain:      domain,
+				Provider:    provider,
+				Credentials: secret,
+			}))
+		})
+
 		It("returns the default domain secret", func() {
 			var (
 				shoot = &gardencorev1beta1.Shoot{

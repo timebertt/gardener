@@ -399,9 +399,9 @@ func checkPrimaryDNSProvider(shoot *core.Shoot, defaultDomains []string) field.E
 
 	var allErrs field.ErrorList
 	if isDefaultDomain(*dns.Domain, defaultDomains) {
-		// Self-hosted shoots with managed infrastructure need a primary provider during gardenadm bootstrap,
-		// when the Garden's default domain credentials are not available yet.
-		if helper.IsShootSelfHosted(shoot.Spec.Provider.Workers) && helper.HasManagedInfrastructure(shoot) {
+		// Self-hosted shoots with managed infrastructure or control plane exposure need a primary provider during
+		// `gardenadm bootstrap`/`gardenadm init`, when the Garden's default domain credentials are not available yet.
+		if helper.IsShootSelfHosted(shoot.Spec.Provider.Workers) && (helper.HasManagedInfrastructure(shoot) || helper.HasControlPlaneExposure(shoot)) {
 			return nil
 		}
 

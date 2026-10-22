@@ -321,6 +321,17 @@ func HasManagedInfrastructure(shoot *core.Shoot) bool {
 	return shoot.Spec.CredentialsBindingName != nil || shoot.Spec.SecretBindingName != nil
 }
 
+// HasControlPlaneExposure returns true if the shoot's control plane is configured to be exposed by Gardener, either via
+// a SelfHostedShootExposure extension or directly via DNS. In this case, Gardener manages the external and internal
+// DNSRecords of the self-hosted shoot.
+func HasControlPlaneExposure(shoot *core.Shoot) bool {
+	pool := ControlPlaneWorkerPoolForShoot(shoot.Spec.Provider.Workers)
+	if pool == nil || pool.ControlPlane.Exposure == nil {
+		return false
+	}
+	return pool.ControlPlane.Exposure.Extension != nil || pool.ControlPlane.Exposure.DNS != nil
+}
+
 // ControlPlaneWorkerPoolForShoot returns the worker pool running the control plane in case the shoot is self-hosted.
 func ControlPlaneWorkerPoolForShoot(workers []core.Worker) *core.Worker {
 	if idx := slices.IndexFunc(workers, func(worker core.Worker) bool {

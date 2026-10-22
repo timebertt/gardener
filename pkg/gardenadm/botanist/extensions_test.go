@@ -267,7 +267,9 @@ var _ = Describe("Extensions", func() {
 
 		When("running the control plane (gardenadm init)", func() {
 			When("infrastructure is not managed by Gardener", func() {
-				It("should return all extensions referenced by shoot (except Infrastructure, Worker, and DNSRecord)", func() {
+				It("should return all extensions referenced by shoot (except Infrastructure, Worker, and DNSRecord) if control plane is not exposed", func() {
+					shoot.Spec.Provider.Workers[0].ControlPlane.Exposure = nil
+
 					Expect(ComputeExtensions(resources, true, false)).To(ConsistOf(
 						And(
 							HaveField("ControllerRegistration.Name", controllerRegistrationControlPlane.Name),
@@ -280,6 +282,27 @@ var _ = Describe("Extensions", func() {
 						And(
 							HaveField("ControllerRegistration.Name", controllerRegistrationNetwork.Name),
 							HaveField("ControllerDeployment.Name", controllerDeploymentNetwork.Name),
+						),
+					))
+				})
+
+				It("should return all extensions referenced by shoot (except Infrastructure and Worker) if control plane is exposed", func() {
+					Expect(ComputeExtensions(resources, true, false)).To(ConsistOf(
+						And(
+							HaveField("ControllerRegistration.Name", controllerRegistrationControlPlane.Name),
+							HaveField("ControllerDeployment.Name", controllerDeploymentControlPlane.Name),
+						),
+						And(
+							HaveField("ControllerRegistration.Name", controllerRegistrationOSC.Name),
+							HaveField("ControllerDeployment.Name", controllerDeploymentOSC.Name),
+						),
+						And(
+							HaveField("ControllerRegistration.Name", controllerRegistrationNetwork.Name),
+							HaveField("ControllerDeployment.Name", controllerDeploymentNetwork.Name),
+						),
+						And(
+							HaveField("ControllerRegistration.Name", controllerRegistrationDNS.Name),
+							HaveField("ControllerDeployment.Name", controllerDeploymentDNS.Name),
 						),
 						And(
 							HaveField("ControllerRegistration.Name", controllerRegistrationSelfHostedShootExposure.Name),

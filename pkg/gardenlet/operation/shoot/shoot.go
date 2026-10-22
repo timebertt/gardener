@@ -784,6 +784,12 @@ func (s *Shoot) HasExtensionExposure() bool {
 	return v1beta1helper.HasExtensionExposure(s.GetInfo())
 }
 
+// HasControlPlaneExposure returns true if the shoot's control plane is configured to be exposed by Gardener, either via
+// a SelfHostedShootExposure extension or directly via DNS.
+func (s *Shoot) HasControlPlaneExposure() bool {
+	return v1beta1helper.HasControlPlaneExposure(s.GetInfo())
+}
+
 // IsRestorePhase returns true when the shoot is in phase 'restore'.
 func (s *Shoot) IsRestorePhase() bool {
 	return v1beta1helper.ShootHasOperationType(s.GetInfo().Status.LastOperation, gardencorev1beta1.LastOperationTypeRestore)

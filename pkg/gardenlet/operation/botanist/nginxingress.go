@@ -141,7 +141,7 @@ func (b *Botanist) DeployOrDestroyIngressDNSRecord(ctx context.Context) error {
 
 // deployIngressDNSRecord deploys or restores the ingress DNSRecord and waits for the operation to complete.
 func (b *Botanist) deployIngressDNSRecord(ctx context.Context) error {
-	if err := b.deployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.IngressDNSRecord); err != nil {
+	if err := b.DeployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.IngressDNSRecord); err != nil {
 		return err
 	}
 	return b.Shoot.Components.Extensions.IngressDNSRecord.Wait(ctx)

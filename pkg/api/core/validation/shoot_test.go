@@ -1678,6 +1678,78 @@ var _ = Describe("Shoot Validation Tests", func() {
 					}))))
 				})
 
+				Context("DNS without managed infrastructure", func() {
+					BeforeEach(func() {
+						shoot.Spec.SecretBindingName = nil
+						shoot.Spec.CredentialsBindingName = nil
+						shoot.Spec.DNS.Providers = nil
+						shoot.Spec.Provider.Workers[0].ControlPlane = &core.WorkerControlPlane{}
+					})
+
+					It("should allow omitting DNS providers if the control plane is not exposed", func() {
+						Expect(ValidateShoot(shoot)).To(BeEmpty())
+					})
+
+					It("should allow omitting DNS providers if the control plane exposure is empty", func() {
+						shoot.Spec.Provider.Workers[0].ControlPlane.Exposure = &core.Exposure{}
+
+						Expect(ValidateShoot(shoot)).To(BeEmpty())
+					})
+
+					Context("control plane is exposed", func() {
+						BeforeEach(func() {
+							shoot.Spec.Provider.Workers[0].ControlPlane.Exposure = &core.Exposure{DNS: &core.DNSExposure{}}
+						})
+
+						It("should require the DNS domain", func() {
+							shoot.Spec.DNS = nil
+
+							Expect(ValidateShoot(shoot)).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+								"Type":  Equal(field.ErrorTypeRequired),
+								"Field": Equal("spec.dns.domain"),
+							}))))
+						})
+
+						It("should require a primary DNS provider", func() {
+							Expect(ValidateShoot(shoot)).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+								"Type":  Equal(field.ErrorTypeRequired),
+								"Field": Equal("spec.dns.providers"),
+							}))))
+						})
+
+						It("should require type and credentials of the primary DNS provider", func() {
+							shoot.Spec.Provider.Workers[0].ControlPlane.Exposure = &core.Exposure{Extension: &core.ExtensionExposure{Type: new("local")}}
+							shoot.Spec.DNS.Providers = []core.DNSProvider{{Primary: new(true), Type: new(core.DNSUnmanaged)}}
+
+							Expect(ValidateShoot(shoot)).To(ConsistOf(
+								PointTo(MatchFields(IgnoreExtras, Fields{
+									"Type":  Equal(field.ErrorTypeRequired),
+									"Field": Equal("spec.dns.providers[0].type"),
+								})),
+								PointTo(MatchFields(IgnoreExtras, Fields{
+									"Type":  Equal(field.ErrorTypeRequired),
+									"Field": Equal("spec.dns.providers[0].credentialsRef"),
+								})),
+							))
+						})
+
+						It("should allow a primary DNS provider with type and credentials", func() {
+							shoot.Spec.DNS.Providers = []core.DNSProvider{{
+								Primary:    new(true),
+								Type:       &dnsProviderType,
+								SecretName: new("dns-credentials"),
+								CredentialsRef: &autoscalingv1.CrossVersionObjectReference{
+									APIVersion: "v1",
+									Kind:       "Secret",
+									Name:       "dns-credentials",
+								},
+							}}
+
+							Expect(ValidateShoot(shoot)).To(BeEmpty())
+						})
+					})
+				})
+
 				It("should prevent marking a shoot as 'self-hosted' after creation", func() {
 					newShoot := prepareShootForUpdate(shoot)
 					shoot.Spec.Provider.Workers[0].ControlPlane = &core.WorkerControlPlane{}

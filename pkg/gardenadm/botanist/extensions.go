@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	v1beta1helper "github.com/gardener/gardener/pkg/api/core/v1beta1/helper"
 	gardencorev1 "github.com/gardener/gardener/pkg/apis/core/v1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -36,7 +37,7 @@ func ComputeExtensions(resources gardenadm.Resources, runsControlPlane, managedI
 
 	wantedControllerRegistrationNames, err := computeWantedControllerRegistrationNames(
 		resources,
-		wantedExtensionKinds(runsControlPlane, managedInfrastructure),
+		wantedExtensionKinds(runsControlPlane, managedInfrastructure, v1beta1helper.HasControlPlaneExposure(resources.Shoot)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed computing the names of the wanted ControllerRegistrations: %w", err)
@@ -86,8 +87,9 @@ func ComputeExtensions(resources gardenadm.Resources, runsControlPlane, managedI
 
 // wantedExtensionKinds returns the set of extension kinds that are needed and supported for self-hosted shoot clusters.
 // runsControlPlane indicates whether we are bootstrapping the control plane of the cluster (i.e., when executing
-// `gardenadm init`).
-func wantedExtensionKinds(runsControlPlane, managedInfrastructure bool) sets.Set[string] {
+// `gardenadm init`). controlPlaneExposure indicates whether the control plane is exposed by Gardener, in which case the
+// DNSRecords are managed by Gardener.
+func wantedExtensionKinds(runsControlPlane, managedInfrastructure, controlPlaneExposure bool) sets.Set[string] {
 	if !runsControlPlane {
 		// When running `gardenadm bootstrap` against the bootstrap cluster, we create Infrastructure, OSC, Worker, and
 		// DNSRecord for the control plane of the self-hosted shoot cluster, so we only need to deploy a subset of the
@@ -95,10 +97,15 @@ func wantedExtensionKinds(runsControlPlane, managedInfrastructure bool) sets.Set
 		return sets.New(extensionsv1alpha1.InfrastructureResource, extensionsv1alpha1.OperatingSystemConfigResource, extensionsv1alpha1.WorkerResource, extensionsv1alpha1.DNSRecordResource)
 	}
 
-	// In the "unmanaged infrastructure" scenario, we don't deploy Infrastructure, Worker, and DNSRecord extensions
-	// because they are managed outside of Gardener.
+	// In the "unmanaged infrastructure" scenario, we don't deploy Infrastructure and Worker extensions because they are
+	// managed outside of Gardener. The same applies to the DNSRecord extension, unless the control plane is exposed by
+	// Gardener.
 	if !managedInfrastructure {
-		return extensionsv1alpha1.AllExtensionKinds.Clone().Delete(extensionsv1alpha1.InfrastructureResource, extensionsv1alpha1.WorkerResource, extensionsv1alpha1.DNSRecordResource)
+		kinds := extensionsv1alpha1.AllExtensionKinds.Clone().Delete(extensionsv1alpha1.InfrastructureResource, extensionsv1alpha1.WorkerResource)
+		if !controlPlaneExposure {
+			kinds.Delete(extensionsv1alpha1.DNSRecordResource)
+		}
+		return kinds
 	}
 
 	// In `gardenadm init`, we deploy all extensions referenced by the shoot in the "managed infrastructure" scenario.
