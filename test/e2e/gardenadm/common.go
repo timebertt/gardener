@@ -7,12 +7,14 @@ package gardenadm
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
+	appsv1 "k8s.io/api/apps/v1"
 	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,8 +35,10 @@ import (
 	resourcesv1alpha1 "github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	kubeletcomponent "github.com/gardener/gardener/pkg/component/extensions/operatingsystemconfig/original/components/kubelet"
 	"github.com/gardener/gardener/pkg/component/networking/istio"
 	"github.com/gardener/gardener/pkg/controllerutils"
+	gardenerextensions "github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/nodeagent"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -271,6 +275,104 @@ func ItShouldVerifyAfterConnect(
 				ContainCondition(OfType(gardencorev1beta1.ControllerInstallationHealthy), WithStatus(gardencorev1beta1.ConditionTrue)),
 				ContainCondition(OfType(gardencorev1beta1.ControllerInstallationProgressing), WithStatus(gardencorev1beta1.ConditionFalse)),
 			))
+		}
+	}, SpecTimeout(5*time.Minute))
+}
+
+// ItShouldUseExpectedAPIServerDomainOnNodes verifies that the components on the worker nodes talk to the control plane
+// via the expected domain. If the control plane is exposed, this is the internal domain pointing to the internal IPs of
+// the control plane nodes. Otherwise, there is no internal domain and the nodes use the external domain.
+func ItShouldUseExpectedAPIServerDomainOnNodes(
+	shootClientSetPtr *kubernetes.Interface,
+	runInNode func(ctx context.Context, nodeName string, command ...string) (*gbytes.Buffer, *gbytes.Buffer, error),
+) {
+	GinkgoHelper()
+
+	It("should let the worker nodes talk to the control plane via the expected domain", func(ctx SpecContext) {
+		shootClient := (*shootClientSetPtr).Client()
+
+		shoot, err := gardenerextensions.GetShoot(ctx, shootClient, controlPlaneNamespace)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(shoot).NotTo(BeNil())
+
+		controlPlaneNodeList := &corev1.NodeList{}
+		Expect(shootClient.List(ctx, controlPlaneNodeList, client.MatchingLabels{v1beta1constants.LabelNodeRoleControlPlane: ""})).To(Succeed())
+		Expect(controlPlaneNodeList.Items).NotTo(BeEmpty())
+
+		var controlPlaneNodeInternalIPs []string
+		for _, node := range controlPlaneNodeList.Items {
+			for _, address := range node.Status.Addresses {
+				if address.Type == corev1.NodeInternalIP {
+					controlPlaneNodeInternalIPs = append(controlPlaneNodeInternalIPs, address.Address)
+				}
+			}
+		}
+
+		internalDNSRecord := &extensionsv1alpha1.DNSRecord{ObjectMeta: metav1.ObjectMeta{
+			Name:      shoot.Name + "-" + v1beta1constants.DNSRecordInternalName,
+			Namespace: controlPlaneNamespace,
+		}}
+		expectedDomain := v1beta1helper.GetAPIServerDomain(*shoot.Spec.DNS.Domain)
+
+		if v1beta1helper.HasControlPlaneExposure(shoot) {
+			expectedDomain = gardenerutils.GetSelfHostedShootInternalAPIServerDomain(*shoot.Spec.DNS.Domain)
+
+			By("Verify that the internal DNSRecord points to the internal IPs of the control plane nodes")
+			Eventually(ctx, func(g Gomega) {
+				g.Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(internalDNSRecord), internalDNSRecord)).To(Succeed())
+				g.Expect(health.CheckExtensionObject(internalDNSRecord)).To(Succeed())
+				g.Expect(internalDNSRecord.Spec.Name).To(Equal(expectedDomain))
+				g.Expect(internalDNSRecord.Spec.Values).To(And(
+					Not(BeEmpty()),
+					HaveEach(BeElementOf(controlPlaneNodeInternalIPs)),
+				))
+			}).Should(Succeed())
+		} else {
+			By("Verify that there is no internal DNSRecord")
+			Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(internalDNSRecord), internalDNSRecord)).To(BeNotFoundError())
+		}
+
+		By("Verify that kube-proxy uses the expected domain")
+		Eventually(ctx, func(g Gomega) {
+			daemonSetList := &appsv1.DaemonSetList{}
+			g.Expect(shootClient.List(ctx, daemonSetList, client.InNamespace(metav1.NamespaceSystem))).To(Succeed())
+			kubeProxyDaemonSets := slices.DeleteFunc(daemonSetList.Items, func(daemonSet appsv1.DaemonSet) bool {
+				return !strings.HasPrefix(daemonSet.Name, "kube-proxy-")
+			})
+			g.Expect(kubeProxyDaemonSets).NotTo(BeEmpty())
+
+			for _, daemonSet := range kubeProxyDaemonSets {
+				idx := slices.IndexFunc(daemonSet.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool { return volume.Name == "kubeconfig" })
+				g.Expect(idx).NotTo(Equal(-1), "kube-proxy DaemonSet %s should have a kubeconfig volume", daemonSet.Name)
+
+				secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: daemonSet.Spec.Template.Spec.Volumes[idx].Secret.SecretName, Namespace: metav1.NamespaceSystem}}
+				g.Expect(shootClient.Get(ctx, client.ObjectKeyFromObject(secret), secret)).To(Succeed())
+				g.Expect(string(secret.Data["kubeconfig"])).To(ContainSubstring("server: https://"+expectedDomain+"\n"), "kube-proxy DaemonSet %s should use the expected domain", daemonSet.Name)
+			}
+		}).Should(Succeed())
+
+		By("Verify that kubelet on the worker nodes uses the expected domain")
+		nodeList := &corev1.NodeList{}
+		Expect(shootClient.List(ctx, nodeList)).To(Succeed())
+
+		var workerNodeNames []string
+		for _, node := range nodeList.Items {
+			if _, isControlPlaneNode := node.Labels[v1beta1constants.LabelNodeRoleControlPlane]; !isControlPlaneNode {
+				workerNodeNames = append(workerNodeNames, node.Name)
+			}
+		}
+		Expect(workerNodeNames).NotTo(BeEmpty())
+
+		for _, nodeName := range workerNodeNames {
+			stdOut, _, err := runInNode(ctx, nodeName, "cat", kubeletcomponent.PathKubeconfigReal)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(stdOut.Contents())).To(ContainSubstring("server: https://"+expectedDomain+"\n"), "kubelet on node %s should use the expected domain", nodeName)
+
+			if v1beta1helper.HasControlPlaneExposure(shoot) {
+				stdOut, _, err = runInNode(ctx, nodeName, "getent", "hosts", expectedDomain)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strings.Fields(string(stdOut.Contents()))).To(ContainElement(BeElementOf(controlPlaneNodeInternalIPs)), "internal domain should resolve to a control plane node on node %s", nodeName)
+			}
 		}
 	}, SpecTimeout(5*time.Minute))
 }

@@ -203,6 +203,7 @@ var _ = Describe("gardenadm unmanaged infrastructure scenario tests", Label("gar
 
 			gardenadm.ItShouldVerifyAfterConnect(&gardenClientSet, shoot, RunInMachine)
 			gardenadm.ItShouldBeReconciledByGardenlet(&gardenClientSet, &shootClientSet, shoot, clusterAdminStaticToken, RunInMachine, RunInNode)
+			gardenadm.ItShouldUseExpectedAPIServerDomainOnNodes(&shootClientSet, RunInNode)
 		})
 
 		gardenadm.ItShouldPromoteSelfHostedShootToSeed(&gardenClientSet, &shootClientSet, shoot)
