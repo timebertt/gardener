@@ -35,6 +35,7 @@ var _ = Describe("DNSRecord", func() {
 		fakeClient client.Client
 
 		externalDNSRecord       *mockdnsrecord.MockInterface
+		internalDNSRecord       *mockdnsrecord.MockInterface
 		selfHostedShootExposure *selfhostedshootexposure.SelfHostedShootExposure
 	)
 
@@ -44,6 +45,7 @@ var _ = Describe("DNSRecord", func() {
 
 		ctrl := gomock.NewController(GinkgoT())
 		externalDNSRecord = mockdnsrecord.NewMockInterface(ctrl)
+		internalDNSRecord = mockdnsrecord.NewMockInterface(ctrl)
 		selfHostedShootExposure = selfhostedshootexposure.New(logr.Discard(), fakeClient, clock.RealClock{}, &selfhostedshootexposure.Values{})
 
 		b = &GardenadmBotanist{
@@ -56,6 +58,7 @@ var _ = Describe("DNSRecord", func() {
 						Components: &shoot.Components{
 							Extensions: &shoot.Extensions{
 								ExternalDNSRecord:       externalDNSRecord,
+								InternalDNSRecord:       internalDNSRecord,
 								SelfHostedShootExposure: selfHostedShootExposure,
 							},
 						},
@@ -315,6 +318,58 @@ var _ = Describe("DNSRecord", func() {
 
 				Expect(b.ReconcileExternalDNSRecord(ctx)).To(MatchError(ContainSubstring("configured IP family")))
 			})
+		})
+	})
+
+	Describe("#ReconcileInternalDNSRecord", func() {
+		It("should fail if there are no control plane nodes", func(ctx SpecContext) {
+			Expect(b.ReconcileInternalDNSRecord(ctx)).To(MatchError("no control plane nodes found"))
+		})
+
+		It("should fail if a control plane node has no internal IP", func(ctx SpecContext) {
+			node := healthyControlPlaneNode(controlPlaneWorkerPoolName+"-1", corev1.NodeAddress{Type: corev1.NodeExternalIP, Address: "1.2.3.4"})
+			Expect(fakeClient.Create(ctx, node)).To(Succeed())
+
+			Expect(b.ReconcileInternalDNSRecord(ctx)).To(MatchError(ContainSubstring("no node address of types [InternalIP]")))
+		})
+
+		It("should use the internal IPs of all control plane nodes and deploy the DNSRecord", func(ctx SpecContext) {
+			// Even with extension-based exposure, the internal DNSRecord points to the control plane nodes directly.
+			setExtensionExposure()
+
+			node1 := healthyControlPlaneNode(controlPlaneWorkerPoolName+"-1",
+				corev1.NodeAddress{Type: corev1.NodeExternalIP, Address: "1.2.3.4"},
+				corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			)
+			node2 := healthyControlPlaneNode(controlPlaneWorkerPoolName+"-2", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.0.2"})
+			node2.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+			Expect(fakeClient.Create(ctx, node1)).To(Succeed())
+			Expect(fakeClient.Create(ctx, node2)).To(Succeed())
+
+			internalDNSRecord.EXPECT().SetRecordType(extensionsv1alpha1.DNSRecordTypeA)
+			internalDNSRecord.EXPECT().SetValues([]string{"10.0.0.1", "10.0.0.2"})
+			internalDNSRecord.EXPECT().Deploy(gomock.Any()).Return(nil)
+			internalDNSRecord.EXPECT().Wait(gomock.Any()).Return(nil)
+
+			Expect(b.ReconcileInternalDNSRecord(ctx)).To(Succeed())
+		})
+
+		It("should restore the DNSRecord if the shoot is in the restore phase", func(ctx SpecContext) {
+			setRestorePhase()
+
+			node := healthyControlPlaneNode(controlPlaneWorkerPoolName+"-1", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "fd12::1"})
+			Expect(fakeClient.Create(ctx, node)).To(Succeed())
+
+			shoot := b.Shoot.GetInfo()
+			shoot.Spec.Networking.IPFamilies = []gardencorev1beta1.IPFamily{gardencorev1beta1.IPFamilyIPv6}
+			b.Shoot.SetInfo(shoot)
+
+			internalDNSRecord.EXPECT().SetRecordType(extensionsv1alpha1.DNSRecordTypeAAAA)
+			internalDNSRecord.EXPECT().SetValues([]string{"fd12::1"})
+			internalDNSRecord.EXPECT().Restore(gomock.Any(), gomock.Any()).Return(nil)
+			internalDNSRecord.EXPECT().Wait(gomock.Any()).Return(nil)
+
+			Expect(b.ReconcileInternalDNSRecord(ctx)).To(Succeed())
 		})
 	})
 })

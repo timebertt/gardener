@@ -13,6 +13,7 @@ import (
 	extensionsv1alpha1helper "github.com/gardener/gardener/pkg/api/extensions/v1alpha1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/component"
+	"github.com/gardener/gardener/pkg/component/extensions/dnsrecord"
 )
 
 // DeployBootstrapDNSRecord deploys the external DNSRecord pointing to the first control plane machine for bootstrapping
@@ -49,13 +50,35 @@ func (b *GardenadmBotanist) ReconcileExternalDNSRecord(ctx context.Context) erro
 		return err
 	}
 
-	b.Shoot.Components.Extensions.ExternalDNSRecord.SetRecordType(recordType)
-	b.Shoot.Components.Extensions.ExternalDNSRecord.SetValues(addresses)
+	return b.reconcileDNSRecord(ctx, b.Shoot.Components.Extensions.ExternalDNSRecord, addresses, recordType)
+}
 
-	if err := b.DeployOrRestoreDNSRecord(ctx, b.Shoot.Components.Extensions.ExternalDNSRecord); err != nil {
+// ReconcileInternalDNSRecord deploys or restores the internal DNSRecord for the self-hosted shoot's API server. It points
+// to the internal IPs of the control plane nodes, so that components on the worker nodes can talk to the control plane
+// without depending on the control plane exposure.
+// For dual-stack setups, IP families are preferred in the order they appear in spec.networking.ipFamilies.
+func (b *GardenadmBotanist) ReconcileInternalDNSRecord(ctx context.Context) error {
+	nodes, err := b.ListControlPlaneNodes(ctx)
+	if err != nil {
 		return err
 	}
-	return b.Shoot.Components.Extensions.ExternalDNSRecord.Wait(ctx)
+
+	addresses, recordType, err := extensionsv1alpha1helper.DNSValuesFromNodes(nodes, b.Shoot.GetInfo().Spec.Networking.IPFamilies, corev1.NodeInternalIP)
+	if err != nil {
+		return err
+	}
+
+	return b.reconcileDNSRecord(ctx, b.Shoot.Components.Extensions.InternalDNSRecord, addresses, recordType)
+}
+
+func (b *GardenadmBotanist) reconcileDNSRecord(ctx context.Context, dnsRecord dnsrecord.Interface, addresses []string, recordType extensionsv1alpha1.DNSRecordType) error {
+	dnsRecord.SetRecordType(recordType)
+	dnsRecord.SetValues(addresses)
+
+	if err := b.DeployOrRestoreDNSRecord(ctx, dnsRecord); err != nil {
+		return err
+	}
+	return dnsRecord.Wait(ctx)
 }
 
 func (b *GardenadmBotanist) externalDNSRecordValues(ctx context.Context) ([]string, extensionsv1alpha1.DNSRecordType, error) {
